@@ -22,6 +22,7 @@ func NewRouter(runtimeController *controller.RuntimeController, providerControll
 	router.HandleFunc("POST /api/v1/works/{workID}/nodes", canvasController.CreateNode)
 	router.HandleFunc("GET /api/v1/works/{workID}/nodes", canvasController.ListNodes)
 	router.HandleFunc("POST /api/v1/works/{workID}/nodes/query", canvasController.GetNodes)
+	router.HandleFunc("PATCH /api/v1/works/{workID}/nodes/{nodeID}/position", canvasController.UpdateNodePosition)
 	router.HandleFunc("GET /api/v1/works/{workID}/candidates", canvasController.ListCandidates)
 
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

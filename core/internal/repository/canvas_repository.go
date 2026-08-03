@@ -33,12 +33,12 @@ func (r *CanvasRepository) CreateNode(ctx context.Context, input canvas.CreateNo
 	now := time.Now().UTC()
 	node := canvas.Node{
 		ID: uuid.NewString(), WorkID: input.WorkID, Revision: 1, Kind: input.Kind,
-		Title: input.Title, Content: input.Content, CreatedAt: now, UpdatedAt: now,
+		Title: input.Title, Content: input.Content, X: input.X, Y: input.Y, CreatedAt: now, UpdatedAt: now,
 	}
 	_, err := r.database.ExecContext(ctx, `
-INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
-		node.Content, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
+		node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("create canvas node: %w", err)
 	}
@@ -47,7 +47,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind
 
 func (r *CanvasRepository) ListNodes(ctx context.Context, workID string) ([]canvas.Node, error) {
 	rows, err := r.database.QueryContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, created_at, updated_at
+SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
 FROM canvas_nodes WHERE work_id = ? ORDER BY created_at`, workID)
 	if err != nil {
 		return nil, fmt.Errorf("list canvas nodes: %w", err)
@@ -77,7 +77,7 @@ func (r *CanvasRepository) GetNodes(ctx context.Context, workID string, nodeIDs 
 	nodes := make([]canvas.Node, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		node, err := scanCanvasNode(r.database.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, created_at, updated_at
+SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
 FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %s", canvas.ErrNodeNotFound, nodeID)
@@ -88,6 +88,23 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
 		nodes = append(nodes, node)
 	}
 	return nodes, nil
+}
+
+func (r *CanvasRepository) UpdateNodePosition(ctx context.Context, workID, nodeID string, x, y float64) error {
+	result, err := r.database.ExecContext(ctx, `
+UPDATE canvas_nodes SET x = ?, y = ?, updated_at = ? WHERE work_id = ? AND id = ?`,
+		x, y, time.Now().UTC().Format(time.RFC3339Nano), workID, nodeID)
+	if err != nil {
+		return fmt.Errorf("update canvas node position: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated canvas node position: %w", err)
+	}
+	if changed == 0 {
+		return canvas.ErrNodeNotFound
+	}
+	return nil
 }
 
 func (r *CanvasRepository) CreateCandidate(ctx context.Context, candidate agent.Candidate) (agent.Candidate, error) {
@@ -160,7 +177,7 @@ FROM agent_candidates WHERE work_id = ? ORDER BY created_at DESC`, workID)
 func scanCanvasNode(scanner rowScanner) (canvas.Node, error) {
 	var node canvas.Node
 	var createdAt, updatedAt string
-	if err := scanner.Scan(&node.ID, &node.WorkID, &node.Revision, &node.Kind, &node.Title, &node.Content, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&node.ID, &node.WorkID, &node.Revision, &node.Kind, &node.Title, &node.Content, &node.X, &node.Y, &createdAt, &updatedAt); err != nil {
 		return canvas.Node{}, err
 	}
 	var err error

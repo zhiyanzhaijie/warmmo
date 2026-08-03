@@ -41,13 +41,17 @@ func (s *CanvasService) GetNodes(ctx context.Context, workID string, nodeIDs []s
 	return s.store.GetNodes(ctx, strings.TrimSpace(workID), nodeIDs)
 }
 
+func (s *CanvasService) UpdateNodePosition(ctx context.Context, workID, nodeID string, x, y float64) error {
+	return s.store.UpdateNodePosition(ctx, strings.TrimSpace(workID), strings.TrimSpace(nodeID), x, y)
+}
+
 func (s *CanvasService) ListCandidates(ctx context.Context, workID string) ([]agent.Candidate, error) {
 	return s.store.ListCandidates(ctx, strings.TrimSpace(workID))
 }
 
 func validNodeKind(kind string) bool {
 	switch kind {
-	case "chapter", "character", "plot", "world", "note", "timeline":
+	case "chapter", "character", "plot", "world", "setting", "item", "note", "timeline":
 		return true
 	default:
 		return false

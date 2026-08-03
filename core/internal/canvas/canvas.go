@@ -23,6 +23,8 @@ type Node struct {
 	Kind      string    `json:"kind"`
 	Title     string    `json:"title"`
 	Content   string    `json:"content"`
+	X         float64   `json:"x"`
+	Y         float64   `json:"y"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -32,12 +34,15 @@ type CreateNodeInput struct {
 	Kind    string
 	Title   string
 	Content string
+	X       float64
+	Y       float64
 }
 
 type Store interface {
 	CreateNode(context.Context, CreateNodeInput) (Node, error)
 	ListNodes(context.Context, string) ([]Node, error)
 	GetNodes(context.Context, string, []string) ([]Node, error)
+	UpdateNodePosition(context.Context, string, string, float64, float64) error
 	CreateCandidate(context.Context, agent.Candidate) (agent.Candidate, error)
 	ListCandidates(context.Context, string) ([]agent.Candidate, error)
 }

@@ -167,10 +167,13 @@ func (l *Loop) Run(ctx context.Context, input RunInput, model TextModel, emit Em
 			}
 			return result, nil
 		case DecisionFinish:
+			if state.activeSkill.ID == "" {
+				return RunResult{}, errors.New("model finished before selecting a skill")
+			}
 			if strings.TrimSpace(decision.Content) == "" {
 				return RunResult{}, errors.New("finish decision requires content")
 			}
-			return RunResult{Content: strings.TrimSpace(decision.Content), SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version}, nil
+			return l.createCandidate(runCtx, state, strings.TrimSpace(decision.Content), emit)
 		case DecisionFail:
 			return RunResult{}, fmt.Errorf("agent stopped: %s", decision.Reason)
 		default:
@@ -212,13 +215,17 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 	if result == "" {
 		return RunResult{}, errors.New("model returned an empty candidate")
 	}
+	return l.createCandidate(ctx, state, result, emit)
+}
+
+func (l *Loop) createCandidate(ctx context.Context, state loopState, content string, emit Emitter) (RunResult, error) {
 	if err := emit(EventSkillCompleted, map[string]any{"skillId": state.activeSkill.ID, "version": state.activeSkill.Version}); err != nil {
 		return RunResult{}, err
 	}
 	if err := emit(EventValidationCompleted, map[string]any{"valid": true}); err != nil {
 		return RunResult{}, err
 	}
-	toolArgs, err := json.Marshal(map[string]string{"content": result})
+	toolArgs, err := json.Marshal(map[string]string{"content": content})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("encode candidate tool input: %w", err)
 	}
@@ -248,7 +255,7 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 		return RunResult{}, err
 	}
 	return RunResult{
-		Content: result, SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version, CandidateID: candidate.ID,
+		Content: content, SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version, CandidateID: candidate.ID,
 	}, nil
 }
 

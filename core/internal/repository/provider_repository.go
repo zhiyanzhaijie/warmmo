@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 3
+	currentSchemaVersion = 4
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS canvas_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_nodes_work_created
     ON canvas_nodes(work_id, created_at);`
+	canvasPositionSchemaSQL = `
+ALTER TABLE canvas_nodes ADD COLUMN x REAL NOT NULL DEFAULT 0;
+ALTER TABLE canvas_nodes ADD COLUMN y REAL NOT NULL DEFAULT 0;`
 )
 
 var (
@@ -341,7 +344,12 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("create canvas schema: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 3"); err != nil {
+	if schemaVersion < 4 {
+		if _, err := transaction.Exec(canvasPositionSchemaSQL); err != nil {
+			return fmt.Errorf("add canvas node positions: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 4"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

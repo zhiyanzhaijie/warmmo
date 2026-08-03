@@ -21,16 +21,20 @@ func NewGetNodesTool(store Store) *GetNodesTool {
 
 func (t *GetNodesTool) Spec() agent.ToolSpec {
 	return agent.ToolSpec{
-		Name: "canvas.get_nodes", Description: "Read canvas nodes from the current work by node ID.", ModelCallable: true,
+		Name: "canvas.get_nodes", Description: `Read canvas nodes from the current work. Arguments: {"nodeIds":["node-id"]}.`, ModelCallable: true,
 	}
 }
 
 func (t *GetNodesTool) Call(ctx context.Context, invocation agent.ToolInvocation) (any, error) {
 	var input struct {
 		NodeIDs []string `json:"nodeIds"`
+		IDs     []string `json:"ids"`
 	}
 	if err := decodeToolArgs(invocation.Args, &input); err != nil {
 		return nil, err
+	}
+	if len(input.NodeIDs) == 0 {
+		input.NodeIDs = input.IDs
 	}
 	if len(input.NodeIDs) == 0 {
 		return nil, errors.New("nodeIds is required")

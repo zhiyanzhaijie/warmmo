@@ -19,13 +19,20 @@ type CanvasController struct {
 }
 
 type createCanvasNodeRequest struct {
-	Kind    string `json:"kind"`
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	Kind    string  `json:"kind"`
+	Title   string  `json:"title"`
+	Content string  `json:"content"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
 }
 
 type getCanvasNodesRequest struct {
 	NodeIDs []string `json:"nodeIds"`
+}
+
+type updateCanvasNodePositionRequest struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 func NewCanvasController(canvasService *service.CanvasService, logger *slog.Logger) *CanvasController {
@@ -39,6 +46,7 @@ func (c *CanvasController) CreateNode(response http.ResponseWriter, request *htt
 	}
 	node, err := c.service.CreateNode(request.Context(), canvas.CreateNodeInput{
 		WorkID: request.PathValue("workID"), Kind: input.Kind, Title: input.Title, Content: input.Content,
+		X: input.X, Y: input.Y,
 	})
 	if errors.Is(err, service.ErrInvalidCanvasRequest) {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "节点类型、标题和内容不能为空"})
@@ -49,6 +57,23 @@ func (c *CanvasController) CreateNode(response http.ResponseWriter, request *htt
 		return
 	}
 	writeJSON(response, http.StatusCreated, node)
+}
+
+func (c *CanvasController) UpdateNodePosition(response http.ResponseWriter, request *http.Request) {
+	var input updateCanvasNodePositionRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	err := c.service.UpdateNodePosition(request.Context(), request.PathValue("workID"), request.PathValue("nodeID"), input.X, input.Y)
+	if errors.Is(err, canvas.ErrNodeNotFound) {
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "画布节点不存在"})
+		return
+	}
+	if err != nil {
+		c.internalError(response, "update canvas node position", err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (c *CanvasController) ListNodes(response http.ResponseWriter, request *http.Request) {
