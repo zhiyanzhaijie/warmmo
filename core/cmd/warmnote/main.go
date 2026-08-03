@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"warmnote/core/internal/controller"
+	"warmnote/core/internal/repository"
 	"warmnote/core/internal/service"
 	"warmnote/core/internal/webserver"
 )
@@ -31,9 +33,21 @@ func run(logger *slog.Logger) error {
 
 	runtimeService := service.NewRuntimeService(version)
 	runtimeController := controller.NewRuntimeController(runtimeService, logger)
+	dataDirectory, err := resolveDataDirectory()
+	if err != nil {
+		return err
+	}
+	providerRepository, err := repository.NewProviderRepository(dataDirectory)
+	if err != nil {
+		return err
+	}
+	defer providerRepository.Close()
+	logger.Info("Warmnote data initialized", "database", providerRepository.DatabasePath())
+	providerService := service.NewProviderService(providerRepository)
+	providerController := controller.NewProviderController(providerService, logger)
 	server := &http.Server{
 		Addr:              "127.0.0.1:8787",
-		Handler:           webserver.NewRouter(runtimeController),
+		Handler:           webserver.NewRouter(runtimeController, providerController),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -57,4 +71,32 @@ func run(logger *slog.Logger) error {
 		}
 		return err
 	}
+}
+
+func resolveDataDirectory() (string, error) {
+	if configured := os.Getenv("WARMNOTE_DATA_DIR"); configured != "" {
+		return filepath.Abs(configured)
+	}
+
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if fileExists(filepath.Join(workingDirectory, "core", "go.mod")) {
+		return filepath.Join(workingDirectory, ".data"), nil
+	}
+	if fileExists(filepath.Join(workingDirectory, "go.mod")) && filepath.Base(workingDirectory) == "core" {
+		return filepath.Join(filepath.Dir(workingDirectory), ".data"), nil
+	}
+
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDirectory, "warmnote"), nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
