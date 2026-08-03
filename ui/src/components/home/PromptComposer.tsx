@@ -1,20 +1,24 @@
 import { ArrowUp, FilePlus2, Sparkles } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
+
+import type { EnabledModel } from '../../types/provider'
+import { ModelSelector } from '../models/ModelSelector'
 
 interface PromptComposerProps {
-  onCreate: (prompt: string, model: string) => void
+  onCreate: (prompt: string, model: EnabledModel) => void
   onCreateBlank: () => void
 }
 
 export function PromptComposer({ onCreate, onCreateBlank }: PromptComposerProps) {
   const [prompt, setPrompt] = useState('')
-  const [model, setModel] = useState('gpt-4.1')
-  const canSubmit = prompt.trim().length > 0
+  const [model, setModel] = useState<EnabledModel | null>(null)
+  const canSubmit = prompt.trim().length > 0 && model !== null
+  const selectModel = useCallback((nextModel: EnabledModel | null) => setModel(nextModel), [])
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const normalizedPrompt = prompt.trim()
-    if (normalizedPrompt.length === 0) {
+    if (normalizedPrompt.length === 0 || model === null) {
       return
     }
 
@@ -43,15 +47,14 @@ export function PromptComposer({ onCreate, onCreateBlank }: PromptComposerProps)
 
         <div className="flex min-h-14 items-center justify-between gap-space-md border-t border-hairline px-space-sm">
           <div className="flex items-center gap-space-xs">
-            <select
-              className="h-9 cursor-pointer rounded-sm border border-transparent bg-transparent px-space-xs text-button-md text-body outline-none hover:bg-hairline-soft focus:border-link"
+            <ModelSelector
+              capability="text"
               value={model}
-              onChange={(event) => setModel(event.target.value)}
-              aria-label="选择文本模型"
-            >
-              <option value="gpt-4.1">GPT-4.1</option>
-              <option value="claude-sonnet-4">Claude Sonnet 4</option>
-            </select>
+              onValueChange={selectModel}
+              autoSelectFirst
+              className="h-9"
+              ariaLabel="选择文本模型"
+            />
             <button
               className="flex h-9 cursor-pointer items-center gap-space-xs rounded-sm px-space-sm text-button-md text-body transition-colors hover:bg-hairline-soft hover:text-ink"
               type="button"

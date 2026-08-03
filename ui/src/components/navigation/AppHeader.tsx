@@ -1,7 +1,8 @@
 import { PanelsTopLeft, Settings, Waypoints } from 'lucide-react'
 import { Link, NavLink } from 'react-router-dom'
 
-import { useRuntimeInfo } from '../../hooks/useRuntimeInfo'
+import { useRuntimeInfo } from '@/apis/runtime-apis'
+
 import { ThemeMenu } from '../theme/ThemeMenu'
 
 const navigationItems = [

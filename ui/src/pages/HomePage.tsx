@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 import { PromptComposer } from '../components/home/PromptComposer'
 import { RecentWorks } from '../components/home/RecentWorks'
 import { recentWorks } from '../data/recentWorks'
+import type { EnabledModel } from '../types/provider'
 import type { WorkSummary } from '../types/work'
 
 const recentWorkLimit = 6
@@ -11,14 +12,14 @@ export function HomePage() {
   const [works, setWorks] = useState<WorkSummary[]>(recentWorks)
   const [creationNotice, setCreationNotice] = useState('')
 
-  const createWork = useCallback((prompt: string, modelName: string) => {
+  const createWork = useCallback((prompt: string, model: EnabledModel) => {
     const title = prompt.length > 16 ? `${prompt.slice(0, 16)}...` : prompt
     const work: WorkSummary = {
       id: `draft-${Date.now()}`,
       title,
       updatedLabel: '刚刚',
       nodeCount: 1,
-      modelName: modelName === 'gpt-4.1' ? 'GPT-4.1' : 'Claude Sonnet 4',
+      modelName: model.modelName,
       status: 'initializing',
       previewNodes: [
         { id: 'idea', label: '故事概念', kind: 'plot', x: 36, y: 38 },

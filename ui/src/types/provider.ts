@@ -42,10 +42,13 @@ export interface ProviderTestResult {
   latencyMs: number
 }
 
-export interface EnabledModel {
+export interface ModelReference {
   providerId: string
-  providerName: string
   modelId: string
+}
+
+export interface EnabledModel extends ModelReference {
+  providerName: string
   modelName: string
   capability: ModelCapability
 }

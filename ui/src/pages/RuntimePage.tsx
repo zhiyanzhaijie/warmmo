@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { ArrowDownUp, Cpu, RefreshCw, Server, Timer, Waypoints, WifiOff } from 'lucide-react'
 
-import { useRuntimeInfo } from '../hooks/useRuntimeInfo'
+import { useRuntimeInfo } from '@/apis/runtime-apis'
+
 import type { RuntimeInfo } from '../types/runtime'
 
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
@@ -10,8 +11,8 @@ const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 
 export function RuntimePage() {
-  const { state, reload } = useRuntimeInfo()
-  const isLoading = state.status === 'loading'
+  const { state, isRefreshing, reload } = useRuntimeInfo()
+  const isLoading = state.status === 'loading' || isRefreshing
 
   return (
     <main className="min-h-dvh bg-canvas">

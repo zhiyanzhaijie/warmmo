@@ -11,18 +11,19 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
+import {
+  useDeleteProvider,
+  useModelCatalog,
+  useProviderConfigurations,
+  useSaveProvider,
+  useTestProvider,
+} from '@/apis/provider-apis'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
-import {
-  deleteProviderConfiguration,
-  fetchProviderSettings,
-  saveProviderConfiguration,
-  testProviderConfiguration,
-} from '../../services/providerService'
 import type {
   ModelCapability,
   ProviderConfiguration,
@@ -30,11 +31,6 @@ import type {
   ProviderTestResult,
   SaveProviderConfiguration,
 } from '../../types/provider'
-
-type LoadState =
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'ready'; providers: ProviderDefinition[]; configurations: ProviderConfiguration[] }
 
 interface EditorState {
   capability: ModelCapability
@@ -45,51 +41,49 @@ interface EditorState {
   editing: boolean
 }
 
-type TestState =
-  | { status: 'idle' }
-  | { status: 'testing' }
-  | { status: 'result'; result: ProviderTestResult }
-  | { status: 'error'; message: string }
-
 const capabilityLabels: Record<ModelCapability, string> = {
   text: 'Text Model',
   image: 'Image Model',
 }
 
 export function AgentProviderSettings() {
-  const [state, setState] = useState<LoadState>({ status: 'loading' })
+  const {
+    data: catalogData,
+    error: catalogError,
+    isError: isCatalogError,
+    isPending: isCatalogPending,
+  } = useModelCatalog()
+  const {
+    data: configurationsData,
+    error: configurationsError,
+    isError: isConfigurationsError,
+    isPending: isConfigurationsPending,
+  } = useProviderConfigurations()
+  const { mutateAsync: saveProvider, isPending: isSaving } = useSaveProvider()
+  const { mutateAsync: deleteProvider } = useDeleteProvider()
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [showAPIKey, setShowAPIKey] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
-  useEffect(() => {
-    const controller = new AbortController()
-    fetchProviderSettings(controller.signal)
-      .then((data) => setState({ status: 'ready', ...data }))
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setState({ status: 'error', message: error instanceof Error ? error.message : '无法连接本地 Core' })
-        }
-      })
-    return () => controller.abort()
-  }, [])
-
-  if (state.status === 'loading') {
+  if (isCatalogPending || isConfigurationsPending) {
     return <StatusPanel icon={<LoaderCircle className="animate-spin" size={18} />} message="正在读取本地模型配置" />
   }
-  if (state.status === 'error') {
-    return <StatusPanel icon={<X size={18} />} message={state.message} tone="error" />
+  if (isCatalogError || isConfigurationsError) {
+    const error = catalogError ?? configurationsError
+    return <StatusPanel icon={<X size={18} />} message={error instanceof Error ? error.message : '无法连接本地 Core'} tone="error" />
   }
 
+  const providers = catalogData.providers
+  const configurations = configurationsData.configurations
+
   const openNewEditor = () => {
-    const provider = state.providers.find((candidate) =>
+    const provider = providers.find((candidate) =>
       candidate.models.some((model) => model.capability === 'text')
-      && !state.configurations.some((configuration) => configuration.providerId === candidate.id),
-    ) ?? state.providers.find((candidate) => candidate.models.some((model) => model.capability === 'text'))
+      && !configurations.some((configuration) => configuration.providerId === candidate.id),
+    ) ?? providers.find((candidate) => candidate.models.some((model) => model.capability === 'text'))
     if (provider === undefined) return
 
-    const existing = state.configurations.find((configuration) => configuration.providerId === provider.id)
+    const existing = configurations.find((configuration) => configuration.providerId === provider.id)
     setEditor({
       capability: 'text',
       providerId: provider.id,
@@ -102,7 +96,7 @@ export function AgentProviderSettings() {
   }
 
   const openEditEditor = (configuration: ProviderConfiguration) => {
-    const provider = state.providers.find((candidate) => candidate.id === configuration.providerId)
+    const provider = providers.find((candidate) => candidate.id === configuration.providerId)
     if (provider === undefined) return
     const selectedModel = provider.models.find((model) => configuration.modelIds.includes(model.id))
     setEditor({
@@ -117,31 +111,20 @@ export function AgentProviderSettings() {
   }
 
   const handleSave = async (input: SaveProviderConfiguration) => {
-    setSubmitting(true)
     setFormError(null)
     try {
-      const saved = await saveProviderConfiguration(input)
-      setState((current) => {
-        if (current.status !== 'ready') return current
-        const remaining = current.configurations.filter((item) => item.providerId !== saved.providerId)
-        return { ...current, configurations: [saved, ...remaining] }
-      })
+      await saveProvider(input)
       setEditor(null)
       setShowAPIKey(false)
     } catch (error) {
       setFormError(error instanceof Error ? error.message : '保存失败')
-    } finally {
-      setSubmitting(false)
     }
   }
 
   const handleDelete = async (providerId: string) => {
     setFormError(null)
     try {
-      await deleteProviderConfiguration(providerId)
-      setState((current) => current.status === 'ready'
-        ? { ...current, configurations: current.configurations.filter((item) => item.providerId !== providerId) }
-        : current)
+      await deleteProvider(providerId)
       if (editor?.providerId === providerId) setEditor(null)
     } catch (error) {
       setFormError(error instanceof Error ? error.message : '删除失败')
@@ -171,11 +154,11 @@ export function AgentProviderSettings() {
       {editor !== null ? (
         <ProviderEditor
           editor={editor}
-          providers={state.providers}
-          configurations={state.configurations}
+          providers={providers}
+          configurations={configurations}
           error={formError}
           showAPIKey={showAPIKey}
-          submitting={submitting}
+          submitting={isSaving}
           onChange={setEditor}
           onShowAPIKeyChange={setShowAPIKey}
           onCancel={() => { setEditor(null); setFormError(null); setShowAPIKey(false) }}
@@ -186,9 +169,9 @@ export function AgentProviderSettings() {
       <div className="mt-space-xl">
         <div className="flex items-baseline justify-between">
           <h3 className="text-label-sm">已配置</h3>
-          <span className="font-mono text-body-sm text-mute">{state.configurations.length} PROVIDERS</span>
+          <span className="font-mono text-body-sm text-mute">{configurations.length} PROVIDERS</span>
         </div>
-        {state.configurations.length === 0 ? (
+        {configurations.length === 0 ? (
           <div className="mt-space-sm grid min-h-40 place-items-center rounded-md border border-dashed border-hairline text-center">
             <div>
               <KeyRound className="mx-auto text-mute" size={20} />
@@ -198,14 +181,14 @@ export function AgentProviderSettings() {
           </div>
         ) : (
           <div className="mt-space-sm divide-y divide-hairline rounded-md border border-hairline bg-canvas-elevated">
-            {state.configurations.map((configuration) => (
+            {configurations.map((configuration) => (
               <ProviderRow
                 key={configuration.id}
                 configuration={configuration}
-                provider={state.providers.find((candidate) => candidate.id === configuration.providerId)}
+                provider={providers.find((candidate) => candidate.id === configuration.providerId)}
                 onEdit={() => openEditEditor(configuration)}
                 onDelete={() => {
-                  const providerName = state.providers.find((candidate) => candidate.id === configuration.providerId)?.name ?? configuration.providerId
+                  const providerName = providers.find((candidate) => candidate.id === configuration.providerId)?.name ?? configuration.providerId
                   if (window.confirm(`删除 ${providerName} 配置？相关模型将从所有模型菜单中移除。`)) {
                     void handleDelete(configuration.providerId)
                   }
@@ -242,7 +225,13 @@ function ProviderEditor({
   onCancel: () => void
   onSave: (input: SaveProviderConfiguration) => Promise<void>
 }) {
-  const [testState, setTestState] = useState<TestState>({ status: 'idle' })
+  const {
+    data: testResult,
+    error: testError,
+    isPending: isTesting,
+    mutate: testProvider,
+    reset: resetTest,
+  } = useTestProvider()
   const availableProviders = useMemo(
     () => providers.filter((provider) => provider.models.some((model) => model.capability === editor.capability)),
     [editor.capability, providers],
@@ -256,7 +245,7 @@ function ProviderEditor({
   const canTest = editor.baseUrl.trim() !== '' && (editor.apiKey.trim() !== '' || existingConfiguration !== undefined)
 
   const updateEditor = (next: EditorState) => {
-    setTestState({ status: 'idle' })
+    resetTest()
     onChange(next)
   }
 
@@ -301,15 +290,12 @@ function ProviderEditor({
     })
   }
 
-  const handleTest = async () => {
+  const handleTest = () => {
     if (provider === undefined || !canTest) return
-    setTestState({ status: 'testing' })
-    try {
-      const result = await testProviderConfiguration(provider.id, { baseUrl: editor.baseUrl, apiKey: editor.apiKey })
-      setTestState({ status: 'result', result })
-    } catch (testError) {
-      setTestState({ status: 'error', message: testError instanceof Error ? testError.message : '测试失败' })
-    }
+    testProvider({
+      providerId: provider.id,
+      input: { baseUrl: editor.baseUrl, apiKey: editor.apiKey },
+    })
   }
 
   return (
@@ -392,16 +378,16 @@ function ProviderEditor({
           </span>
           <button
             type="button"
-            onClick={() => void handleTest()}
-            disabled={!canTest || testState.status === 'testing'}
+            onClick={handleTest}
+            disabled={!canTest || isTesting}
             className="flex h-10 min-w-24 items-center justify-center gap-space-xs rounded-sm border border-hairline px-space-sm text-button-md hover:bg-hairline-soft disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {testState.status === 'testing' ? <LoaderCircle className="animate-spin" size={14} /> : <PlugZap size={14} />}
+            {isTesting ? <LoaderCircle className="animate-spin" size={14} /> : <PlugZap size={14} />}
             测试连接
           </button>
         </div>
         <p className="mt-space-xs text-body-sm text-mute">密钥由本机 Core 加密保存，前端不会读取已保存的原文。</p>
-        <TestFeedback state={testState} />
+        <TestFeedback result={testResult ?? null} error={testError} />
       </div>
 
       <details className="mt-space-md group">
@@ -431,15 +417,15 @@ function ProviderEditor({
   )
 }
 
-function TestFeedback({ state }: { state: TestState }) {
-  if (state.status === 'idle' || state.status === 'testing') return null
-  if (state.status === 'error') {
-    return <p className="mt-space-xs flex items-center gap-space-xs text-body-sm text-error"><CircleX size={14} />{state.message}</p>
+function TestFeedback({ result, error }: { result: ProviderTestResult | null; error: Error | null }) {
+  if (error !== null) {
+    return <p className="mt-space-xs flex items-center gap-space-xs text-body-sm text-error"><CircleX size={14} />{error.message}</p>
   }
+  if (result === null) return null
   return (
-    <p className={`mt-space-xs flex items-center gap-space-xs text-body-sm ${state.result.valid ? 'text-link' : 'text-error'}`}>
-      {state.result.valid ? <CircleCheck size={14} /> : <CircleX size={14} />}
-      {state.result.message} · {state.result.latencyMs} ms
+    <p className={`mt-space-xs flex items-center gap-space-xs text-body-sm ${result.valid ? 'text-link' : 'text-error'}`}>
+      {result.valid ? <CircleCheck size={14} /> : <CircleX size={14} />}
+      {result.message} · {result.latencyMs} ms
     </p>
   )
 }
