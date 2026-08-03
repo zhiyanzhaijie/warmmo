@@ -16,7 +16,7 @@ export function CanvasThumbnail({ nodes, edges }: CanvasThumbnailProps) {
   const nodeByID = new Map(nodes.map((node) => [node.id, node]))
 
   return (
-    <div className="relative aspect-[16/10] overflow-hidden border-b border-hairline bg-[radial-gradient(circle,#d9d9d9_1px,transparent_1px)] bg-[size:16px_16px]">
+    <div className="relative aspect-[16/10] overflow-hidden border-b border-hairline bg-[radial-gradient(circle,var(--color-hairline)_1px,transparent_1px)] bg-[size:16px_16px]">
       <svg className="absolute inset-0 size-full" aria-hidden="true">
         {edges.map((edge) => {
           const source = nodeByID.get(edge.source)
@@ -32,7 +32,7 @@ export function CanvasThumbnail({ nodes, edges }: CanvasThumbnailProps) {
               y1={`${source.y + 8}%`}
               x2={`${target.x + 12}%`}
               y2={`${target.y + 8}%`}
-              stroke="#c9c9c9"
+              stroke="var(--color-hairline)"
               strokeWidth="1"
             />
           )

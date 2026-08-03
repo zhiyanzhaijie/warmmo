@@ -2,6 +2,7 @@ import { PanelsTopLeft, Settings, Waypoints } from 'lucide-react'
 import { Link, NavLink } from 'react-router-dom'
 
 import { useRuntimeInfo } from '../../hooks/useRuntimeInfo'
+import { ThemeMenu } from '../theme/ThemeMenu'
 
 const navigationItems = [
   { key: 'home', label: '首页', href: '/', icon: Waypoints },
@@ -41,9 +42,13 @@ export function AppHeader() {
           })}
         </nav>
 
-        <div className="flex items-center justify-end gap-space-xs text-body-sm text-mute" title={statusLabel}>
-          <span className={`size-2 rounded-full ${isReady ? 'bg-link' : state.status === 'loading' ? 'bg-warning' : 'bg-error'}`} />
-          <span>{statusLabel}</span>
+        <div className="flex items-center justify-end gap-space-sm">
+          <div className="flex items-center gap-space-xs text-body-sm text-mute" title={statusLabel}>
+            <span className={`size-2 rounded-full ${isReady ? 'bg-link' : state.status === 'loading' ? 'bg-warning' : 'bg-error'}`} />
+            <span>{statusLabel}</span>
+          </div>
+          <span className="h-5 w-px bg-hairline" aria-hidden="true" />
+          <ThemeMenu />
         </div>
       </div>
     </header>

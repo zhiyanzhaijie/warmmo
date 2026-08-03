@@ -1,6 +1,9 @@
 @import url("https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5.3.0/index.css");
 @import url("https://cdn.jsdelivr.net/npm/@fontsource-variable/geist-mono@5.3.0/index.css");
 @import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --font-sans: "Geist Variable", "Geist", Arial, sans-serif;
@@ -26,6 +29,17 @@
   --color-error: #ee0000;
   --color-error-deep: #c50000;
   --color-warning: #f5a623;
+  --color-background: #fafafa;
+  --color-foreground: #171717;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #171717;
+  --color-accent: #f2f2f2;
+  --color-accent-foreground: #171717;
+  --color-muted-foreground: #8f8f8f;
+  --color-border: #ebebeb;
+  --color-input: #ebebeb;
+  --color-ring: #0070f3;
+  --color-destructive: #ee0000;
 
   --text-display-xl: 3rem;
   --text-display-xl--line-height: 3rem;
@@ -94,6 +108,47 @@
 
   --container-app: 75rem;
   --container-composer: 52.5rem;
+}
+
+.light {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+  --color-primary: #ededed;
+  --color-on-primary: #171717;
+  --color-ink: #ededed;
+  --color-body: #a1a1a1;
+  --color-mute: #737373;
+  --color-faint: #525252;
+  --color-canvas: #0a0a0a;
+  --color-canvas-elevated: #111111;
+  --color-hairline: #2a2a2a;
+  --color-hairline-soft: #1a1a1a;
+  --color-link: #3291ff;
+  --color-link-deep: #52a8ff;
+  --color-link-soft: #102a43;
+  --color-violet: #a855f7;
+  --color-cyan: #5eead4;
+  --color-pink: #ff4da6;
+  --color-magenta: #f15b9a;
+  --color-error: #ff6166;
+  --color-error-deep: #ff3b41;
+  --color-warning: #f5a623;
+  --color-background: #0a0a0a;
+  --color-foreground: #ededed;
+  --color-popover: #171717;
+  --color-popover-foreground: #ededed;
+  --color-accent: #262626;
+  --color-accent-foreground: #ededed;
+  --color-muted-foreground: #8f8f8f;
+  --color-border: #2a2a2a;
+  --color-input: #2a2a2a;
+  --color-ring: #3291ff;
+  --color-destructive: #ff6166;
+  --shadow-whisper: 0 1px 1px rgb(0 0 0 / 24%);
+  --shadow-floating: 0 2px 2px rgb(0 0 0 / 28%), 0 8px 20px -4px rgb(0 0 0 / 48%);
 }
 
 @layer base {

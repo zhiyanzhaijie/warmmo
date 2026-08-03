@@ -43,6 +43,28 @@ Surfaces barely lift. Cards are white (`{colors.canvas-elevated}`) on the #fafaf
 - **Warning** (`{colors.warning}` — #f5a623): caution states, with soft `{colors.warning-soft}` and deep `{colors.warning-deep}` tiers.
 - **Success** maps to `{colors.link}` (#0070f3) — the blue doubles as the positive/active signal.
 
+### Dark Theme
+
+Dark mode preserves the same ink, canvas, hairline, and blue-signal hierarchy rather than inverting the light palette mechanically.
+
+| Token | Light | Dark |
+|---|---:|---:|
+| `{colors.canvas}` | `#fafafa` | `#0a0a0a` |
+| `{colors.canvas-elevated}` | `#ffffff` | `#111111` |
+| `{colors.hairline-soft}` | `#f2f2f2` | `#1a1a1a` |
+| `{colors.hairline}` | `#ebebeb` | `#2a2a2a` |
+| `{colors.ink}` | `#171717` | `#ededed` |
+| `{colors.body}` | `#4d4d4d` | `#a1a1a1` |
+| `{colors.mute}` | `#8f8f8f` | `#737373` |
+| `{colors.faint}` | `#a1a1a1` | `#525252` |
+| `{colors.primary}` | `#171717` | `#ededed` |
+| `{colors.on-primary}` | `#ffffff` | `#171717` |
+| `{colors.link}` | `#0070f3` | `#3291ff` |
+| `{colors.link-soft}` | `#d3e5ff` | `#102a43` |
+| `{colors.error}` | `#ee0000` | `#ff6166` |
+
+Menus and floating controls use `#171717` in dark mode so they remain distinguishable from the `#111111` elevated surface. Shadows increase in opacity only enough to remain visible against the dark canvas.
+
 ### Brand Gradient
 Three named two-stop gradients form the legacy Vercel gradient identity, surviving as illustration and accent washes:
 - **Develop**: `{colors.gradient-develop-start}` (#007cf0) → `{colors.gradient-develop-end}` (#00dfd8) — blue to cyan.
