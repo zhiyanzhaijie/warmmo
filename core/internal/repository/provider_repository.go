@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 1
+	currentSchemaVersion = 3
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -35,6 +35,55 @@ CREATE TABLE IF NOT EXISTS agent_provider_configurations (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_provider_configurations_updated_at
     ON agent_provider_configurations(updated_at DESC);`
+	agentSchemaSQL = `
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    target TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    context_node_ids_json TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_work_created
+    ON agent_runs(work_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS agent_run_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_sequence
+    ON agent_run_events(run_id, sequence);
+CREATE TABLE IF NOT EXISTS agent_candidates (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+    work_id TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    skill_version TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);`
+	canvasSchemaSQL = `
+CREATE TABLE IF NOT EXISTS canvas_nodes (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_nodes_work_created
+    ON canvas_nodes(work_id, created_at);`
 )
 
 var (
@@ -215,6 +264,31 @@ WHERE provider_id = ?`, providerID).Scan(&secret.Nonce, &secret.Ciphertext)
 	return r.decrypt(secret)
 }
 
+func (r *ProviderRepository) ResolveModel(providerID, modelID string) (string, string, error) {
+	var baseURL, modelIDsJSON string
+	err := r.database.QueryRow(`
+SELECT base_url, model_ids_json
+FROM agent_provider_configurations
+WHERE provider_id = ?`, providerID).Scan(&baseURL, &modelIDsJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrProviderConfigurationNotFound
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("query provider model: %w", err)
+	}
+	var modelIDs []string
+	if err := json.Unmarshal([]byte(modelIDsJSON), &modelIDs); err != nil {
+		return "", "", fmt.Errorf("decode provider model ids: %w", err)
+	}
+	for _, enabledModelID := range modelIDs {
+		if enabledModelID == modelID {
+			apiKey, err := r.GetAPIKey(providerID)
+			return baseURL, apiKey, err
+		}
+	}
+	return "", "", fmt.Errorf("model %q is not enabled for provider %q", modelID, providerID)
+}
+
 func (r *ProviderRepository) initialize() error {
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL",
@@ -252,13 +326,23 @@ func (r *ProviderRepository) migrateSchema() error {
 		return fmt.Errorf("begin sqlite schema migration: %w", err)
 	}
 	defer transaction.Rollback()
-	if schemaVersion == 0 {
+	if schemaVersion < 1 {
 		if _, err := transaction.Exec(providerSchemaSQL); err != nil {
 			return fmt.Errorf("create provider schema: %w", err)
 		}
-		if _, err := transaction.Exec("PRAGMA user_version = 1"); err != nil {
-			return fmt.Errorf("record sqlite schema version: %w", err)
+	}
+	if schemaVersion < 2 {
+		if _, err := transaction.Exec(agentSchemaSQL); err != nil {
+			return fmt.Errorf("create agent schema: %w", err)
 		}
+	}
+	if schemaVersion < 3 {
+		if _, err := transaction.Exec(canvasSchemaSQL); err != nil {
+			return fmt.Errorf("create canvas schema: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 3"); err != nil {
+		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite schema migration: %w", err)

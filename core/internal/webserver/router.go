@@ -6,7 +6,7 @@ import (
 	"warmnote/core/internal/controller"
 )
 
-func NewRouter(runtimeController *controller.RuntimeController, providerController *controller.ProviderController) http.Handler {
+func NewRouter(runtimeController *controller.RuntimeController, providerController *controller.ProviderController, agentController *controller.AgentController, canvasController *controller.CanvasController) http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("GET /api/v1/runtime", runtimeController.GetInfo)
 	router.HandleFunc("GET /api/v1/model-catalog", providerController.GetCatalog)
@@ -15,6 +15,14 @@ func NewRouter(runtimeController *controller.RuntimeController, providerControll
 	router.HandleFunc("DELETE /api/v1/agent-providers/{providerID}", providerController.DeleteConfiguration)
 	router.HandleFunc("POST /api/v1/agent-providers/{providerID}/test", providerController.TestConfiguration)
 	router.HandleFunc("GET /api/v1/models/enabled", providerController.ListEnabledModels)
+	router.HandleFunc("POST /api/v1/works/{workID}/agent-runs", agentController.CreateRun)
+	router.HandleFunc("GET /api/v1/agent-runs/{runID}", agentController.GetRun)
+	router.HandleFunc("GET /api/v1/agent-runs/{runID}/events", agentController.StreamEvents)
+	router.HandleFunc("POST /api/v1/agent-runs/{runID}/cancel", agentController.CancelRun)
+	router.HandleFunc("POST /api/v1/works/{workID}/nodes", canvasController.CreateNode)
+	router.HandleFunc("GET /api/v1/works/{workID}/nodes", canvasController.ListNodes)
+	router.HandleFunc("POST /api/v1/works/{workID}/nodes/query", canvasController.GetNodes)
+	router.HandleFunc("GET /api/v1/works/{workID}/candidates", canvasController.ListCandidates)
 
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")

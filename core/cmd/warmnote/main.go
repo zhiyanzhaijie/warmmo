@@ -11,6 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"warmnote/core/internal/agent"
+	"warmnote/core/internal/agent/adkadapter"
+	"warmnote/core/internal/canvas"
 	"warmnote/core/internal/controller"
 	"warmnote/core/internal/repository"
 	"warmnote/core/internal/service"
@@ -45,12 +48,42 @@ func run(logger *slog.Logger) error {
 	logger.Info("Warmnote data initialized", "database", providerRepository.DatabasePath())
 	providerService := service.NewProviderService(providerRepository)
 	providerController := controller.NewProviderController(providerService, logger)
+	agentRepository := repository.NewAgentRepository(providerRepository)
+	if err := agentRepository.FailInterruptedRuns(); err != nil {
+		return err
+	}
+	skillsDirectory, err := resolveSkillsDirectory()
+	if err != nil {
+		return err
+	}
+	skillCatalog, err := agent.LoadCatalog(skillsDirectory)
+	if err != nil {
+		return err
+	}
+	logger.Info("Warmnote skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
+	canvasRepository := repository.NewCanvasRepository(providerRepository)
+	toolRegistry := agent.NewToolRegistry(
+		canvas.NewGetNodesTool(canvasRepository),
+		canvas.NewCreateCandidateTool(canvasRepository),
+	)
+	agentLoop := agent.NewLoop(canvas.NewContextReader(canvasRepository), skillCatalog, toolRegistry, agent.DefaultBudget())
+	agentEngine := adkadapter.NewEngine(agentLoop, func(_ context.Context, providerID, modelID string) (adkadapter.ModelConfig, error) {
+		baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
+		if err != nil {
+			return adkadapter.ModelConfig{}, err
+		}
+		return adkadapter.ModelConfig{BaseURL: baseURL, APIKey: apiKey, ModelID: modelID}, nil
+	})
+	agentService := service.NewAgentService(ctx, agentRepository, agentEngine, logger)
+	agentController := controller.NewAgentController(agentService, logger)
+	canvasService := service.NewCanvasService(canvasRepository)
+	canvasController := controller.NewCanvasController(canvasService, logger)
 	server := &http.Server{
 		Addr:              "127.0.0.1:8787",
-		Handler:           webserver.NewRouter(runtimeController, providerController),
+		Handler:           webserver.NewRouter(runtimeController, providerController, agentController, canvasController),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      0,
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -94,6 +127,23 @@ func resolveDataDirectory() (string, error) {
 		return "", err
 	}
 	return filepath.Join(configDirectory, "warmnote"), nil
+}
+
+func resolveSkillsDirectory() (string, error) {
+	if configured := os.Getenv("WARMNOTE_SKILLS_DIR"); configured != "" {
+		return filepath.Abs(configured)
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if fileExists(filepath.Join(workingDirectory, "core", "go.mod")) {
+		return filepath.Join(workingDirectory, "core", "skills"), nil
+	}
+	if fileExists(filepath.Join(workingDirectory, "go.mod")) && filepath.Base(workingDirectory) == "core" {
+		return filepath.Join(workingDirectory, "skills"), nil
+	}
+	return "", errors.New("cannot locate built-in skills; set WARMNOTE_SKILLS_DIR")
 }
 
 func fileExists(path string) bool {
