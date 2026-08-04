@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 6
+	currentSchemaVersion = 8
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -126,6 +126,47 @@ CREATE TABLE IF NOT EXISTS canvas_history_state (
     current_sequence INTEGER NOT NULL,
     current_action_id TEXT NOT NULL
 );`
+	workSchemaSQL = `
+CREATE TABLE IF NOT EXISTS works (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_works_updated_at ON works(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_canvas_nodes_work_updated
+    ON canvas_nodes(work_id, updated_at DESC);
+INSERT OR IGNORE INTO works (id, title, created_at, updated_at)
+SELECT work_id, '未命名作品', MIN(created_at), MAX(updated_at)
+FROM (
+    SELECT work_id, created_at, updated_at FROM canvas_nodes
+    UNION ALL
+    SELECT work_id, created_at, created_at AS updated_at FROM canvas_edges
+    UNION ALL
+    SELECT work_id, created_at, updated_at FROM agent_runs
+    UNION ALL
+    SELECT work_id, created_at, COALESCE(NULLIF(decided_at, ''), created_at) AS updated_at FROM agent_candidates
+    UNION ALL
+    SELECT work_id, created_at, created_at AS updated_at FROM canvas_actions
+)
+WHERE work_id <> ''
+GROUP BY work_id;`
+	workMetadataSchemaSQL = `
+CREATE TABLE IF NOT EXISTS work_folders (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_folders_sort_name
+    ON work_folders(sort_order, name);
+ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE works ADD COLUMN folder_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE works ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE works ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX IF NOT EXISTS idx_works_status_folder_updated
+    ON works(status, folder_id, updated_at DESC);`
 )
 
 var (
@@ -398,7 +439,17 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add canvas action history: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 6"); err != nil {
+	if schemaVersion < 7 {
+		if _, err := transaction.Exec(workSchemaSQL); err != nil {
+			return fmt.Errorf("add work lifecycle: %w", err)
+		}
+	}
+	if schemaVersion < 8 {
+		if _, err := transaction.Exec(workMetadataSchemaSQL); err != nil {
+			return fmt.Errorf("add work metadata: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 8"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

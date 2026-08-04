@@ -48,6 +48,9 @@ func run(logger *slog.Logger) error {
 	logger.Info("Warmnote data initialized", "database", providerRepository.DatabasePath())
 	providerService := service.NewProviderService(providerRepository)
 	providerController := controller.NewProviderController(providerService, logger)
+	workRepository := repository.NewWorkRepository(providerRepository)
+	workService := service.NewWorkService(workRepository)
+	workController := controller.NewWorkController(workService, logger)
 	agentRepository := repository.NewAgentRepository(providerRepository)
 	if err := agentRepository.FailInterruptedRuns(); err != nil {
 		return err
@@ -80,7 +83,7 @@ func run(logger *slog.Logger) error {
 	canvasController := controller.NewCanvasController(canvasService, logger)
 	server := &http.Server{
 		Addr:              "127.0.0.1:8787",
-		Handler:           webserver.NewRouter(runtimeController, providerController, agentController, canvasController),
+		Handler:           webserver.NewRouter(runtimeController, providerController, workController, agentController, canvasController),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      0,

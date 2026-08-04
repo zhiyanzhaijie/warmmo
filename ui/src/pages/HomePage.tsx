@@ -1,59 +1,40 @@
 import { useCallback, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
+import { useCreateWork, useWorks } from '../apis/work-apis'
 import { PromptComposer } from '../components/home/PromptComposer'
 import { RecentWorks } from '../components/home/RecentWorks'
-import { recentWorks } from '../data/recentWorks'
-import type { EnabledModel } from '../types/provider'
-import type { WorkSummary } from '../types/work'
+import { WorkEditorDialog } from '../components/work/WorkEditorDialog'
 
 const recentWorkLimit = 6
 
 export function HomePage() {
-  const [works, setWorks] = useState<WorkSummary[]>(recentWorks)
+  const navigate = useNavigate()
+  const works = useWorks()
+  const { mutate: createWork } = useCreateWork()
   const [creationNotice, setCreationNotice] = useState('')
+  const [blankEditorOpen, setBlankEditorOpen] = useState(false)
 
-  const createWork = useCallback((prompt: string, model: EnabledModel) => {
+  const createFromPrompt = useCallback((prompt: string) => {
     const title = prompt.length > 16 ? `${prompt.slice(0, 16)}...` : prompt
-    const work: WorkSummary = {
-      id: `draft-${Date.now()}`,
-      title,
-      updatedLabel: '刚刚',
-      nodeCount: 1,
-      modelName: model.modelName,
-      status: 'initializing',
-      previewNodes: [
-        { id: 'idea', label: '故事概念', kind: 'event', x: 36, y: 38 },
-      ],
-      previewEdges: [],
-    }
-
-    setWorks((currentWorks) => [work, ...currentWorks].slice(0, recentWorkLimit))
-    setCreationNotice(`“${title}”已进入初始化队列`)
-  }, [])
+    createWork({ title, description: prompt, folderId: '' }, {
+      onSuccess: (work) => navigate(`/works/${work.id}`),
+      onError: () => setCreationNotice('创建失败，请确认 Warmnote Core 正在运行。'),
+    })
+  }, [createWork, navigate])
 
   const createBlankWork = useCallback(() => {
-    const work: WorkSummary = {
-      id: `blank-${Date.now()}`,
-      title: '未命名小说',
-      updatedLabel: '刚刚',
-      nodeCount: 0,
-      modelName: '尚未选择模型',
-      status: 'draft',
-      previewNodes: [],
-      previewEdges: [],
-    }
-
-    setWorks((currentWorks) => [work, ...currentWorks].slice(0, recentWorkLimit))
-    setCreationNotice('已创建空白工作')
+    setBlankEditorOpen(true)
   }, [])
 
   return (
     <div className="mx-auto max-w-app px-space-lg pb-space-3xl pt-space-3xl">
-      <PromptComposer onCreate={createWork} onCreateBlank={createBlankWork} />
+      <PromptComposer onCreate={createFromPrompt} onCreateBlank={createBlankWork} />
       <p className="mx-auto mt-space-sm min-h-5 max-w-[52.5rem] text-body-sm text-mute" role="status">{creationNotice}</p>
       <div className="mt-space-3xl">
-        <RecentWorks works={works} onCreateBlank={createBlankWork} />
+        <RecentWorks works={(works.data ?? []).filter((work) => work.status === 'active').slice(0, recentWorkLimit)} onCreateBlank={createBlankWork} />
       </div>
+      <WorkEditorDialog open={blankEditorOpen} onOpenChange={setBlankEditorOpen} onSaved={(work) => navigate(`/works/${work.id}`)} />
     </div>
   )
 }
