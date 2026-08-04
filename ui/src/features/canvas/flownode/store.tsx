@@ -11,6 +11,8 @@ interface FlowNodeStoreActions {
   onNodesChange: OnNodesChange<StoryFlowNode>
   onEdgesChange: OnEdgesChange<Edge>
   setDetailLevel: (detailLevel: FlowNodeDetailLevel) => void
+  showNodeToolbar: (nodeId: string) => void
+  hideNodeToolbar: () => void
   openPreview: (nodeId: string) => void
   closePreview: () => void
 }
@@ -20,6 +22,7 @@ export interface FlowNodeStore {
   edges: Edge[]
   sourceNodeCount: number
   selectedSourceNodeIds: string[]
+  toolbarSourceNodeId: string | null
   previewNodeId: string | null
   detailLevel: FlowNodeDetailLevel
   actions: FlowNodeStoreActions
@@ -41,6 +44,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
             selectedSourceNodeIds: areStringArraysEqual(selectedSourceNodeIds, state.selectedSourceNodeIds)
               ? state.selectedSourceNodeIds
               : selectedSourceNodeIds,
+            toolbarSourceNodeId: resolveToolbarSourceNodeId(state.toolbarSourceNodeId, selectedSourceNodeIds),
           }
         })
       },
@@ -60,6 +64,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
             selectedSourceNodeIds: areStringArraysEqual(selectedSourceNodeIds, state.selectedSourceNodeIds)
               ? state.selectedSourceNodeIds
               : selectedSourceNodeIds,
+            toolbarSourceNodeId: resolveToolbarSourceNodeId(state.toolbarSourceNodeId, selectedSourceNodeIds),
           }
         })
       },
@@ -68,6 +73,14 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       },
       setDetailLevel: (detailLevel) => {
         set((state) => state.detailLevel === detailLevel ? state : { detailLevel })
+      },
+      showNodeToolbar: (nodeId) => {
+        set((state) => state.selectedSourceNodeIds.length === 1 && state.selectedSourceNodeIds[0] === nodeId
+          ? { toolbarSourceNodeId: nodeId }
+          : state)
+      },
+      hideNodeToolbar: () => {
+        set((state) => state.toolbarSourceNodeId === null ? state : { toolbarSourceNodeId: null })
       },
       openPreview: (nodeId) => {
         set({ previewNodeId: nodeId })
@@ -82,6 +95,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       edges: [],
       sourceNodeCount: 0,
       selectedSourceNodeIds: [],
+      toolbarSourceNodeId: null,
       previewNodeId: null,
       detailLevel: 'full',
       actions,
@@ -179,6 +193,10 @@ function collectSelectedSourceNodeIds(nodes: StoryFlowNode[]) {
     if (node.selected && node.data.sourceType === 'node') selectedSourceNodeIds.push(node.data.sourceId)
   }
   return selectedSourceNodeIds
+}
+
+function resolveToolbarSourceNodeId(currentNodeId: string | null, selectedNodeIds: string[]) {
+  return selectedNodeIds.length === 1 && selectedNodeIds[0] === currentNodeId ? currentNodeId : null
 }
 
 function countSourceNodes(nodes: StoryFlowNode[]) {

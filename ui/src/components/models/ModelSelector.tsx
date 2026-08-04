@@ -14,6 +14,7 @@ interface ModelSelectorProps {
   className?: string
   ariaLabel?: string
   unavailableLabel?: string
+  compact?: boolean
 }
 
 export function ModelSelector({
@@ -25,6 +26,7 @@ export function ModelSelector({
   className,
   ariaLabel,
   unavailableLabel,
+  compact = false,
 }: ModelSelectorProps) {
   const { models, isPending, isError } = useAvailableModels(capability)
   const modelsByValue = useMemo(
@@ -32,6 +34,7 @@ export function ModelSelector({
     [models],
   )
   const selectedValue = value === null ? undefined : toModelValue(value)
+  const selectedModel = selectedValue === undefined ? undefined : modelsByValue.get(selectedValue)
   const selectionAvailable = selectedValue === undefined || modelsByValue.has(selectedValue)
 
   useEffect(() => {
@@ -63,7 +66,11 @@ export function ModelSelector({
       disabled={disabled || isPending || isError || models.length === 0}
     >
       <SelectTrigger className={cn('w-auto min-w-44 border-transparent bg-transparent hover:bg-hairline-soft', className)} aria-label={ariaLabel ?? `选择${capability === 'text' ? '文本' : '图像'}模型`}>
-        <SelectValue placeholder={placeholder} />
+        <SelectValue placeholder={placeholder}>
+          {compact && selectedValue !== undefined
+            ? selectedModel?.modelName ?? value?.modelId
+            : undefined}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         {!selectionAvailable && selectedValue !== undefined ? (

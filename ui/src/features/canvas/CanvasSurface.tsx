@@ -27,6 +27,8 @@ export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: s
   const edges = useFlowNodeStore((state) => state.edges)
   const onNodesChange = useFlowNodeStore((state) => state.actions.onNodesChange)
   const onEdgesChange = useFlowNodeStore((state) => state.actions.onEdgesChange)
+  const showNodeToolbar = useFlowNodeStore((state) => state.actions.showNodeToolbar)
+  const hideNodeToolbar = useFlowNodeStore((state) => state.actions.hideNodeToolbar)
   const openPreview = useFlowNodeStore((state) => state.actions.openPreview)
   const fittedInitialNodesRef = useRef(false)
 
@@ -37,6 +39,14 @@ export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: s
     fittedInitialNodesRef.current = true
     requestAnimationFrame(() => void flow.fitView({ padding: 0.25, maxZoom: 1 }))
   }, [flow, nodes.length])
+
+  const onNodeClick = useCallback<NodeMouseHandler<StoryFlowNode>>((_, node) => {
+    if (node.data.sourceType === 'node') showNodeToolbar(node.data.sourceId)
+  }, [showNodeToolbar])
+
+  const onNodeDragStart = useCallback<OnNodeDrag<StoryFlowNode>>(() => {
+    hideNodeToolbar()
+  }, [hideNodeToolbar])
 
   const onNodeDragStop = useCallback<OnNodeDrag<StoryFlowNode>>((_, node, draggedNodes) => {
     const sourcePositions = draggedNodes.flatMap((draggedNode) =>
@@ -56,7 +66,8 @@ export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: s
     if (draggedNodes.length === 0 && node.data.sourceType === 'node') {
       updatePositions([{ nodeId: node.data.sourceId, x: node.position.x, y: node.position.y }])
     }
-  }, [updateCandidatePosition, updatePositions])
+    if (node.data.sourceType === 'node') showNodeToolbar(node.data.sourceId)
+  }, [showNodeToolbar, updateCandidatePosition, updatePositions])
 
   const onNodeDoubleClick = useCallback<NodeMouseHandler<StoryFlowNode>>((_, node) => {
     if (node.data.sourceType === 'node') openPreview(node.data.sourceId)
@@ -69,6 +80,8 @@ export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: s
       nodeTypes={flowNodeTypes}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
+      onNodeClick={onNodeClick}
+      onNodeDragStart={onNodeDragStart}
       onNodeDragStop={onNodeDragStop}
       onNodeDoubleClick={onNodeDoubleClick}
       deleteKeyCode={null}

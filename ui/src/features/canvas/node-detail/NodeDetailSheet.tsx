@@ -38,7 +38,9 @@ export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workI
               type="button"
               onClick={() => {
                 closePreview()
-                navigate(`/works/${workId}/nodes/${nodeQuery.data.id}/edit`)
+                navigate(`/works/${workId}/nodes/${nodeQuery.data.id}/edit`, {
+                  state: { fromCanvas: true },
+                })
               }}
             >
               <Maximize2 size={15} />

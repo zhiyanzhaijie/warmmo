@@ -52,7 +52,7 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
   return (
     <nav
       aria-label="创建画布节点"
-      className="absolute top-20 left-space-md z-20 flex h-11 items-center rounded-sm border border-hairline bg-canvas-elevated p-1 shadow-floating"
+      className="fixed top-[4.5rem] left-1/2 z-30 flex h-11 max-w-[calc(100vw_-_2rem)] -translate-x-1/2 items-center overflow-x-auto rounded-sm border border-hairline bg-canvas-elevated/95 p-1 shadow-floating backdrop-blur-sm lg:top-space-md"
     >
       {creatableNodeKinds.map((kind, index) => {
         const definition = nodeDefinitions[kind]
@@ -66,7 +66,7 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
             {startsCategory ? <div className="mx-1 h-5 w-px bg-hairline" /> : null}
             <button
               aria-label={`新建${definition.label}`}
-              className="grid size-8 shrink-0 place-items-center rounded-sm text-mute hover:bg-hairline-soft hover:text-ink disabled:cursor-wait disabled:opacity-40"
+              className="relative grid size-8 shrink-0 place-items-center rounded-sm text-mute hover:bg-hairline-soft hover:text-ink disabled:cursor-wait disabled:opacity-40"
               type="button"
               title={`新建${definition.label} · 快捷键 ${definition.shortcut}`}
               disabled={createNode.isPending}
@@ -75,6 +75,9 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
               {pendingKind === kind
                 ? <LoaderCircle className="animate-spin" size={15} />
                 : <Icon size={15} />}
+              <span className="pointer-events-none absolute right-0.5 bottom-0.5 font-mono text-[9px] leading-none text-faint">
+                {definition.shortcut}
+              </span>
             </button>
           </div>
         )

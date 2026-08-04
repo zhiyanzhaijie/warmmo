@@ -1,12 +1,13 @@
 import { ArrowLeft, LoaderCircle, RotateCcw, Save } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { useCanvasNode, useUpdateCanvasNode } from '@/apis/canvas-apis'
 import { NodeDocument } from '@/features/canvas/node-detail/NodeDocument'
 
 export function NodeEditorPage() {
   const { workId = '', nodeId = '' } = useParams()
+  const location = useLocation()
   const navigate = useNavigate()
   const nodeQuery = useCanvasNode(workId, nodeId)
   const updateNode = useUpdateCanvasNode(workId, nodeId)
@@ -25,7 +26,11 @@ export function NodeEditorPage() {
 
   const returnToCanvas = () => {
     if (dirty && !window.confirm('当前修改尚未保存，仍要返回画布吗？')) return
-    navigate(`/works/${workId}`)
+    if (isFromCanvas(location.state)) {
+      navigate(-1)
+      return
+    }
+    navigate(`/works/${workId}`, { replace: true })
   }
 
   return (
@@ -115,6 +120,10 @@ export function NodeEditorPage() {
       </section>
     </main>
   )
+}
+
+function isFromCanvas(state: unknown): state is { fromCanvas: true } {
+  return typeof state === 'object' && state !== null && 'fromCanvas' in state && state.fromCanvas === true
 }
 
 function EditorStatus({ message, tone = 'muted' }: { message: string; tone?: 'muted' | 'error' }) {
