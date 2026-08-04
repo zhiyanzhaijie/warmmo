@@ -25,7 +25,7 @@ export function ThemeMenu() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          className="grid size-9 cursor-pointer place-items-center rounded-sm border border-hairline bg-canvas-elevated text-body transition-colors hover:bg-hairline-soft hover:text-ink"
+          className="grid size-9 cursor-pointer place-items-center rounded-sm text-mute transition-colors hover:bg-hairline-soft hover:text-ink"
           type="button"
           title="切换主题"
         >
