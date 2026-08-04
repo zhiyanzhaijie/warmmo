@@ -1,4 +1,6 @@
-export type CanvasNodeKind = 'chapter' | 'character' | 'plot' | 'world' | 'setting' | 'item' | 'note' | 'timeline'
+import type { CanvasNodeKind } from '@/features/canvas/nodes/definitions'
+
+export type { CanvasNodeKind } from '@/features/canvas/nodes/definitions'
 
 export interface CanvasNode {
   id: string
@@ -12,6 +14,14 @@ export interface CanvasNode {
   createdAt: string
   updatedAt: string
 }
+export interface CanvasEdge {
+  id: string
+  workId: string
+  sourceNodeId: string
+  targetNodeId: string
+  kind: 'generated_from'
+  createdAt: string
+}
 
 export interface AgentCandidate {
   id: string
@@ -19,8 +29,16 @@ export interface AgentCandidate {
   workId: string
   skillId: string
   skillVersion: string
+  status: 'pending' | 'accepted' | 'rejected'
+  kind: CanvasNodeKind
+  title: string
   content: string
+  x: number
+  y: number
+  contextNodeIds: string[]
+  acceptedNodeId?: string
   createdAt: string
+  decidedAt?: string
 }
 
 export type AgentRunStatus = 'queued' | 'running' | 'waiting-for-user' | 'completed' | 'failed' | 'cancelled'

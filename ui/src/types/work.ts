@@ -1,11 +1,11 @@
-export type WorkStatus = 'draft' | 'initializing' | 'failed'
+import type { CanvasNodeKind } from '@/features/canvas/nodes/definitions'
 
-export type PreviewNodeKind = 'chapter' | 'character' | 'plot' | 'world'
+export type WorkStatus = 'draft' | 'initializing' | 'failed'
 
 export interface WorkPreviewNode {
   id: string
   label: string
-  kind: PreviewNodeKind
+  kind: CanvasNodeKind
   x: number
   y: number
 }

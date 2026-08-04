@@ -41,10 +41,6 @@ interface EditorState {
   editing: boolean
 }
 
-const capabilityLabels: Record<ModelCapability, string> = {
-  text: 'Text Model',
-  image: 'Image Model',
-}
 
 export function AgentProviderSettings() {
   const {

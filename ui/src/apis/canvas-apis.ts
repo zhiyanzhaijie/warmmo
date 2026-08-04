@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { coreClient } from '@/lib/api/core-client'
-import type { AgentCandidate, AgentRun, CanvasNode, CanvasNodeKind } from '@/types/canvas'
+import type { AgentCandidate, AgentRun, CanvasEdge, CanvasNode, CanvasNodeKind } from '@/types/canvas'
 import type { ModelReference } from '@/types/provider'
 
 interface NodesResponse {
@@ -12,8 +12,14 @@ interface CandidatesResponse {
   candidates: AgentCandidate[]
 }
 
+interface EdgesResponse {
+  edges: CanvasEdge[]
+}
+
 export const canvasKeys = {
   nodes: (workId: string) => ['canvas', workId, 'nodes'] as const,
+  node: (workId: string, nodeId: string) => ['canvas', workId, 'nodes', nodeId] as const,
+  edges: (workId: string) => ['canvas', workId, 'edges'] as const,
   candidates: (workId: string) => ['canvas', workId, 'candidates'] as const,
 }
 
@@ -23,6 +29,22 @@ export function useCanvasNodes(workId: string) {
     queryFn: async ({ signal }) => {
       const response = await coreClient<NodesResponse>(`/works/${workId}/nodes`, { signal })
       return response.nodes
+    },
+  })
+}
+
+export function useUpdateCanvasNode(workId: string, nodeId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { title: string; content: string; expectedRevision: number }) =>
+      coreClient<CanvasNode>(`/works/${workId}/nodes/${nodeId}`, {
+        method: 'PATCH',
+        body: input,
+      }),
+    onSuccess: (node) => {
+      queryClient.setQueryData(canvasKeys.node(workId, nodeId), node)
+      queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) =>
+        nodes.map((existing) => existing.id === node.id ? node : existing))
     },
   })
 }
@@ -48,6 +70,29 @@ export function useCreateCanvasNode(workId: string) {
   })
 }
 
+
+export function useCanvasEdges(workId: string) {
+  return useQuery({
+    queryKey: canvasKeys.edges(workId),
+    queryFn: async ({ signal }) => {
+      const response = await coreClient<EdgesResponse>(`/works/${workId}/edges`, { signal })
+      return response.edges
+    },
+  })
+}
+
+export function useCanvasNode(workId: string, nodeId: string | null) {
+  const queryClient = useQueryClient()
+  return useQuery({
+    queryKey: canvasKeys.node(workId, nodeId ?? ''),
+    enabled: nodeId !== null,
+    initialData: () => nodeId === null
+      ? undefined
+      : queryClient.getQueryData<CanvasNode[]>(canvasKeys.nodes(workId))
+          ?.find((node) => node.id === nodeId),
+    queryFn: ({ signal }) => coreClient<CanvasNode>(`/works/${workId}/nodes/${nodeId}`, { signal }),
+  })
+}
 export function useUpdateCanvasNodePosition(workId: string) {
   return useMutation({
     mutationFn: (input: { nodeId: string; x: number; y: number }) =>
@@ -58,15 +103,58 @@ export function useUpdateCanvasNodePosition(workId: string) {
   })
 }
 
+export function useUpdateCanvasCandidatePosition(workId: string) {
+  return useMutation({
+    mutationFn: (input: { candidateId: string; x: number; y: number }) =>
+      coreClient<void>(`/works/${workId}/candidates/${input.candidateId}/position`, {
+        method: 'PATCH',
+        body: { x: input.x, y: input.y },
+      }),
+  })
+}
+
+export function useAcceptCanvasCandidate(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { candidateId: string; title: string }) =>
+      coreClient<CanvasNode>(`/works/${workId}/candidates/${input.candidateId}/accept`, {
+        method: 'POST',
+        body: { title: input.title },
+      }),
+    onSuccess: (node, input) => {
+      queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) => {
+        if (nodes.some((existing) => existing.id === node.id)) return nodes
+        return [...nodes, node]
+      })
+      queryClient.setQueryData<AgentCandidate[]>(canvasKeys.candidates(workId), (candidates = []) =>
+        candidates.filter((candidate) => candidate.id !== input.candidateId))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) })
+    },
+  })
+}
+
+export function useRejectCanvasCandidate(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (candidateId: string) =>
+      coreClient<void>(`/works/${workId}/candidates/${candidateId}/reject`, { method: 'POST' }),
+    onSuccess: (_, candidateId) => {
+      queryClient.setQueryData<AgentCandidate[]>(canvasKeys.candidates(workId), (candidates = []) =>
+        candidates.filter((candidate) => candidate.id !== candidateId))
+    },
+  })
+}
+
 export function useCreateAgentRun(workId: string) {
   return useMutation({
-    mutationFn: (input: { prompt: string; contextNodeIds: string[]; model: ModelReference }) =>
+    mutationFn: (input: { prompt: string; targetNodeId: string; contextNodeIds: string[]; model: ModelReference }) =>
       coreClient<AgentRun>(`/works/${workId}/agent-runs`, {
         method: 'POST',
         body: {
           prompt: input.prompt,
           contextNodeIds: input.contextNodeIds,
-          target: 'chapter',
+          target: 'node-update',
+          targetNodeId: input.targetNodeId,
           providerId: input.model.providerId,
           modelId: input.model.modelId,
         },

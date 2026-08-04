@@ -22,7 +22,7 @@ export function HomePage() {
       modelName: model.modelName,
       status: 'initializing',
       previewNodes: [
-        { id: 'idea', label: '故事概念', kind: 'plot', x: 36, y: 38 },
+        { id: 'idea', label: '故事概念', kind: 'event', x: 36, y: 38 },
       ],
       previewEdges: [],
     }

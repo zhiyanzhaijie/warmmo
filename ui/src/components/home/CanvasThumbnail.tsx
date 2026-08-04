@@ -1,15 +1,18 @@
-import type { PreviewNodeKind, WorkPreviewEdge, WorkPreviewNode } from '../../types/work'
+import {
+  nodeDefinitions,
+  type CanvasNodeCategory,
+} from '@/features/canvas/nodes/definitions'
+import type { WorkPreviewEdge, WorkPreviewNode } from '@/types/work'
 
 interface CanvasThumbnailProps {
   nodes: WorkPreviewNode[]
   edges: WorkPreviewEdge[]
 }
 
-const nodeStyles: Record<PreviewNodeKind, string> = {
-  chapter: 'border-link/30 bg-link-soft text-link-deep',
-  character: 'border-hairline bg-canvas-elevated text-ink',
-  plot: 'border-primary/20 bg-primary text-on-primary',
-  world: 'border-hairline bg-hairline-soft text-body',
+const nodeStyles: Record<CanvasNodeCategory, string> = {
+  entity: 'border-hairline bg-canvas-elevated text-ink',
+  structure: 'border-primary/20 bg-primary text-on-primary',
+  asset: 'border-link/30 bg-link-soft text-link-deep',
 }
 
 export function CanvasThumbnail({ nodes, edges }: CanvasThumbnailProps) {
@@ -42,7 +45,7 @@ export function CanvasThumbnail({ nodes, edges }: CanvasThumbnailProps) {
       {nodes.map((node) => (
         <span
           key={node.id}
-          className={`absolute max-w-28 truncate rounded-sm border px-space-xs py-space-xxs text-body-sm shadow-whisper ${nodeStyles[node.kind]}`}
+          className={`absolute max-w-28 truncate rounded-sm border px-space-xs py-space-xxs text-body-sm shadow-whisper ${nodeStyles[nodeDefinitions[node.kind].category]}`}
           style={{ left: `${node.x}%`, top: `${node.y}%` }}
         >
           {node.label}

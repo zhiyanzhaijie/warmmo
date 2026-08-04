@@ -1,0 +1,91 @@
+import {
+  Background,
+  BackgroundVariant,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  useReactFlow,
+  type NodeMouseHandler,
+  type OnNodeDrag,
+} from '@xyflow/react'
+import { memo, useCallback, useEffect, useRef } from 'react'
+
+import { useUpdateCanvasCandidatePosition, useUpdateCanvasNodePosition } from '@/apis/canvas-apis'
+import { flowNodeTypes } from '@/features/canvas/flownode/registry'
+import { useFlowNodeStore } from '@/features/canvas/flownode/store'
+import type { StoryFlowNode } from '@/features/canvas/flownode/types'
+import { useSyncFlowNodeRenderDetail } from '@/features/canvas/flownode/use-sync-render-detail'
+
+const minimapNodeLimit = 2_000
+
+export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: string }) {
+  const flow = useReactFlow<StoryFlowNode>()
+  const { mutate: updatePosition } = useUpdateCanvasNodePosition(workId)
+  const { mutate: updateCandidatePosition } = useUpdateCanvasCandidatePosition(workId)
+  const nodes = useFlowNodeStore((state) => state.nodes)
+  const edges = useFlowNodeStore((state) => state.edges)
+  const onNodesChange = useFlowNodeStore((state) => state.actions.onNodesChange)
+  const onEdgesChange = useFlowNodeStore((state) => state.actions.onEdgesChange)
+  const openPreview = useFlowNodeStore((state) => state.actions.openPreview)
+  const fittedInitialNodesRef = useRef(false)
+
+  useSyncFlowNodeRenderDetail()
+
+  useEffect(() => {
+    if (fittedInitialNodesRef.current || nodes.length === 0) return
+    fittedInitialNodesRef.current = true
+    requestAnimationFrame(() => void flow.fitView({ padding: 0.25, maxZoom: 1 }))
+  }, [flow, nodes.length])
+
+  const onNodeDragStop = useCallback<OnNodeDrag<StoryFlowNode>>((_, node) => {
+    if (node.data.sourceType === 'candidate') {
+      updateCandidatePosition({
+        candidateId: node.data.sourceId,
+        x: node.position.x,
+        y: node.position.y,
+      })
+      return
+    }
+    updatePosition({ nodeId: node.data.sourceId, x: node.position.x, y: node.position.y })
+  }, [updateCandidatePosition, updatePosition])
+
+  const onNodeDoubleClick = useCallback<NodeMouseHandler<StoryFlowNode>>((_, node) => {
+    if (node.data.sourceType === 'node') openPreview(node.data.sourceId)
+  }, [openPreview])
+
+  return (
+    <ReactFlow<StoryFlowNode>
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={flowNodeTypes}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      onNodeDragStop={onNodeDragStop}
+      onNodeDoubleClick={onNodeDoubleClick}
+      deleteKeyCode={null}
+      nodesConnectable={false}
+      edgesReconnectable={false}
+      fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
+      minZoom={0.08}
+      maxZoom={1.8}
+      onlyRenderVisibleElements
+      elevateNodesOnSelect
+      selectionOnDrag
+      panOnScroll
+      className="warmnote-flow"
+    >
+      <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-hairline)" />
+      <Controls position="bottom-right" showInteractive={false} />
+      {nodes.length <= minimapNodeLimit ? (
+        <MiniMap
+          position="bottom-right"
+          pannable
+          zoomable
+          className="!right-14 !h-24 !w-36 !rounded-sm !border !border-hairline !bg-canvas-elevated"
+          nodeColor="var(--color-mute)"
+          maskColor="color-mix(in srgb, var(--color-canvas) 76%, transparent)"
+        />
+      ) : null}
+    </ReactFlow>
+  )
+})
