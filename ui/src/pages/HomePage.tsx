@@ -28,9 +28,9 @@ export function HomePage() {
   }, [])
 
   return (
-    <div className="mx-auto max-w-app px-space-lg pb-space-3xl pt-space-3xl">
+    <div className="mx-auto max-w-app px-space-lg pb-space-3xl">
       <PromptComposer onCreate={createFromPrompt} onCreateBlank={createBlankWork} />
-      <p className="mx-auto mt-space-sm min-h-5 max-w-[52.5rem] text-body-sm text-mute" role="status">{creationNotice}</p>
+      <p className="mx-auto mt-space-sm min-h-5 max-w-[56rem] text-body-sm text-mute" role="status">{creationNotice}</p>
       <div className="mt-space-3xl">
         <RecentWorks works={(works.data ?? []).filter((work) => work.status === 'active').slice(0, recentWorkLimit)} onCreateBlank={createBlankWork} />
       </div>
