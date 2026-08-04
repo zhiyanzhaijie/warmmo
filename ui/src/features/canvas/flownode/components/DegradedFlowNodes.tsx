@@ -10,7 +10,7 @@ export const CompactFlowNodeRenderer = memo(function CompactFlowNodeRenderer({ d
   const Icon = definition.icon
 
   return (
-    <article className={`group relative flex h-12 w-52 items-center gap-space-sm overflow-hidden rounded-sm border bg-canvas-elevated px-space-sm shadow-whisper ${selected ? 'border-link' : 'border-hairline'}`}>
+    <article className={`group relative flex h-12 w-52 items-center gap-space-sm overflow-hidden rounded-sm border bg-canvas-elevated px-space-sm transition-colors ${selected ? 'border-link' : 'border-hairline'}`}>
       <span className={`absolute inset-y-0 left-0 w-0.5 ${definition.accentClassName}`} />
       <Icon className="shrink-0 text-mute" size={14} />
       <span className="truncate text-label-sm">{data.title}</span>
@@ -24,7 +24,7 @@ export const MarkerFlowNodeRenderer = memo(function MarkerFlowNodeRenderer({ dat
   return (
     <div
       aria-label={data.title}
-      className={`group relative size-5 rounded-full border-2 border-canvas shadow-whisper ${definition.accentClassName} ${selected ? 'ring-2 ring-link ring-offset-1 ring-offset-canvas' : ''}`}
+      className={`group relative size-5 rounded-full border-2 border-canvas ${definition.accentClassName} ${selected ? 'ring-2 ring-link ring-offset-1 ring-offset-canvas' : ''}`}
       title={data.title}
     >
       <FlowNodeControls />

@@ -6,7 +6,6 @@ import '@xyflow/react/dist/style.css'
 import { useCanvasCandidates, useCanvasEdges, useCanvasNodes } from '@/apis/canvas-apis'
 import { CanvasAgentWorkspace } from '@/features/canvas/CanvasAgentWorkspace'
 import { CanvasHeader } from '@/features/canvas/CanvasHeader'
-import { CanvasHistoryControls } from '@/features/canvas/CanvasHistoryControls'
 import { CanvasNodeCreator } from '@/features/canvas/CanvasNodeCreator'
 import { CanvasSurface } from '@/features/canvas/CanvasSurface'
 import { FlowNodeStoreProvider } from '@/features/canvas/flownode/FlowNodeStoreProvider'
@@ -35,7 +34,6 @@ function CanvasWorkspace({ workId }: { workId: string }) {
     <main className="relative h-dvh w-full overflow-hidden bg-canvas text-ink">
       <CanvasSurface workId={workId} />
       <CanvasHeader workId={workId} />
-      <CanvasHistoryControls workId={workId} />
       <CanvasNodeCreator workId={workId} />
       <CanvasAgentWorkspace workId={workId} />
       <NodeDetailSheet workId={workId} />
