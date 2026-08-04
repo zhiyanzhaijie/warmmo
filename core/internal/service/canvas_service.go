@@ -70,6 +70,62 @@ func (s *CanvasService) UpdateNodePosition(ctx context.Context, workID, nodeID s
 	return s.store.UpdateNodePosition(ctx, workID, nodeID, x, y)
 }
 
+func (s *CanvasService) UpdateNodePositions(
+	ctx context.Context,
+	workID string,
+	positions []canvas.NodePosition,
+) error {
+	workID = strings.TrimSpace(workID)
+	if workID == "" || len(positions) == 0 || len(positions) > 100 {
+		return ErrInvalidCanvasRequest
+	}
+	for index := range positions {
+		positions[index].NodeID = strings.TrimSpace(positions[index].NodeID)
+		if positions[index].NodeID == "" {
+			return ErrInvalidCanvasRequest
+		}
+	}
+	return s.store.UpdateNodePositions(ctx, workID, positions)
+}
+
+func (s *CanvasService) DeleteNodes(ctx context.Context, workID string, nodeIDs []string) error {
+	workID = strings.TrimSpace(workID)
+	if workID == "" || len(nodeIDs) == 0 || len(nodeIDs) > 100 {
+		return ErrInvalidCanvasRequest
+	}
+	for index := range nodeIDs {
+		nodeIDs[index] = strings.TrimSpace(nodeIDs[index])
+		if nodeIDs[index] == "" {
+			return ErrInvalidCanvasRequest
+		}
+	}
+	return s.store.DeleteNodes(ctx, workID, nodeIDs)
+}
+
+func (s *CanvasService) GetHistoryState(ctx context.Context, workID string) (canvas.HistoryState, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return canvas.HistoryState{}, ErrInvalidCanvasRequest
+	}
+	return s.store.GetHistoryState(ctx, workID)
+}
+
+func (s *CanvasService) Undo(ctx context.Context, workID string) (canvas.HistoryState, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return canvas.HistoryState{}, ErrInvalidCanvasRequest
+	}
+	return s.store.Undo(ctx, workID)
+}
+
+func (s *CanvasService) Redo(ctx context.Context, workID string) (canvas.HistoryState, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return canvas.HistoryState{}, ErrInvalidCanvasRequest
+	}
+	return s.store.Redo(ctx, workID)
+}
+
 func (s *CanvasService) ListEdges(ctx context.Context, workID string) ([]canvas.Edge, error) {
 	workID = strings.TrimSpace(workID)
 	if workID == "" {

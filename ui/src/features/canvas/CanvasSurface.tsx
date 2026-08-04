@@ -4,13 +4,14 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  SelectionMode,
   useReactFlow,
   type NodeMouseHandler,
   type OnNodeDrag,
 } from '@xyflow/react'
 import { memo, useCallback, useEffect, useRef } from 'react'
 
-import { useUpdateCanvasCandidatePosition, useUpdateCanvasNodePosition } from '@/apis/canvas-apis'
+import { useUpdateCanvasCandidatePosition, useUpdateCanvasNodePositions } from '@/apis/canvas-apis'
 import { flowNodeTypes } from '@/features/canvas/flownode/registry'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
@@ -20,7 +21,7 @@ const minimapNodeLimit = 2_000
 
 export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: string }) {
   const flow = useReactFlow<StoryFlowNode>()
-  const { mutate: updatePosition } = useUpdateCanvasNodePosition(workId)
+  const { mutate: updatePositions } = useUpdateCanvasNodePositions(workId)
   const { mutate: updateCandidatePosition } = useUpdateCanvasCandidatePosition(workId)
   const nodes = useFlowNodeStore((state) => state.nodes)
   const edges = useFlowNodeStore((state) => state.edges)
@@ -37,17 +38,25 @@ export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: s
     requestAnimationFrame(() => void flow.fitView({ padding: 0.25, maxZoom: 1 }))
   }, [flow, nodes.length])
 
-  const onNodeDragStop = useCallback<OnNodeDrag<StoryFlowNode>>((_, node) => {
-    if (node.data.sourceType === 'candidate') {
+  const onNodeDragStop = useCallback<OnNodeDrag<StoryFlowNode>>((_, node, draggedNodes) => {
+    const sourcePositions = draggedNodes.flatMap((draggedNode) =>
+      draggedNode.data.sourceType === 'node'
+        ? [{ nodeId: draggedNode.data.sourceId, x: draggedNode.position.x, y: draggedNode.position.y }]
+        : [])
+    if (sourcePositions.length > 0) updatePositions(sourcePositions)
+
+    for (const draggedNode of draggedNodes) {
+      if (draggedNode.data.sourceType !== 'candidate') continue
       updateCandidatePosition({
-        candidateId: node.data.sourceId,
-        x: node.position.x,
-        y: node.position.y,
+        candidateId: draggedNode.data.sourceId,
+        x: draggedNode.position.x,
+        y: draggedNode.position.y,
       })
-      return
     }
-    updatePosition({ nodeId: node.data.sourceId, x: node.position.x, y: node.position.y })
-  }, [updateCandidatePosition, updatePosition])
+    if (draggedNodes.length === 0 && node.data.sourceType === 'node') {
+      updatePositions([{ nodeId: node.data.sourceId, x: node.position.x, y: node.position.y }])
+    }
+  }, [updateCandidatePosition, updatePositions])
 
   const onNodeDoubleClick = useCallback<NodeMouseHandler<StoryFlowNode>>((_, node) => {
     if (node.data.sourceType === 'node') openPreview(node.data.sourceId)
@@ -71,6 +80,7 @@ export const CanvasSurface = memo(function CanvasSurface({ workId }: { workId: s
       onlyRenderVisibleElements
       elevateNodesOnSelect
       selectionOnDrag
+      selectionMode={SelectionMode.Partial}
       panOnScroll
       className="warmnote-flow"
     >

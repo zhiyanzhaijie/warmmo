@@ -23,6 +23,19 @@ export interface CanvasEdge {
   createdAt: string
 }
 
+export interface CanvasNodePosition {
+  nodeId: string
+  x: number
+  y: number
+}
+
+export interface CanvasHistoryState {
+  canUndo: boolean
+  canRedo: boolean
+  undoLabel: string
+  redoLabel: string
+}
+
 export interface AgentCandidate {
   id: string
   runId: string

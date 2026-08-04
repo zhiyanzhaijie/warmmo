@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 5
+	currentSchemaVersion = 6
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -108,6 +108,24 @@ CREATE TABLE IF NOT EXISTS canvas_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_edges_work_created
     ON canvas_edges(work_id, created_at);`
+	canvasHistorySchemaSQL = `
+CREATE TABLE IF NOT EXISTS canvas_actions (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    action_type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(work_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_actions_work_sequence
+    ON canvas_actions(work_id, sequence);
+CREATE TABLE IF NOT EXISTS canvas_history_state (
+    work_id TEXT PRIMARY KEY,
+    current_sequence INTEGER NOT NULL,
+    current_action_id TEXT NOT NULL
+);`
 )
 
 var (
@@ -375,7 +393,12 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add candidate lifecycle: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 5"); err != nil {
+	if schemaVersion < 6 {
+		if _, err := transaction.Exec(canvasHistorySchemaSQL); err != nil {
+			return fmt.Errorf("add canvas action history: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 6"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

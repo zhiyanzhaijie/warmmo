@@ -15,6 +15,7 @@ var (
 	ErrNodeNotFound      = errors.New("canvas node not found")
 	ErrInvalidNode       = errors.New("invalid canvas node")
 	ErrRevisionConflict  = errors.New("canvas node revision conflict")
+	ErrHistoryUnavailable = errors.New("canvas history action unavailable")
 	ErrCandidateNotFound = errors.New("canvas candidate not found")
 	ErrCandidateResolved = errors.New("canvas candidate is already resolved")
 )
@@ -71,6 +72,19 @@ type UpdateNodeInput struct {
 	Content          string
 	ExpectedRevision int64
 }
+
+type NodePosition struct {
+	NodeID string  `json:"nodeId"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+}
+
+type HistoryState struct {
+	CanUndo   bool   `json:"canUndo"`
+	CanRedo   bool   `json:"canRedo"`
+	UndoLabel string `json:"undoLabel"`
+	RedoLabel string `json:"redoLabel"`
+}
 type Edge struct {
 	ID           string    `json:"id"`
 	WorkID       string    `json:"workId"`
@@ -93,6 +107,11 @@ type Store interface {
 	GetNodes(context.Context, string, []string) ([]Node, error)
 	UpdateNode(context.Context, UpdateNodeInput) (Node, error)
 	UpdateNodePosition(context.Context, string, string, float64, float64) error
+	UpdateNodePositions(context.Context, string, []NodePosition) error
+	DeleteNodes(context.Context, string, []string) error
+	GetHistoryState(context.Context, string) (HistoryState, error)
+	Undo(context.Context, string) (HistoryState, error)
+	Redo(context.Context, string) (HistoryState, error)
 	ListEdges(context.Context, string) ([]Edge, error)
 	CreateCandidate(context.Context, agent.Candidate) (agent.Candidate, error)
 	ListCandidates(context.Context, string) ([]agent.Candidate, error)
@@ -101,11 +120,19 @@ type Store interface {
 	RejectCandidate(context.Context, string, string) error
 }
 
-type ContextReader struct {
-	store Store
+type NodeReader interface {
+	GetNodes(context.Context, string, []string) ([]Node, error)
 }
 
-func NewContextReader(store Store) *ContextReader {
+type CandidateCreator interface {
+	CreateCandidate(context.Context, agent.Candidate) (agent.Candidate, error)
+}
+
+type ContextReader struct {
+	store NodeReader
+}
+
+func NewContextReader(store NodeReader) *ContextReader {
 	return &ContextReader{store: store}
 }
 

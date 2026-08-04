@@ -12,10 +12,10 @@ import (
 )
 
 type GetNodesTool struct {
-	store Store
+	store NodeReader
 }
 
-func NewGetNodesTool(store Store) *GetNodesTool {
+func NewGetNodesTool(store NodeReader) *GetNodesTool {
 	return &GetNodesTool{store: store}
 }
 
@@ -43,10 +43,10 @@ func (t *GetNodesTool) Call(ctx context.Context, invocation agent.ToolInvocation
 }
 
 type CreateCandidateTool struct {
-	store Store
+	store CandidateCreator
 }
 
-func NewCreateCandidateTool(store Store) *CreateCandidateTool {
+func NewCreateCandidateTool(store CandidateCreator) *CreateCandidateTool {
 	return &CreateCandidateTool{store: store}
 }
 

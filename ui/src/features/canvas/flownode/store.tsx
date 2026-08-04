@@ -121,7 +121,7 @@ function mergeRemoteNodes(currentNodes: StoryFlowNode[], incomingNodes: StoryFlo
     return {
       ...currentNode,
       ...incomingNode,
-      position: currentNode.position,
+      position: currentNode.dragging ? currentNode.position : incomingNode.position,
       selected: currentNode.selected,
     }
   })
@@ -132,7 +132,12 @@ function mergeRemoteNodes(currentNodes: StoryFlowNode[], incomingNodes: StoryFlo
 function isSameRemoteNode(current: StoryFlowNode, incoming: StoryFlowNode) {
   return current.type === incoming.type
     && current.draggable === incoming.draggable
+    && (current.dragging || isSameNodePosition(current, incoming))
     && isSameNodeData(current.data, incoming.data)
+}
+
+function isSameNodePosition(current: StoryFlowNode, incoming: StoryFlowNode) {
+  return current.position.x === incoming.position.x && current.position.y === incoming.position.y
 }
 
 function isSameNodeData(current: FlowNodeData, incoming: FlowNodeData) {

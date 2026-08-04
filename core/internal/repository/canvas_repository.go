@@ -37,12 +37,25 @@ func (r *CanvasRepository) CreateNode(ctx context.Context, input canvas.CreateNo
 		ID: uuid.NewString(), WorkID: input.WorkID, Revision: 1, Kind: input.Kind,
 		Title: input.Title, Content: input.Content, X: input.X, Y: input.Y, CreatedAt: now, UpdatedAt: now,
 	}
-	_, err := r.database.ExecContext(ctx, `
+	transaction, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return canvas.Node{}, fmt.Errorf("begin create canvas node: %w", err)
+	}
+	defer transaction.Rollback()
+	_, err = transaction.ExecContext(ctx, `
 INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
 		node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("create canvas node: %w", err)
+	}
+	if err := appendCanvasAction(ctx, transaction, node.WorkID, actionCreateNodes, "创建节点", createNodesActionPayload{
+		Nodes: []canvas.Node{node},
+	}); err != nil {
+		return canvas.Node{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return canvas.Node{}, fmt.Errorf("commit create canvas node: %w", err)
 	}
 	return node, nil
 }
@@ -222,43 +235,54 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
 }
 
 func (r *CanvasRepository) UpdateNode(ctx context.Context, input canvas.UpdateNodeInput) (canvas.Node, error) {
+	transaction, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return canvas.Node{}, fmt.Errorf("begin update canvas node: %w", err)
+	}
+	defer transaction.Rollback()
+	before, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
+SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
+FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, input.NodeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return canvas.Node{}, canvas.ErrNodeNotFound
+	}
+	if err != nil {
+		return canvas.Node{}, fmt.Errorf("read canvas node before update: %w", err)
+	}
+	if before.Revision != input.ExpectedRevision {
+		return canvas.Node{}, canvas.ErrRevisionConflict
+	}
 	now := time.Now().UTC()
-	node, err := scanCanvasNode(r.database.QueryRowContext(ctx, `
+	node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
 UPDATE canvas_nodes
 SET title = ?, content = ?, revision = revision + 1, updated_at = ?
 WHERE work_id = ? AND id = ? AND revision = ?
 RETURNING id, work_id, revision, kind, title, content, x, y, created_at, updated_at`,
 		input.Title, input.Content, now.Format(time.RFC3339Nano),
 		input.WorkID, input.NodeID, input.ExpectedRevision))
-	if err == nil {
-		return node, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return canvas.Node{}, canvas.ErrRevisionConflict
+		}
 		return canvas.Node{}, fmt.Errorf("update canvas node: %w", err)
 	}
-	if _, err := r.GetNode(ctx, input.WorkID, input.NodeID); errors.Is(err, canvas.ErrNodeNotFound) {
-		return canvas.Node{}, canvas.ErrNodeNotFound
-	} else if err != nil {
-		return canvas.Node{}, err
+	if before.Title != node.Title || before.Content != node.Content {
+		payload := updateNodeActionPayload{
+			Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content},
+			After:  nodeContentState{NodeID: node.ID, Title: node.Title, Content: node.Content},
+		}
+		if err := appendCanvasAction(ctx, transaction, input.WorkID, actionUpdateNode, "编辑节点", payload); err != nil {
+			return canvas.Node{}, err
+		}
 	}
-	return canvas.Node{}, canvas.ErrRevisionConflict
+	if err := transaction.Commit(); err != nil {
+		return canvas.Node{}, fmt.Errorf("commit update canvas node: %w", err)
+	}
+	return node, nil
 }
 
 func (r *CanvasRepository) UpdateNodePosition(ctx context.Context, workID, nodeID string, x, y float64) error {
-	result, err := r.database.ExecContext(ctx, `
-UPDATE canvas_nodes SET x = ?, y = ?, updated_at = ? WHERE work_id = ? AND id = ?`,
-		x, y, time.Now().UTC().Format(time.RFC3339Nano), workID, nodeID)
-	if err != nil {
-		return fmt.Errorf("update canvas node position: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read updated canvas node position: %w", err)
-	}
-	if changed == 0 {
-		return canvas.ErrNodeNotFound
-	}
-	return nil
+	return r.UpdateNodePositions(ctx, workID, []canvas.NodePosition{{NodeID: nodeID, X: x, Y: y}})
 }
 
 func (r *CanvasRepository) ListEdges(ctx context.Context, workID string) ([]canvas.Edge, error) {

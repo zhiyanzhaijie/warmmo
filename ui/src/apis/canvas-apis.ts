@@ -1,7 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { coreClient } from '@/lib/api/core-client'
-import type { AgentCandidate, AgentRun, CanvasEdge, CanvasNode, CanvasNodeKind } from '@/types/canvas'
+import type {
+  AgentCandidate,
+  AgentRun,
+  CanvasEdge,
+  CanvasHistoryState,
+  CanvasNode,
+  CanvasNodeKind,
+  CanvasNodePosition,
+} from '@/types/canvas'
 import type { ModelReference } from '@/types/provider'
 
 interface NodesResponse {
@@ -21,6 +29,7 @@ export const canvasKeys = {
   node: (workId: string, nodeId: string) => ['canvas', workId, 'nodes', nodeId] as const,
   edges: (workId: string) => ['canvas', workId, 'edges'] as const,
   candidates: (workId: string) => ['canvas', workId, 'candidates'] as const,
+  history: (workId: string) => ['canvas', workId, 'history'] as const,
 }
 
 export function useCanvasNodes(workId: string) {
@@ -45,6 +54,7 @@ export function useUpdateCanvasNode(workId: string, nodeId: string) {
       queryClient.setQueryData(canvasKeys.node(workId, nodeId), node)
       queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) =>
         nodes.map((existing) => existing.id === node.id ? node : existing))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
     },
   })
 }
@@ -66,6 +76,7 @@ export function useCreateCanvasNode(workId: string) {
       coreClient<CanvasNode>(`/works/${workId}/nodes`, { method: 'POST', body: input }),
     onSuccess: (node) => {
       queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) => [...nodes, node])
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
     },
   })
 }
@@ -100,6 +111,76 @@ export function useUpdateCanvasNodePosition(workId: string) {
         method: 'PATCH',
         body: { x: input.x, y: input.y },
       }),
+  })
+}
+
+export function useUpdateCanvasNodePositions(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (positions: CanvasNodePosition[]) =>
+      coreClient<void>(`/works/${workId}/nodes/positions`, {
+        method: 'PATCH',
+        body: { positions },
+      }),
+    onSuccess: (_, positions) => {
+      const positionByNodeId = new Map(positions.map((position) => [position.nodeId, position]))
+      queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) =>
+        nodes.map((node) => {
+          const position = positionByNodeId.get(node.id)
+          return position === undefined ? node : { ...node, x: position.x, y: position.y }
+        }))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
+    },
+  })
+}
+
+export function useDeleteCanvasNodes(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (nodeIds: string[]) =>
+      coreClient<void>(`/works/${workId}/nodes`, {
+        method: 'DELETE',
+        body: { nodeIds },
+      }),
+    onSuccess: (_, nodeIds) => {
+      const deletedNodeIds = new Set(nodeIds)
+      queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) =>
+        nodes.filter((node) => !deletedNodeIds.has(node.id)))
+      queryClient.setQueryData<CanvasEdge[]>(canvasKeys.edges(workId), (edges = []) =>
+        edges.filter((edge) => !deletedNodeIds.has(edge.sourceNodeId) && !deletedNodeIds.has(edge.targetNodeId)))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
+    },
+  })
+}
+
+export function useCanvasHistory(workId: string) {
+  return useQuery({
+    queryKey: canvasKeys.history(workId),
+    queryFn: ({ signal }) => coreClient<CanvasHistoryState>(`/works/${workId}/canvas-history`, { signal }),
+  })
+}
+
+export function useUndoCanvasAction(workId: string) {
+  return useCanvasHistoryMutation(workId, 'undo')
+}
+
+export function useRedoCanvasAction(workId: string) {
+  return useCanvasHistoryMutation(workId, 'redo')
+}
+
+function useCanvasHistoryMutation(workId: string, direction: 'undo' | 'redo') {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => coreClient<CanvasHistoryState>(`/works/${workId}/canvas-history/${direction}`, {
+      method: 'POST',
+    }),
+    onSuccess: (history) => {
+      queryClient.setQueryData(canvasKeys.history(workId), history)
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) }),
+        queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) }),
+      ])
+    },
   })
 }
 

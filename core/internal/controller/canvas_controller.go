@@ -35,6 +35,14 @@ type updateCanvasNodePositionRequest struct {
 	Y float64 `json:"y"`
 }
 
+type updateCanvasNodePositionsRequest struct {
+	Positions []canvas.NodePosition `json:"positions"`
+}
+
+type deleteCanvasNodesRequest struct {
+	NodeIDs []string `json:"nodeIds"`
+}
+
 type updateCanvasNodeRequest struct {
 	Title            string `json:"title"`
 	Content          string `json:"content"`
@@ -84,6 +92,87 @@ func (c *CanvasController) UpdateNodePosition(response http.ResponseWriter, requ
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (c *CanvasController) UpdateNodePositions(response http.ResponseWriter, request *http.Request) {
+	var input updateCanvasNodePositionsRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	err := c.service.UpdateNodePositions(request.Context(), request.PathValue("workID"), input.Positions)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest), errors.Is(err, canvas.ErrInvalidNode):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "节点位置请求无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "画布节点不存在"})
+	case err != nil:
+		c.internalError(response, "update canvas node positions", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (c *CanvasController) DeleteNodes(response http.ResponseWriter, request *http.Request) {
+	var input deleteCanvasNodesRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	err := c.service.DeleteNodes(request.Context(), request.PathValue("workID"), input.NodeIDs)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest), errors.Is(err, canvas.ErrInvalidNode):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请选择 1 到 100 个节点"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "部分画布节点不存在"})
+	case err != nil:
+		c.internalError(response, "delete canvas nodes", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (c *CanvasController) GetHistoryState(response http.ResponseWriter, request *http.Request) {
+	state, err := c.service.GetHistoryState(request.Context(), request.PathValue("workID"))
+	if errors.Is(err, service.ErrInvalidCanvasRequest) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID 不能为空"})
+		return
+	}
+	if err != nil {
+		c.internalError(response, "read canvas history", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, state)
+}
+
+func (c *CanvasController) Undo(response http.ResponseWriter, request *http.Request) {
+	c.moveHistory(response, request, false)
+}
+
+func (c *CanvasController) Redo(response http.ResponseWriter, request *http.Request) {
+	c.moveHistory(response, request, true)
+}
+
+func (c *CanvasController) moveHistory(response http.ResponseWriter, request *http.Request, forward bool) {
+	var (
+		state canvas.HistoryState
+		err   error
+	)
+	if forward {
+		state, err = c.service.Redo(request.Context(), request.PathValue("workID"))
+	} else {
+		state, err = c.service.Undo(request.Context(), request.PathValue("workID"))
+	}
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID 不能为空"})
+	case errors.Is(err, canvas.ErrHistoryUnavailable):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "没有可执行的历史操作"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "历史操作涉及的节点状态已变化"})
+	case err != nil:
+		c.internalError(response, "move canvas history", err)
+	default:
+		writeJSON(response, http.StatusOK, state)
+	}
 }
 
 func (c *CanvasController) ListNodes(response http.ResponseWriter, request *http.Request) {

@@ -3,6 +3,7 @@ import { LoaderCircle } from 'lucide-react'
 import { memo, useCallback, useEffect, useState } from 'react'
 
 import { useCreateCanvasNode } from '@/apis/canvas-apis'
+import { isTextEntryTarget } from '@/features/canvas/keyboard'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 import { creatableNodeKinds, nodeDefinitions } from '@/features/canvas/nodes/definitions'
 import type { CanvasNodeKind } from '@/types/canvas'
@@ -81,8 +82,3 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
     </nav>
   )
 })
-
-function isTextEntryTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false
-  return target.isContentEditable || target.matches('input, textarea, select')
-}
