@@ -4,17 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
+func NodeUpdateTarget(nodeKind string) string {
+	return TargetNodeUpdate + ":" + strings.TrimSpace(nodeKind)
+}
+
+func IsNodeUpdateTarget(target string) bool {
+	return strings.HasPrefix(strings.TrimSpace(target), TargetNodeUpdate+":")
+}
+
 type RunStatus string
 
+type CandidateStatus string
+
 const (
+	TargetNodeUpdate  = "node-update"
+	TargetSectionDraft = "section-draft"
+
 	RunStatusQueued    RunStatus = "queued"
 	RunStatusRunning   RunStatus = "running"
 	RunStatusCompleted RunStatus = "completed"
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCancelled RunStatus = "cancelled"
+
+	CandidateStatusPending  CandidateStatus = "pending"
+	CandidateStatusAccepted CandidateStatus = "accepted"
+	CandidateStatusRejected CandidateStatus = "rejected"
 )
 
 type EventType string
@@ -32,6 +50,7 @@ const (
 	EventSkillMatched        EventType = "skill.matched"
 	EventSkillLoaded         EventType = "skill.loaded"
 	EventSkillCompleted      EventType = "skill.completed"
+	EventDecisionInvalid     EventType = "decision.invalid"
 	EventToolRequested       EventType = "tool.requested"
 	EventToolStarted         EventType = "tool.started"
 	EventToolCompleted       EventType = "tool.completed"
@@ -40,6 +59,7 @@ const (
 	EventMessageDelta        EventType = "message.delta"
 	EventValidationCompleted EventType = "validation.completed"
 	EventCandidateCreated    EventType = "candidate.created"
+	EventNodeUpdated         EventType = "node.updated"
 	EventRunCompleted        EventType = "run.completed"
 	EventRunFailed           EventType = "run.failed"
 	EventRunCancelled        EventType = "run.cancelled"
@@ -65,6 +85,13 @@ type Run struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
+type ModelResponseFormat string
+
+const (
+	ModelResponseFormatText       ModelResponseFormat = ""
+	ModelResponseFormatJSONObject ModelResponseFormat = "json_object"
+)
+
 type Event struct {
 	ID        string          `json:"id"`
 	RunID     string          `json:"runId"`
@@ -75,13 +102,21 @@ type Event struct {
 }
 
 type Candidate struct {
-	ID           string    `json:"id"`
-	RunID        string    `json:"runId"`
-	WorkID       string    `json:"workId"`
-	SkillID      string    `json:"skillId"`
-	SkillVersion string    `json:"skillVersion"`
-	Content      string    `json:"content"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID             string          `json:"id"`
+	RunID          string          `json:"runId"`
+	WorkID         string          `json:"workId"`
+	SkillID        string          `json:"skillId"`
+	SkillVersion   string          `json:"skillVersion"`
+	Status         CandidateStatus `json:"status"`
+	Kind           string          `json:"kind"`
+	Title          string          `json:"title"`
+	Content        string          `json:"content"`
+	X              float64         `json:"x"`
+	Y              float64         `json:"y"`
+	ContextNodeIDs []string        `json:"contextNodeIds"`
+	AcceptedNodeID string          `json:"acceptedNodeId,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	DecidedAt      *time.Time      `json:"decidedAt,omitempty"`
 }
 
 type RunInput struct {
@@ -89,16 +124,19 @@ type RunInput struct {
 	WorkID         string
 	Prompt         string
 	Target         string
+	TargetNodeID   string
 	ProviderID     string
 	ModelID        string
 	ContextNodeIDs []string
 }
 
 type RunResult struct {
+	Title      string
 	Content      string
 	SkillID      string
 	SkillVersion string
 	CandidateID  string
+	ExpectedRevision int64
 }
 
 type NodeSnapshot struct {
@@ -116,9 +154,10 @@ type ContextSnapshot struct {
 }
 
 type ModelRequest struct {
-	ModelID string
-	System  string
-	Prompt  string
+	ModelID        string
+	System         string
+	Prompt         string
+	ResponseFormat ModelResponseFormat
 }
 
 type ModelUsage struct {

@@ -22,8 +22,14 @@ func NewRouter(runtimeController *controller.RuntimeController, providerControll
 	router.HandleFunc("POST /api/v1/works/{workID}/nodes", canvasController.CreateNode)
 	router.HandleFunc("GET /api/v1/works/{workID}/nodes", canvasController.ListNodes)
 	router.HandleFunc("POST /api/v1/works/{workID}/nodes/query", canvasController.GetNodes)
+	router.HandleFunc("GET /api/v1/works/{workID}/nodes/{nodeID}", canvasController.GetNode)
+	router.HandleFunc("PATCH /api/v1/works/{workID}/nodes/{nodeID}", canvasController.UpdateNode)
 	router.HandleFunc("PATCH /api/v1/works/{workID}/nodes/{nodeID}/position", canvasController.UpdateNodePosition)
+	router.HandleFunc("GET /api/v1/works/{workID}/edges", canvasController.ListEdges)
 	router.HandleFunc("GET /api/v1/works/{workID}/candidates", canvasController.ListCandidates)
+	router.HandleFunc("PATCH /api/v1/works/{workID}/candidates/{candidateID}/position", canvasController.UpdateCandidatePosition)
+	router.HandleFunc("POST /api/v1/works/{workID}/candidates/{candidateID}/accept", canvasController.AcceptCandidate)
+	router.HandleFunc("POST /api/v1/works/{workID}/candidates/{candidateID}/reject", canvasController.RejectCandidate)
 
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")

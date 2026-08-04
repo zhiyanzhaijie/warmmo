@@ -12,9 +12,35 @@ import (
 )
 
 var (
-	ErrNodeNotFound = errors.New("canvas node not found")
-	ErrInvalidNode  = errors.New("invalid canvas node")
+	ErrNodeNotFound      = errors.New("canvas node not found")
+	ErrInvalidNode       = errors.New("invalid canvas node")
+	ErrRevisionConflict  = errors.New("canvas node revision conflict")
+	ErrCandidateNotFound = errors.New("canvas candidate not found")
+	ErrCandidateResolved = errors.New("canvas candidate is already resolved")
 )
+
+const (
+	NodeKindCharacter      = "character"
+	NodeKindItem           = "item"
+	NodeKindLocation       = "location"
+	NodeKindTime           = "time"
+	NodeKindWorld          = "world"
+	NodeKindMechanism      = "mechanism"
+	NodeKindEvent          = "event"
+	NodeKindChapterOutline = "chapter-outline"
+	NodeKindSectionDraft   = "section-draft"
+	NodeKindManuscript     = "manuscript"
+)
+
+func IsValidNodeKind(kind string) bool {
+	switch kind {
+	case NodeKindCharacter, NodeKindItem, NodeKindLocation, NodeKindTime, NodeKindWorld,
+		NodeKindMechanism, NodeKindEvent, NodeKindChapterOutline, NodeKindSectionDraft, NodeKindManuscript:
+		return true
+	default:
+		return false
+	}
+}
 
 type Node struct {
 	ID        string    `json:"id"`
@@ -38,13 +64,41 @@ type CreateNodeInput struct {
 	Y       float64
 }
 
+type UpdateNodeInput struct {
+	WorkID           string
+	NodeID           string
+	Title            string
+	Content          string
+	ExpectedRevision int64
+}
+type Edge struct {
+	ID           string    `json:"id"`
+	WorkID       string    `json:"workId"`
+	SourceNodeID string    `json:"sourceNodeId"`
+	TargetNodeID string    `json:"targetNodeId"`
+	Kind         string    `json:"kind"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type AcceptCandidateInput struct {
+	WorkID      string
+	CandidateID string
+	Title       string
+}
+
 type Store interface {
 	CreateNode(context.Context, CreateNodeInput) (Node, error)
 	ListNodes(context.Context, string) ([]Node, error)
+	GetNode(context.Context, string, string) (Node, error)
 	GetNodes(context.Context, string, []string) ([]Node, error)
+	UpdateNode(context.Context, UpdateNodeInput) (Node, error)
 	UpdateNodePosition(context.Context, string, string, float64, float64) error
+	ListEdges(context.Context, string) ([]Edge, error)
 	CreateCandidate(context.Context, agent.Candidate) (agent.Candidate, error)
 	ListCandidates(context.Context, string) ([]agent.Candidate, error)
+	UpdateCandidatePosition(context.Context, string, string, float64, float64) error
+	AcceptCandidate(context.Context, AcceptCandidateInput) (Node, error)
+	RejectCandidate(context.Context, string, string) error
 }
 
 type ContextReader struct {

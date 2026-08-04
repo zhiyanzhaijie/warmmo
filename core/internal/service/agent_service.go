@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"warmnote/core/internal/agent"
+	"warmnote/core/internal/canvas"
 	"warmnote/core/internal/repository"
 )
 
@@ -33,13 +34,30 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	input.WorkID = strings.TrimSpace(input.WorkID)
 	input.Prompt = strings.TrimSpace(input.Prompt)
 	input.Target = strings.TrimSpace(input.Target)
+	input.TargetNodeID = strings.TrimSpace(input.TargetNodeID)
 	input.ProviderID = strings.TrimSpace(input.ProviderID)
 	input.ModelID = strings.TrimSpace(input.ModelID)
 	if input.WorkID == "" || input.Prompt == "" || input.Target == "" || input.ProviderID == "" || input.ModelID == "" {
 		return agent.Run{}, fmt.Errorf("%w: workId, prompt, target, providerId and modelId are required", ErrInvalidAgentRun)
 	}
-	if input.Target != "chapter" {
+	if input.Target != agent.TargetNodeUpdate && input.Target != agent.TargetSectionDraft {
 		return agent.Run{}, fmt.Errorf("%w: target %q is not supported", ErrInvalidAgentRun, input.Target)
+	}
+	if input.Target == agent.TargetNodeUpdate && input.TargetNodeID == "" {
+		return agent.Run{}, fmt.Errorf("%w: targetNodeId is required for node-update", ErrInvalidAgentRun)
+	}
+	if input.Target == agent.TargetNodeUpdate && !containsNodeID(input.ContextNodeIDs, input.TargetNodeID) {
+		return agent.Run{}, fmt.Errorf("%w: targetNodeId must be included in contextNodeIds", ErrInvalidAgentRun)
+	}
+	if input.Target == agent.TargetNodeUpdate {
+		nodeKind, err := s.repository.GetCanvasNodeKind(input.WorkID, input.TargetNodeID)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		if !canvas.IsValidNodeKind(nodeKind) {
+			return agent.Run{}, fmt.Errorf("%w: target node kind %q is not supported", ErrInvalidAgentRun, nodeKind)
+		}
+		input.Target = agent.NodeUpdateTarget(nodeKind)
 	}
 	input.RunID = uuid.NewString()
 	run, err := s.repository.CreateRun(input)
@@ -108,14 +126,39 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput) {
 		s.logger.Warn("agent run failed", "runId", run.ID, "error", err)
 		return
 	}
-	if _, err := s.repository.Complete(run, result); err != nil && !errors.Is(err, agent.ErrRunNotCancellable) {
-		s.logger.Error("complete agent run", "runId", run.ID, "error", err)
+	var completeErr error
+	if agent.IsNodeUpdateTarget(input.Target) {
+		completeErr = s.repository.CompleteNodeUpdate(run, input.TargetNodeID, result)
+	} else {
+		_, completeErr = s.repository.Complete(run, result)
 	}
+	if completeErr != nil && !errors.Is(completeErr, agent.ErrRunNotCancellable) {
+		message := publicAgentError(completeErr)
+		if failErr := s.repository.Fail(run.ID, message); failErr != nil && !errors.Is(failErr, agent.ErrRunNotCancellable) {
+			s.logger.Error("fail incomplete agent run", "runId", run.ID, "error", failErr)
+		}
+		s.logger.Error("complete agent run", "runId", run.ID, "error", completeErr)
+	}
+}
+
+func containsNodeID(nodeIDs []string, targetNodeID string) bool {
+	for _, nodeID := range nodeIDs {
+		if strings.TrimSpace(nodeID) == targetNodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func publicAgentError(err error) string {
 	if errors.Is(err, agent.ErrCanvasUnavailable) {
 		return "画布上下文读取尚未接入，请暂时不选择节点后重试"
+	}
+	if errors.Is(err, agent.ErrInvalidDecision) {
+		return "模型未返回有效的 Agent 决策，请重试或切换模型"
+	}
+	if errors.Is(err, canvas.ErrRevisionConflict) {
+		return "节点在生成期间已被修改，本次 Agent 结果未覆盖现有内容"
 	}
 	return "Agent 执行失败，请检查模型配置后重试"
 }

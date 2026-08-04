@@ -23,6 +23,10 @@ type compatibleLLM struct {
 	client *http.Client
 }
 
+type chatResponseFormat struct {
+	Type string `json:"type"`
+}
+
 func newCompatibleLLM(config ModelConfig, client *http.Client) adkmodel.LLM {
 	return &compatibleLLM{config: config, client: client}
 }
@@ -54,7 +58,11 @@ func (m *compatibleLLM) GenerateContent(ctx context.Context, request *adkmodel.L
 				messages = append(messages, chatMessage{Role: role, Content: text.String()})
 			}
 		}
-		payload, err := json.Marshal(chatRequest{Model: m.config.ModelID, Messages: messages, Stream: true})
+		chatRequest := chatRequest{Model: m.config.ModelID, Messages: messages, Stream: true}
+		if request.Config != nil && request.Config.ResponseMIMEType == "application/json" {
+			chatRequest.ResponseFormat = &chatResponseFormat{Type: "json_object"}
+		}
+		payload, err := json.Marshal(chatRequest)
 		if err != nil {
 			yield(nil, fmt.Errorf("encode chat request: %w", err))
 			return
@@ -140,6 +148,9 @@ func (m *adkTextModel) Stream(ctx context.Context, request warmagent.ModelReques
 		genai.NewContentFromText(request.Prompt, genai.RoleUser),
 	}
 	llmRequest := &adkmodel.LLMRequest{Model: request.ModelID, Contents: contents}
+	if request.ResponseFormat == warmagent.ModelResponseFormatJSONObject {
+		llmRequest.Config = &genai.GenerateContentConfig{ResponseMIMEType: "application/json"}
+	}
 	for response, err := range m.llm.GenerateContent(ctx, llmRequest, true) {
 		if err != nil {
 			return warmagent.ModelUsage{}, err
@@ -159,9 +170,10 @@ func (m *adkTextModel) Stream(ctx context.Context, request warmagent.ModelReques
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model          string              `json:"model"`
+	Messages       []chatMessage       `json:"messages"`
+	Stream         bool                `json:"stream"`
+	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
 }
 
 type chatMessage struct {

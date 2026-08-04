@@ -35,6 +35,16 @@ type updateCanvasNodePositionRequest struct {
 	Y float64 `json:"y"`
 }
 
+type updateCanvasNodeRequest struct {
+	Title            string `json:"title"`
+	Content          string `json:"content"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+type acceptCanvasCandidateRequest struct {
+	Title string `json:"title"`
+}
+
 func NewCanvasController(canvasService *service.CanvasService, logger *slog.Logger) *CanvasController {
 	return &CanvasController{service: canvasService, logger: logger}
 }
@@ -49,7 +59,7 @@ func (c *CanvasController) CreateNode(response http.ResponseWriter, request *htt
 		X: input.X, Y: input.Y,
 	})
 	if errors.Is(err, service.ErrInvalidCanvasRequest) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "节点类型、标题和内容不能为空"})
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID、节点类型或标题无效"})
 		return
 	}
 	if err != nil {
@@ -85,6 +95,63 @@ func (c *CanvasController) ListNodes(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
+func (c *CanvasController) GetNode(response http.ResponseWriter, request *http.Request) {
+	node, err := c.service.GetNode(
+		request.Context(),
+		request.PathValue("workID"),
+		request.PathValue("nodeID"),
+	)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "节点请求无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "画布节点不存在"})
+	case err != nil:
+		c.internalError(response, "get canvas node", err)
+	default:
+		writeJSON(response, http.StatusOK, node)
+	}
+}
+
+func (c *CanvasController) UpdateNode(response http.ResponseWriter, request *http.Request) {
+	var input updateCanvasNodeRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	node, err := c.service.UpdateNode(request.Context(), canvas.UpdateNodeInput{
+		WorkID:           request.PathValue("workID"),
+		NodeID:           request.PathValue("nodeID"),
+		Title:            input.Title,
+		Content:          input.Content,
+		ExpectedRevision: input.ExpectedRevision,
+	})
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "标题或 Revision 无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "画布节点不存在"})
+	case errors.Is(err, canvas.ErrRevisionConflict):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "节点已在其他位置更新，请重新加载后再保存"})
+	case err != nil:
+		c.internalError(response, "update canvas node", err)
+	default:
+		writeJSON(response, http.StatusOK, node)
+	}
+}
+
+func (c *CanvasController) ListEdges(response http.ResponseWriter, request *http.Request) {
+	edges, err := c.service.ListEdges(request.Context(), request.PathValue("workID"))
+	if errors.Is(err, service.ErrInvalidCanvasRequest) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID 不能为空"})
+		return
+	}
+	if err != nil {
+		c.internalError(response, "list canvas edges", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"edges": edges})
+}
+
 func (c *CanvasController) GetNodes(response http.ResponseWriter, request *http.Request) {
 	var input getCanvasNodesRequest
 	if !decodeCanvasRequest(response, request, &input) {
@@ -110,6 +177,76 @@ func (c *CanvasController) ListCandidates(response http.ResponseWriter, request 
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"candidates": candidates})
+}
+
+func (c *CanvasController) UpdateCandidatePosition(response http.ResponseWriter, request *http.Request) {
+	var input updateCanvasNodePositionRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	err := c.service.UpdateCandidatePosition(
+		request.Context(),
+		request.PathValue("workID"),
+		request.PathValue("candidateID"),
+		input.X,
+		input.Y,
+	)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "Candidate 请求无效"})
+	case errors.Is(err, canvas.ErrCandidateNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Candidate 不存在"})
+	case errors.Is(err, canvas.ErrCandidateResolved):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "Candidate 已处理，不能再移动"})
+	case err != nil:
+		c.internalError(response, "update canvas candidate position", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (c *CanvasController) AcceptCandidate(response http.ResponseWriter, request *http.Request) {
+	var input acceptCanvasCandidateRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	node, err := c.service.AcceptCandidate(request.Context(), canvas.AcceptCandidateInput{
+		WorkID:      request.PathValue("workID"),
+		CandidateID: request.PathValue("candidateID"),
+		Title:       input.Title,
+	})
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "Candidate 请求无效"})
+	case errors.Is(err, canvas.ErrCandidateNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Candidate 不存在"})
+	case errors.Is(err, canvas.ErrCandidateResolved):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "Candidate 已被丢弃，不能接受"})
+	case err != nil:
+		c.internalError(response, "accept canvas candidate", err)
+	default:
+		writeJSON(response, http.StatusOK, node)
+	}
+}
+
+func (c *CanvasController) RejectCandidate(response http.ResponseWriter, request *http.Request) {
+	err := c.service.RejectCandidate(
+		request.Context(),
+		request.PathValue("workID"),
+		request.PathValue("candidateID"),
+	)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "Candidate 请求无效"})
+	case errors.Is(err, canvas.ErrCandidateNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Candidate 不存在"})
+	case errors.Is(err, canvas.ErrCandidateResolved):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "Candidate 已接受，不能丢弃"})
+	case err != nil:
+		c.internalError(response, "reject canvas candidate", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (c *CanvasController) internalError(response http.ResponseWriter, operation string, err error) {

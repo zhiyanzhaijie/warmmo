@@ -26,6 +26,7 @@ type createAgentRunRequest struct {
 	Prompt         string   `json:"prompt"`
 	ContextNodeIDs []string `json:"contextNodeIds"`
 	Target         string   `json:"target"`
+	TargetNodeID   string   `json:"targetNodeId"`
 	ProviderID     string   `json:"providerId"`
 	ModelID        string   `json:"modelId"`
 }
@@ -48,7 +49,8 @@ func (c *AgentController) CreateRun(response http.ResponseWriter, request *http.
 	}
 	run, err := c.service.CreateRun(agent.RunInput{
 		WorkID: request.PathValue("workID"), Prompt: input.Prompt, Target: input.Target,
-		ProviderID: input.ProviderID, ModelID: input.ModelID, ContextNodeIDs: input.ContextNodeIDs,
+		TargetNodeID: input.TargetNodeID, ProviderID: input.ProviderID, ModelID: input.ModelID,
+		ContextNodeIDs: input.ContextNodeIDs,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidAgentRun) {

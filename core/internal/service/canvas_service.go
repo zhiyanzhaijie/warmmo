@@ -24,7 +24,7 @@ func (s *CanvasService) CreateNode(ctx context.Context, input canvas.CreateNodeI
 	input.Kind = strings.TrimSpace(input.Kind)
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = strings.TrimSpace(input.Content)
-	if input.WorkID == "" || input.Title == "" || input.Content == "" || !validNodeKind(input.Kind) {
+	if input.WorkID == "" || input.Title == "" || !canvas.IsValidNodeKind(input.Kind) {
 		return canvas.Node{}, ErrInvalidCanvasRequest
 	}
 	return s.store.CreateNode(ctx, input)
@@ -34,6 +34,15 @@ func (s *CanvasService) ListNodes(ctx context.Context, workID string) ([]canvas.
 	return s.store.ListNodes(ctx, strings.TrimSpace(workID))
 }
 
+func (s *CanvasService) GetNode(ctx context.Context, workID, nodeID string) (canvas.Node, error) {
+	workID = strings.TrimSpace(workID)
+	nodeID = strings.TrimSpace(nodeID)
+	if workID == "" || nodeID == "" {
+		return canvas.Node{}, ErrInvalidCanvasRequest
+	}
+	return s.store.GetNode(ctx, workID, nodeID)
+}
+
 func (s *CanvasService) GetNodes(ctx context.Context, workID string, nodeIDs []string) ([]canvas.Node, error) {
 	if len(nodeIDs) == 0 {
 		return nil, ErrInvalidCanvasRequest
@@ -41,19 +50,72 @@ func (s *CanvasService) GetNodes(ctx context.Context, workID string, nodeIDs []s
 	return s.store.GetNodes(ctx, strings.TrimSpace(workID), nodeIDs)
 }
 
+func (s *CanvasService) UpdateNode(ctx context.Context, input canvas.UpdateNodeInput) (canvas.Node, error) {
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.NodeID = strings.TrimSpace(input.NodeID)
+	input.Title = strings.TrimSpace(input.Title)
+	input.Content = strings.TrimSpace(input.Content)
+	if input.WorkID == "" || input.NodeID == "" || input.Title == "" || input.ExpectedRevision < 1 {
+		return canvas.Node{}, ErrInvalidCanvasRequest
+	}
+	return s.store.UpdateNode(ctx, input)
+}
+
 func (s *CanvasService) UpdateNodePosition(ctx context.Context, workID, nodeID string, x, y float64) error {
-	return s.store.UpdateNodePosition(ctx, strings.TrimSpace(workID), strings.TrimSpace(nodeID), x, y)
+	workID = strings.TrimSpace(workID)
+	nodeID = strings.TrimSpace(nodeID)
+	if workID == "" || nodeID == "" {
+		return ErrInvalidCanvasRequest
+	}
+	return s.store.UpdateNodePosition(ctx, workID, nodeID, x, y)
+}
+
+func (s *CanvasService) ListEdges(ctx context.Context, workID string) ([]canvas.Edge, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
+	return s.store.ListEdges(ctx, workID)
 }
 
 func (s *CanvasService) ListCandidates(ctx context.Context, workID string) ([]agent.Candidate, error) {
-	return s.store.ListCandidates(ctx, strings.TrimSpace(workID))
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
+	return s.store.ListCandidates(ctx, workID)
 }
 
-func validNodeKind(kind string) bool {
-	switch kind {
-	case "chapter", "character", "plot", "world", "setting", "item", "note", "timeline":
-		return true
-	default:
-		return false
+func (s *CanvasService) UpdateCandidatePosition(
+	ctx context.Context,
+	workID string,
+	candidateID string,
+	x float64,
+	y float64,
+) error {
+	workID = strings.TrimSpace(workID)
+	candidateID = strings.TrimSpace(candidateID)
+	if workID == "" || candidateID == "" {
+		return ErrInvalidCanvasRequest
 	}
+	return s.store.UpdateCandidatePosition(ctx, workID, candidateID, x, y)
+}
+
+func (s *CanvasService) AcceptCandidate(ctx context.Context, input canvas.AcceptCandidateInput) (canvas.Node, error) {
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.CandidateID = strings.TrimSpace(input.CandidateID)
+	input.Title = strings.TrimSpace(input.Title)
+	if input.WorkID == "" || input.CandidateID == "" {
+		return canvas.Node{}, ErrInvalidCanvasRequest
+	}
+	return s.store.AcceptCandidate(ctx, input)
+}
+
+func (s *CanvasService) RejectCandidate(ctx context.Context, workID, candidateID string) error {
+	workID = strings.TrimSpace(workID)
+	candidateID = strings.TrimSpace(candidateID)
+	if workID == "" || candidateID == "" {
+		return ErrInvalidCanvasRequest
+	}
+	return s.store.RejectCandidate(ctx, workID, candidateID)
 }

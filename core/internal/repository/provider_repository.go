@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 4
+	currentSchemaVersion = 5
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -87,6 +87,27 @@ CREATE INDEX IF NOT EXISTS idx_canvas_nodes_work_created
 	canvasPositionSchemaSQL = `
 ALTER TABLE canvas_nodes ADD COLUMN x REAL NOT NULL DEFAULT 0;
 ALTER TABLE canvas_nodes ADD COLUMN y REAL NOT NULL DEFAULT 0;`
+	candidateLifecycleSchemaSQL = `
+ALTER TABLE agent_candidates ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE agent_candidates ADD COLUMN kind TEXT NOT NULL DEFAULT 'section-draft';
+ALTER TABLE agent_candidates ADD COLUMN title TEXT NOT NULL DEFAULT '小节草稿候选';
+ALTER TABLE agent_candidates ADD COLUMN x REAL NOT NULL DEFAULT 520;
+ALTER TABLE agent_candidates ADD COLUMN y REAL NOT NULL DEFAULT 80;
+ALTER TABLE agent_candidates ADD COLUMN accepted_node_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_candidates ADD COLUMN decided_at TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_agent_candidates_work_status_created
+    ON agent_candidates(work_id, status, created_at DESC);
+CREATE TABLE IF NOT EXISTS canvas_edges (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    source_node_id TEXT NOT NULL REFERENCES canvas_nodes(id) ON DELETE CASCADE,
+    target_node_id TEXT NOT NULL REFERENCES canvas_nodes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(work_id, source_node_id, target_node_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_edges_work_created
+    ON canvas_edges(work_id, created_at);`
 )
 
 var (
@@ -349,7 +370,12 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add canvas node positions: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 4"); err != nil {
+	if schemaVersion < 5 {
+		if _, err := transaction.Exec(candidateLifecycleSchemaSQL); err != nil {
+			return fmt.Errorf("add candidate lifecycle: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 5"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

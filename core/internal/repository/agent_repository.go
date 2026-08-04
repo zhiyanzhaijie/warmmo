@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	warmagent "warmnote/core/internal/agent"
+	"warmnote/core/internal/canvas"
 )
 
 type AgentRepository struct {
@@ -18,6 +19,18 @@ type AgentRepository struct {
 
 func NewAgentRepository(providerRepository *ProviderRepository) *AgentRepository {
 	return &AgentRepository{database: providerRepository.database}
+}
+
+func (r *AgentRepository) GetCanvasNodeKind(workID, nodeID string) (string, error) {
+	var kind string
+	err := r.database.QueryRow(`SELECT kind FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", canvas.ErrNodeNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read target canvas node kind: %w", err)
+	}
+	return kind, nil
 }
 
 func (r *AgentRepository) CreateRun(input warmagent.RunInput) (warmagent.Run, error) {
@@ -164,6 +177,53 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 		return warmagent.Candidate{}, fmt.Errorf("commit completed agent run: %w", err)
 	}
 	return candidate, nil
+}
+
+func (r *AgentRepository) CompleteNodeUpdate(run warmagent.Run, nodeID string, result warmagent.RunResult) error {
+	now := time.Now().UTC()
+	transaction, err := r.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete node update: %w", err)
+	}
+	defer transaction.Rollback()
+	updated, err := transaction.Exec(`
+UPDATE canvas_nodes
+SET title = ?, content = ?, revision = revision + 1, updated_at = ?
+WHERE work_id = ? AND id = ? AND revision = ?`,
+		result.Title, result.Content, now.Format(time.RFC3339Nano), run.WorkID, nodeID, result.ExpectedRevision)
+	if err != nil {
+		return fmt.Errorf("update canvas node from agent run: %w", err)
+	}
+	changed, err := updated.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated canvas node from agent run: %w", err)
+	}
+	if changed == 0 {
+		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
+	}
+	statusResult, err := transaction.Exec(`
+UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		warmagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, warmagent.RunStatusRunning)
+	if err != nil {
+		return fmt.Errorf("complete node update run: %w", err)
+	}
+	statusChanged, err := statusResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read completed node update run: %w", err)
+	}
+	if statusChanged == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	if _, err := appendEvent(transaction, run.ID, warmagent.EventNodeUpdated, map[string]any{"nodeId": nodeID}, now); err != nil {
+		return err
+	}
+	if _, err := appendEvent(transaction, run.ID, warmagent.EventRunCompleted, map[string]any{"nodeId": nodeID}, now); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit node update run: %w", err)
+	}
+	return nil
 }
 
 func (r *AgentRepository) Fail(runID, message string) error {
