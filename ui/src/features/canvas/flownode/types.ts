@@ -19,3 +19,10 @@ export interface FlowNodeData extends Record<string, unknown> {
 }
 
 export type StoryFlowNode = Node<FlowNodeData, 'flow-node'>
+
+export interface SelectionProxyFlowNodeData extends Record<string, unknown> {
+  contextNodeIds: string[]
+}
+
+export type SelectionProxyFlowNode = Node<SelectionProxyFlowNodeData, 'selection-proxy'>
+export type CanvasFlowNode = StoryFlowNode | SelectionProxyFlowNode

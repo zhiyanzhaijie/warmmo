@@ -17,11 +17,11 @@ Surfaces barely lift. Cards are white (`{colors.canvas-elevated}`) on the #fafaf
 
 ## Colors
 
-> Source pages analyzed: the home page, the AI Gateway page, the customers page, and the pricing page. The ink/canvas/hairline trio recurs on every page; the accent blue (`{colors.link}`) surfaces on pricing, and the mesh-gradient stops live in the hero.
+> Source pages analyzed: the home page, the AI Gateway page, the customers page, and the pricing page. Warmnote adopts the recurring ink/canvas/hairline trio while deliberately replacing blue interface chrome with a monochrome interaction system. Chromatic stops remain confined to the hero mesh gradient and illustration assets.
 
 ### Brand & Accent
 - **Ink** (`{colors.primary}` / `{colors.ink}` — #171717): the brand's defining near-black. Headings, primary CTA fill, logo, and the darkest text tier. Paired with `{colors.on-primary}` (white).
-- **Vercel Blue** (`{colors.link}` — #0070f3): the link and accent blue — inline links, pricing highlights, focus signals. Darker press tone `{colors.link-deep}` (#0761d1), pale wash `{colors.link-soft}` (#d3e5ff).
+- **Monochrome Interaction** (`{colors.link}`): links, focus rings, selections, active nodes, handles, and connected edges use near-black ink in light mode (#171717) and soft ivory in dark mode (#f5f3ea). Pressed emphasis uses pure black / holy white through `{colors.link-deep}`; `{colors.link-soft}` is a neutral grey wash, never a blue tint.
 - **Violet** (`{colors.violet}` — #7928ca), **Cyan** (`{colors.cyan}` — #50e3c2), **Pink** (`{colors.pink}` — #ff0080), **Magenta** (`{colors.magenta}` — #eb367f): the chromatic accent family, used sparingly for illustration accents and as mesh-gradient stops, never as chrome fills.
 
 ### Surface
@@ -41,11 +41,17 @@ Surfaces barely lift. Cards are white (`{colors.canvas-elevated}`) on the #fafaf
 ### Semantic
 - **Error** (`{colors.error}` — #ee0000): validation / destructive, with a deep press tier `{colors.error-deep}` (#c50000).
 - **Warning** (`{colors.warning}` — #f5a623): caution states, with soft `{colors.warning-soft}` and deep `{colors.warning-deep}` tiers.
-- **Success** maps to `{colors.link}` (#0070f3) — the blue doubles as the positive/active signal.
+- **Success** uses `{colors.primary}` with an explicit icon or label. Do not encode success or active state with blue.
+
+### Links & Focus
+- Inline links use `{colors.link}` and an underline or another non-color affordance. Color alone must not communicate clickability.
+- Keyboard focus uses a crisp 2px `{colors.link}` outline with sufficient offset. In dark mode this becomes soft ivory rather than luminous blue.
+- Canvas selections, active nodes, handles, and selected edges share the same monochrome interaction color so the workspace reads as one coherent system.
+- Blue, violet, cyan, pink, and magenta are decorative colors only. They must not be used for routine application state or navigation chrome.
 
 ### Dark Theme
 
-Dark mode preserves the same ink, canvas, hairline, and blue-signal hierarchy rather than inverting the light palette mechanically.
+Dark mode preserves the same ink, canvas, and hairline hierarchy. Interactive emphasis shifts to soft ivory and holy white, avoiding cold or luminous chromatic highlights against the black canvas.
 
 | Token | Light | Dark |
 |---|---:|---:|
@@ -59,8 +65,9 @@ Dark mode preserves the same ink, canvas, hairline, and blue-signal hierarchy ra
 | `{colors.faint}` | `#a1a1a1` | `#525252` |
 | `{colors.primary}` | `#171717` | `#ededed` |
 | `{colors.on-primary}` | `#ffffff` | `#171717` |
-| `{colors.link}` | `#0070f3` | `#3291ff` |
-| `{colors.link-soft}` | `#d3e5ff` | `#102a43` |
+| `{colors.link}` | `#171717` | `#f5f3ea` |
+| `{colors.link-deep}` | `#000000` | `#ffffff` |
+| `{colors.link-soft}` | `#ececea` | `#242421` |
 | `{colors.error}` | `#ee0000` | `#ff6166` |
 
 Menus and floating controls use `#171717` in dark mode so they remain distinguishable from the `#111111` elevated surface. Shadows increase in opacity only enough to remain visible against the dark canvas.
@@ -239,14 +246,14 @@ Cards are rectangles at 12–16px radius; marketing buttons and category tabs ar
 
 ### Do
 - Keep the canvas near-white (`{colors.canvas}`) and let near-black ink (`{colors.ink}`) carry headings, CTAs, and borders — the system is a black-and-white duet.
-- Confine color to the hero mesh gradient and small illustration accents; reserve `{colors.link}` for links and focus.
+- Confine chromatic color to the hero mesh gradient and small illustration accents. Use the monochrome `{colors.link}` scale for links, focus, selection, and active canvas state.
 - Use the two button shapes by context: black pill (`{components.button-primary}`) for marketing CTAs, 6px square (`{components.button-primary-sm}`) for nav/app.
 - Define cards and inputs with a 1px hairline (`{colors.hairline}`) before any shadow — flat is the default.
 - Set display headings in Geist Sans 600 with tight negative tracking; label sections with uppercase Geist Mono eyebrows (`{typography.mono-eyebrow}`).
 - Step the grey text ladder deliberately: `{colors.ink}` → `{colors.body}` → `{colors.mute}` → `{colors.faint}`.
 
 ### Don't
-- Don't fill large surfaces with the accent colors — violet/cyan/pink/blue live in the gradient and illustrations, not as chrome.
+- Don't use violet, cyan, pink, or blue as application chrome. These colors live in gradients and illustrations only, never in links, focus rings, selections, handles, or active nodes.
 - Don't mix the button shapes within one context — marketing CTAs stay pills, app/nav controls stay 6px squares.
 - Don't pile on shadows — depth is a 1px hairline plus, at most, a finely-layered low-alpha shadow stack.
 - Don't set body copy in pure black (`#000000`) — the brand's ink is #171717 and body steps to `{colors.body}`.

@@ -7,7 +7,6 @@ import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 
 export const FlowNodeRenderer = memo(function FlowNodeRenderer(props: NodeProps<StoryFlowNode>) {
   const detailLevel = useFlowNodeStore((state) => state.detailLevel)
-  const effectiveDetailLevel = props.selected ? 'full' : detailLevel
-  const Renderer = flowNodeRenderers[props.data.kind][effectiveDetailLevel]
+  const Renderer = flowNodeRenderers[props.data.kind][detailLevel]
   return <Renderer {...props} />
 })

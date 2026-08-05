@@ -1,4 +1,8 @@
-import type { Edge } from '@xyflow/react'
+import type { CanvasFlowEdge } from '@/features/canvas/flowedge/types'
+import {
+  flowNodeEdgeSourceHandleId,
+  flowNodeEdgeTargetHandleId,
+} from '@/features/canvas/flownode/handles'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 import type { AgentCandidate, CanvasEdge, CanvasNode } from '@/types/canvas'
 
@@ -48,8 +52,8 @@ export function toFlowNodes(nodes: CanvasNode[], candidates: AgentCandidate[]): 
   return result
 }
 
-export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): Edge[] {
-  const result = new Array<Edge>(
+export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): CanvasFlowEdge[] {
+  const result = new Array<CanvasFlowEdge>(
     edges.length + candidates.reduce((count, candidate) => count + candidate.contextNodeIds.length, 0),
   )
   let resultIndex = 0
@@ -57,12 +61,16 @@ export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): 
   for (const edge of edges) {
     result[resultIndex] = {
       id: edge.id,
+      type: 'canvas-edge',
       source: edge.sourceNodeId,
+      sourceHandle: flowNodeEdgeSourceHandleId,
       target: edge.targetNodeId,
-      selectable: false,
-      deletable: false,
+      targetHandle: flowNodeEdgeTargetHandleId,
+      selectable: true,
+      deletable: true,
+      interactionWidth: 28,
       style: { stroke: 'var(--color-mute)', strokeWidth: 1.25 },
-      data: { kind: edge.kind },
+      data: { kind: edge.kind, persisted: true, workId: edge.workId },
     }
     resultIndex += 1
   }
@@ -71,8 +79,11 @@ export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): 
     for (const sourceNodeId of candidate.contextNodeIds) {
       result[resultIndex] = {
         id: `candidate-context:${candidate.id}:${sourceNodeId}`,
+        type: 'canvas-edge',
         source: sourceNodeId,
+        sourceHandle: flowNodeEdgeSourceHandleId,
         target: `candidate:${candidate.id}`,
+        targetHandle: flowNodeEdgeTargetHandleId,
         selectable: false,
         deletable: false,
         style: {
@@ -80,7 +91,7 @@ export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): 
           strokeWidth: 1.5,
           strokeDasharray: '5 5',
         },
-        data: { kind: 'candidate_context' },
+        data: { kind: 'candidate_context', persisted: false, workId: candidate.workId },
       }
       resultIndex += 1
     }

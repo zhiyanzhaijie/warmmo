@@ -19,9 +19,9 @@
   --color-canvas-elevated: #ffffff;
   --color-hairline: #ebebeb;
   --color-hairline-soft: #f2f2f2;
-  --color-link: #0070f3;
-  --color-link-deep: #0761d1;
-  --color-link-soft: #d3e5ff;
+  --color-link: #171717;
+  --color-link-deep: #000000;
+  --color-link-soft: #ececea;
   --color-violet: #7928ca;
   --color-cyan: #50e3c2;
   --color-pink: #ff0080;
@@ -38,7 +38,7 @@
   --color-muted-foreground: #8f8f8f;
   --color-border: #ebebeb;
   --color-input: #ebebeb;
-  --color-ring: #0070f3;
+  --color-ring: #171717;
   --color-destructive: #ee0000;
 
   --text-display-xl: 3rem;
@@ -126,9 +126,9 @@
   --color-canvas-elevated: #111111;
   --color-hairline: #2a2a2a;
   --color-hairline-soft: #1a1a1a;
-  --color-link: #3291ff;
-  --color-link-deep: #52a8ff;
-  --color-link-soft: #102a43;
+  --color-link: #f5f3ea;
+  --color-link-deep: #ffffff;
+  --color-link-soft: #242421;
   --color-violet: #a855f7;
   --color-cyan: #5eead4;
   --color-pink: #ff4da6;
@@ -145,7 +145,7 @@
   --color-muted-foreground: #8f8f8f;
   --color-border: #2a2a2a;
   --color-input: #2a2a2a;
-  --color-ring: #3291ff;
+  --color-ring: #f5f3ea;
   --color-destructive: #ff6166;
   --shadow-whisper: 0 1px 1px rgb(0 0 0 / 24%);
   --shadow-floating: 0 2px 2px rgb(0 0 0 / 28%), 0 8px 20px -4px rgb(0 0 0 / 48%);
@@ -192,100 +192,5 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
-  }
-}
-
-@layer components {
-  .warmnote-flow .react-flow__node {
-    border-radius: var(--radius-sm);
-  }
-
-  .warmnote-flow__viewport-toolbar {
-    position: absolute;
-    left: 1rem;
-    bottom: 1rem;
-    z-index: 10;
-    display: flex;
-    flex-direction: row;
-    overflow: hidden;
-    border: 1px solid var(--color-hairline);
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--color-canvas-elevated) 94%, transparent);
-  }
-
-  .warmnote-flow__viewport-button {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--color-mute);
-    transition: background-color 150ms ease, color 150ms ease;
-  }
-
-  .warmnote-flow__viewport-button + .warmnote-flow__viewport-button {
-    border-left: 1px solid var(--color-hairline);
-  }
-
-  .warmnote-flow__viewport-button:not(:disabled):hover {
-    background: var(--color-hairline-soft);
-    color: var(--color-ink);
-  }
-
-  .warmnote-flow__viewport-button--active {
-    background: var(--color-hairline-soft);
-    color: var(--color-ink);
-  }
-
-  .warmnote-flow__viewport-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.35;
-  }
-
-  .warmnote-flow__viewport-button:focus-visible {
-    outline: 2px solid var(--color-link);
-    outline-offset: -2px;
-  }
-
-  .warmnote-flow__viewport-button svg {
-    fill: none;
-    stroke: currentColor;
-  }
-
-  .warmnote-flow .react-flow__panel.warmnote-flow__minimap {
-    width: 144px;
-    height: 96px;
-    overflow: hidden;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--color-ink) 9%, var(--color-canvas));
-    opacity: 0.92;
-    transition: opacity 150ms ease;
-  }
-
-  .warmnote-flow .warmnote-flow__minimap:hover {
-    opacity: 1;
-  }
-
-  .warmnote-flow .warmnote-flow__minimap .react-flow__minimap-svg {
-    width: 100%;
-    height: 100%;
-    cursor: grab;
-  }
-
-  .warmnote-flow .warmnote-flow__minimap .react-flow__minimap-svg:active {
-    cursor: grabbing;
-  }
-
-  .warmnote-flow .warmnote-flow__minimap .react-flow__minimap-mask {
-    stroke-linejoin: round;
-  }
-
-  .warmnote-flow .react-flow__selection,
-  .warmnote-flow .react-flow__nodesselection-rect {
-    border: 1px solid var(--color-link);
-    background: color-mix(in srgb, var(--color-link-soft) 45%, transparent);
   }
 }

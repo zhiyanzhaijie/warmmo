@@ -27,6 +27,15 @@ func (s *CanvasService) CreateNode(ctx context.Context, input canvas.CreateNodeI
 	if input.WorkID == "" || input.Title == "" || !canvas.IsValidNodeKind(input.Kind) {
 		return canvas.Node{}, ErrInvalidCanvasRequest
 	}
+	if len(input.ContextNodeIDs) > 100 {
+		return canvas.Node{}, ErrInvalidCanvasRequest
+	}
+	for index := range input.ContextNodeIDs {
+		input.ContextNodeIDs[index] = strings.TrimSpace(input.ContextNodeIDs[index])
+		if input.ContextNodeIDs[index] == "" {
+			return canvas.Node{}, ErrInvalidCanvasRequest
+		}
+	}
 	return s.store.CreateNode(ctx, input)
 }
 
@@ -132,6 +141,30 @@ func (s *CanvasService) ListEdges(ctx context.Context, workID string) ([]canvas.
 		return nil, ErrInvalidCanvasRequest
 	}
 	return s.store.ListEdges(ctx, workID)
+}
+
+func (s *CanvasService) CreateEdge(ctx context.Context, input canvas.CreateEdgeInput) (canvas.Edge, error) {
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.SourceNodeID = strings.TrimSpace(input.SourceNodeID)
+	input.TargetNodeID = strings.TrimSpace(input.TargetNodeID)
+	if input.WorkID == "" || input.SourceNodeID == "" || input.TargetNodeID == "" || input.SourceNodeID == input.TargetNodeID {
+		return canvas.Edge{}, ErrInvalidCanvasRequest
+	}
+	return s.store.CreateEdge(ctx, input)
+}
+
+func (s *CanvasService) DeleteEdges(ctx context.Context, workID string, edgeIDs []string) error {
+	workID = strings.TrimSpace(workID)
+	if workID == "" || len(edgeIDs) == 0 || len(edgeIDs) > 100 {
+		return ErrInvalidCanvasRequest
+	}
+	for index := range edgeIDs {
+		edgeIDs[index] = strings.TrimSpace(edgeIDs[index])
+		if edgeIDs[index] == "" {
+			return ErrInvalidCanvasRequest
+		}
+	}
+	return s.store.DeleteEdges(ctx, workID, edgeIDs)
 }
 
 func (s *CanvasService) ListCandidates(ctx context.Context, workID string) ([]agent.Candidate, error) {

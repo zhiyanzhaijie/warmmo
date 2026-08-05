@@ -37,6 +37,8 @@ func NewRouter(runtimeController *controller.RuntimeController, providerControll
 	router.HandleFunc("POST /api/v1/works/{workID}/canvas-history/undo", canvasController.Undo)
 	router.HandleFunc("POST /api/v1/works/{workID}/canvas-history/redo", canvasController.Redo)
 	router.HandleFunc("GET /api/v1/works/{workID}/edges", canvasController.ListEdges)
+	router.HandleFunc("POST /api/v1/works/{workID}/edges", canvasController.CreateEdge)
+	router.HandleFunc("DELETE /api/v1/works/{workID}/edges", canvasController.DeleteEdges)
 	router.HandleFunc("GET /api/v1/works/{workID}/candidates", canvasController.ListCandidates)
 	router.HandleFunc("PATCH /api/v1/works/{workID}/candidates/{candidateID}/position", canvasController.UpdateCandidatePosition)
 	router.HandleFunc("POST /api/v1/works/{workID}/candidates/{candidateID}/accept", canvasController.AcceptCandidate)

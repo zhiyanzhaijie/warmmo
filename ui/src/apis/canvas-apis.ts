@@ -72,15 +72,22 @@ export function useCanvasCandidates(workId: string) {
 export function useCreateCanvasNode(workId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: { kind: CanvasNodeKind; title: string; content: string; x: number; y: number }) =>
+    mutationFn: (input: {
+      kind: CanvasNodeKind
+      title: string
+      content: string
+      x: number
+      y: number
+      contextNodeIds?: string[]
+    }) =>
       coreClient<CanvasNode>(`/works/${workId}/nodes`, { method: 'POST', body: input }),
     onSuccess: (node) => {
       queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) => [...nodes, node])
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) })
       void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
     },
   })
 }
-
 
 export function useCanvasEdges(workId: string) {
   return useQuery({
@@ -88,6 +95,33 @@ export function useCanvasEdges(workId: string) {
     queryFn: async ({ signal }) => {
       const response = await coreClient<EdgesResponse>(`/works/${workId}/edges`, { signal })
       return response.edges
+    },
+  })
+}
+
+export function useCreateCanvasEdge(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { sourceNodeId: string; targetNodeId: string }) =>
+      coreClient<CanvasEdge>(`/works/${workId}/edges`, { method: 'POST', body: input }),
+    onSuccess: (edge) => {
+      queryClient.setQueryData<CanvasEdge[]>(canvasKeys.edges(workId), (edges = []) =>
+        edges.some((existing) => existing.id === edge.id) ? edges : [...edges, edge])
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
+    },
+  })
+}
+
+export function useDeleteCanvasEdges(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (edgeIds: string[]) =>
+      coreClient<void>(`/works/${workId}/edges`, { method: 'DELETE', body: { edgeIds } }),
+    onSuccess: (_, edgeIds) => {
+      const deletedEdgeIds = new Set(edgeIds)
+      queryClient.setQueryData<CanvasEdge[]>(canvasKeys.edges(workId), (edges = []) =>
+        edges.filter((edge) => !deletedEdgeIds.has(edge.id)))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
     },
   })
 }

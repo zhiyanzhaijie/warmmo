@@ -1,12 +1,12 @@
 import { NodeToolbar, Position, useStore } from '@xyflow/react'
 import { ArrowUp, LoaderCircle, Paperclip, Plus, Sparkles } from 'lucide-react'
-import { memo, type ReactNode, useCallback, useState } from 'react'
+import { memo, type ReactNode, useCallback, useMemo, useState } from 'react'
 
 import { useCreateAgentRun } from '@/apis/canvas-apis'
 import { ModelSelector } from '@/components/models/ModelSelector'
 import { agentEventLabels, getAgentEventSummary } from '@/features/canvas/agent-events'
+import { CanvasContextNodes } from '@/features/canvas/CanvasContextNodes'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
-import { nodeDefinitions } from '@/features/canvas/nodes/definitions'
 import { useAgentRunStream } from '@/features/canvas/use-agent-run-stream'
 import type { EnabledModel } from '@/types/provider'
 
@@ -14,45 +14,51 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({ workId 
   const createRun = useCreateAgentRun(workId)
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
   const toolbarSourceNodeId = useFlowNodeStore((state) => state.toolbarSourceNodeId)
-  const selectedNodeKind = useFlowNodeStore((state) => {
-    if (state.toolbarSourceNodeId === null) return null
-    return state.nodes.find((node) =>
-      node.data.sourceType === 'node' && node.data.sourceId === state.toolbarSourceNodeId)?.data.kind ?? null
-  })
+  const flowNodes = useFlowNodeStore((state) => state.nodes)
+  const flowEdges = useFlowNodeStore((state) => state.edges)
+  const targetNodeId = selectedNodeIds[0] ?? null
+  const contextNodeIds = useMemo(() => targetNodeId === null
+    ? []
+    : [...new Set(flowEdges.flatMap((edge) =>
+        edge.target === targetNodeId && edge.data?.kind === 'generated_from' ? [edge.source] : []))],
+  [flowEdges, targetNodeId])
+  const sourceNodeById = useMemo(() => new Map(flowNodes.flatMap((node) =>
+    node.data.sourceType === 'node' ? [[node.data.sourceId, node] as const] : [])), [flowNodes])
+  const targetNode = targetNodeId === null ? undefined : sourceNodeById.get(targetNodeId)
+  const contextNodes = useMemo(() => contextNodeIds.flatMap((nodeId) => {
+    const node = sourceNodeById.get(nodeId)
+    return node === undefined ? [] : [node]
+  }), [contextNodeIds, sourceNodeById])
   const isNodeDragging = useStore((state) => state.nodes.some((node) => node.dragging))
   const [model, setModel] = useState<EnabledModel | null>(null)
   const [prompt, setPrompt] = useState('让主角在宴会上第一次发现记忆能力的代价。')
   const { activeRunId, draft, events, streamError, streamRun } = useAgentRunStream(workId)
-  const canRun = model !== null && prompt.trim() !== '' && selectedNodeIds.length === 1 && activeRunId === null
+  const canRun = model !== null && prompt.trim() !== '' && targetNodeId !== null && activeRunId === null
   const runAgent = useCallback(() => {
-    const targetNodeId = selectedNodeIds[0]
-    if (model === null || targetNodeId === undefined || !canRun || createRun.isPending) return
-    createRun.mutate({ prompt, targetNodeId, contextNodeIds: selectedNodeIds, model }, {
+    if (model === null || targetNodeId === null || !canRun || createRun.isPending) return
+    const runContextNodeIds = [...new Set([...contextNodeIds, targetNodeId])]
+    createRun.mutate({ prompt, targetNodeId, contextNodeIds: runContextNodeIds, model }, {
       onSuccess: (run) => streamRun(run.id),
     })
-  }, [canRun, createRun, model, prompt, selectedNodeIds, streamRun])
-  const nodeDefinition = selectedNodeKind === null ? null : nodeDefinitions[selectedNodeKind]
-  const NodeIcon = nodeDefinition?.icon
-
+  }, [canRun, contextNodeIds, createRun, model, prompt, streamRun, targetNodeId])
   return (
     <>
-      {selectedNodeIds.length === 1 && toolbarSourceNodeId === selectedNodeIds[0] && !isNodeDragging ? (
+      {targetNodeId !== null && targetNode !== undefined && toolbarSourceNodeId === targetNodeId && !isNodeDragging ? (
         <NodeToolbar
-          nodeId={selectedNodeIds}
+          nodeId={targetNodeId}
           position={Position.Bottom}
           offset={12}
           isVisible
           className="z-20"
         >
-          <section className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-hidden rounded-sm border border-hairline bg-canvas-elevated shadow-floating">
-            <header className="flex h-10 items-center gap-space-xs px-space-md pt-space-xxs">
-              {NodeIcon !== undefined ? <NodeIcon className="text-mute" size={14} /> : null}
-              <span className="text-label-sm text-body">{nodeDefinition?.label ?? '节点'}节点</span>
-              <span className="ml-auto font-mono text-mono-eyebrow text-faint">NODE</span>
-            </header>
+          <section
+            data-node-kind={targetNode.data.kind}
+            className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-hidden rounded-sm bg-canvas-elevated shadow-floating"
+          >
+            <CanvasContextNodes nodes={contextNodes} />
 
             <textarea
-              className="block min-h-28 max-h-48 w-full resize-none bg-transparent px-space-md pb-space-sm text-body-md leading-6 text-ink outline-none placeholder:text-faint"
+              className="block min-h-28 max-h-48 w-full resize-none bg-transparent px-space-md py-space-sm text-body-md leading-6 text-ink outline-none placeholder:text-faint"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => {

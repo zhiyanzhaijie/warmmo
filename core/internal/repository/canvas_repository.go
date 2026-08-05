@@ -49,8 +49,37 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, nod
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("create canvas node: %w", err)
 	}
+	contextNodeIDs := uniqueStrings(input.ContextNodeIDs)
+	edges := make([]canvas.Edge, 0, len(contextNodeIDs))
+	for _, sourceNodeID := range contextNodeIDs {
+		if sourceNodeID == node.ID {
+			continue
+		}
+		var sourceExists int
+		err := transaction.QueryRowContext(ctx, `
+SELECT 1 FROM canvas_nodes WHERE work_id = ? AND id = ?`, node.WorkID, sourceNodeID).Scan(&sourceExists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return canvas.Node{}, canvas.ErrNodeNotFound
+		}
+		if err != nil {
+			return canvas.Node{}, fmt.Errorf("read canvas context node: %w", err)
+		}
+		edge := canvas.Edge{
+			ID: uuid.NewString(), WorkID: node.WorkID, SourceNodeID: sourceNodeID,
+			TargetNodeID: node.ID, Kind: "generated_from", CreatedAt: now,
+		}
+		_, err = transaction.ExecContext(ctx, `
+INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
+VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
+			edge.Kind, edge.CreatedAt.Format(time.RFC3339Nano))
+		if err != nil {
+			return canvas.Node{}, fmt.Errorf("create canvas context edge: %w", err)
+		}
+		edges = append(edges, edge)
+	}
 	if err := appendCanvasAction(ctx, transaction, node.WorkID, actionCreateNodes, "创建节点", createNodesActionPayload{
 		Nodes: []canvas.Node{node},
+		Edges: edges,
 	}); err != nil {
 		return canvas.Node{}, err
 	}
@@ -311,6 +340,60 @@ FROM canvas_edges WHERE work_id = ? ORDER BY created_at`, workID)
 	}
 	return edges, nil
 }
+
+func (r *CanvasRepository) CreateEdge(ctx context.Context, input canvas.CreateEdgeInput) (canvas.Edge, error) {
+	transaction, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return canvas.Edge{}, fmt.Errorf("begin create canvas edge: %w", err)
+	}
+	defer transaction.Rollback()
+
+	var nodeCount int
+	err = transaction.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM canvas_nodes
+WHERE work_id = ? AND id IN (?, ?)`, input.WorkID, input.SourceNodeID, input.TargetNodeID).Scan(&nodeCount)
+	if err != nil {
+		return canvas.Edge{}, fmt.Errorf("read canvas edge nodes: %w", err)
+	}
+	if nodeCount != 2 {
+		return canvas.Edge{}, canvas.ErrNodeNotFound
+	}
+
+	existing, err := scanCanvasEdge(transaction.QueryRowContext(ctx, `
+SELECT id, work_id, source_node_id, target_node_id, kind, created_at
+FROM canvas_edges
+WHERE work_id = ? AND source_node_id = ? AND target_node_id = ? AND kind = 'generated_from'`,
+		input.WorkID, input.SourceNodeID, input.TargetNodeID))
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return canvas.Edge{}, fmt.Errorf("read existing canvas edge: %w", err)
+	}
+
+	now := time.Now().UTC()
+	edge := canvas.Edge{
+		ID: uuid.NewString(), WorkID: input.WorkID, SourceNodeID: input.SourceNodeID,
+		TargetNodeID: input.TargetNodeID, Kind: "generated_from", CreatedAt: now,
+	}
+	_, err = transaction.ExecContext(ctx, `
+INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
+VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
+		edge.Kind, edge.CreatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return canvas.Edge{}, fmt.Errorf("create canvas edge: %w", err)
+	}
+	if err := appendCanvasAction(ctx, transaction, input.WorkID, actionCreateEdge, "创建连接", createEdgeActionPayload{
+		Edge: edge,
+	}); err != nil {
+		return canvas.Edge{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return canvas.Edge{}, fmt.Errorf("commit create canvas edge: %w", err)
+	}
+	return edge, nil
+}
+
 func (r *CanvasRepository) CreateCandidate(ctx context.Context, candidate agent.Candidate) (agent.Candidate, error) {
 	existing, err := r.candidateByRun(ctx, candidate.RunID)
 	if err == nil {
@@ -366,6 +449,20 @@ INSERT INTO agent_candidates (
 		return agent.Candidate{}, fmt.Errorf("commit canvas candidate: %w", err)
 	}
 	return candidate, nil
+}
+
+func scanCanvasEdge(scanner rowScanner) (canvas.Edge, error) {
+	var edge canvas.Edge
+	var createdAt string
+	if err := scanner.Scan(&edge.ID, &edge.WorkID, &edge.SourceNodeID, &edge.TargetNodeID, &edge.Kind, &createdAt); err != nil {
+		return canvas.Edge{}, err
+	}
+	var err error
+	edge.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return canvas.Edge{}, fmt.Errorf("parse canvas edge created time: %w", err)
+	}
+	return edge, nil
 }
 
 func (r *CanvasRepository) candidateByRun(ctx context.Context, runID string) (agent.Candidate, error) {

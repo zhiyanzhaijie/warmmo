@@ -20,10 +20,13 @@ const (
 	actionDeleteNodes = "nodes.deleted"
 	actionMoveNodes   = "nodes.moved"
 	actionUpdateNode  = "node.updated"
+	actionCreateEdge  = "edge.created"
+	actionDeleteEdges = "edges.deleted"
 )
 
 type createNodesActionPayload struct {
 	Nodes []canvas.Node `json:"nodes"`
+	Edges []canvas.Edge `json:"edges,omitempty"`
 }
 
 type deleteNodesActionPayload struct {
@@ -45,6 +48,56 @@ type nodeContentState struct {
 type updateNodeActionPayload struct {
 	Before nodeContentState `json:"before"`
 	After  nodeContentState `json:"after"`
+}
+
+type createEdgeActionPayload struct {
+	Edge canvas.Edge `json:"edge"`
+}
+
+type deleteEdgesActionPayload struct {
+	Edges []canvas.Edge `json:"edges"`
+}
+
+func (r *CanvasRepository) DeleteEdges(ctx context.Context, workID string, edgeIDs []string) error {
+	edgeIDs = uniqueStrings(edgeIDs)
+	if len(edgeIDs) == 0 || len(edgeIDs) > 100 {
+		return canvas.ErrInvalidNode
+	}
+	transaction, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete canvas edges: %w", err)
+	}
+	defer transaction.Rollback()
+
+	edges := make([]canvas.Edge, 0, len(edgeIDs))
+	for _, edgeID := range edgeIDs {
+		edge, err := scanCanvasEdge(transaction.QueryRowContext(ctx, `
+SELECT id, work_id, source_node_id, target_node_id, kind, created_at
+FROM canvas_edges WHERE work_id = ? AND id = ?`, workID, edgeID))
+		if errors.Is(err, sql.ErrNoRows) {
+			return canvas.ErrNodeNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("read deleted canvas edge: %w", err)
+		}
+		edges = append(edges, edge)
+	}
+	if err := deleteEdgeSnapshots(ctx, transaction, workID, edgeIDs); err != nil {
+		return err
+	}
+	label := "删除连接"
+	if len(edges) > 1 {
+		label = fmt.Sprintf("删除 %d 条连接", len(edges))
+	}
+	if err := appendCanvasAction(ctx, transaction, workID, actionDeleteEdges, label, deleteEdgesActionPayload{
+		Edges: edges,
+	}); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit delete canvas edges: %w", err)
+	}
+	return nil
 }
 
 type storedCanvasAction struct {
@@ -361,7 +414,10 @@ func applyCanvasAction(
 			return fmt.Errorf("decode create nodes action: %w", err)
 		}
 		if forward {
-			return restoreNodes(ctx, transaction, payload.Nodes)
+			if err := restoreNodes(ctx, transaction, payload.Nodes); err != nil {
+				return err
+			}
+			return restoreEdges(ctx, transaction, payload.Edges)
 		}
 		return deleteNodeSnapshots(ctx, transaction, workID, payload.Nodes)
 	case actionDeleteNodes:
@@ -394,9 +450,48 @@ func applyCanvasAction(
 			return applyNodeContent(ctx, transaction, workID, payload.After)
 		}
 		return applyNodeContent(ctx, transaction, workID, payload.Before)
+	case actionCreateEdge:
+		var payload createEdgeActionPayload
+		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("decode create edge action: %w", err)
+		}
+		if forward {
+			return restoreEdges(ctx, transaction, []canvas.Edge{payload.Edge})
+		}
+		return deleteEdgeSnapshots(ctx, transaction, workID, []string{payload.Edge.ID})
+	case actionDeleteEdges:
+		var payload deleteEdgesActionPayload
+		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("decode delete edges action: %w", err)
+		}
+		if forward {
+			edgeIDs := make([]string, len(payload.Edges))
+			for index, edge := range payload.Edges {
+				edgeIDs[index] = edge.ID
+			}
+			return deleteEdgeSnapshots(ctx, transaction, workID, edgeIDs)
+		}
+		return restoreEdges(ctx, transaction, payload.Edges)
 	default:
 		return fmt.Errorf("unsupported canvas action type %q", action.ActionType)
 	}
+}
+
+func deleteEdgeSnapshots(ctx context.Context, transaction *sql.Tx, workID string, edgeIDs []string) error {
+	for _, edgeID := range edgeIDs {
+		result, err := transaction.ExecContext(ctx, `DELETE FROM canvas_edges WHERE work_id = ? AND id = ?`, workID, edgeID)
+		if err != nil {
+			return fmt.Errorf("delete canvas edge snapshot: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read deleted canvas edge snapshot: %w", err)
+		}
+		if changed == 0 {
+			return canvas.ErrNodeNotFound
+		}
+	}
+	return nil
 }
 
 func applyNodePositions(

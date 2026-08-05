@@ -15,6 +15,7 @@ interface FlowNodeStoreActions {
   hideNodeToolbar: () => void
   openPreview: (nodeId: string) => void
   closePreview: () => void
+  focusSourceNode: (nodeId: string) => void
 }
 
 export interface FlowNodeStore {
@@ -25,6 +26,7 @@ export interface FlowNodeStore {
   toolbarSourceNodeId: string | null
   previewNodeId: string | null
   detailLevel: FlowNodeDetailLevel
+  pendingFocusSourceNodeId: string | null
   actions: FlowNodeStoreActions
 }
 
@@ -35,7 +37,12 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
     const actions: FlowNodeStoreActions = {
       syncNodes: (incomingNodes) => {
         set((state) => {
-          const nodes = mergeRemoteNodes(state.nodes, incomingNodes)
+          let nodes = mergeRemoteNodes(state.nodes, incomingNodes)
+          const pendingFocusSourceNodeId = state.pendingFocusSourceNodeId
+          const focusedNodeId = pendingFocusSourceNodeId !== null && nodes.some(
+            (node) => node.data.sourceType === 'node' && node.data.sourceId === pendingFocusSourceNodeId,
+          ) ? pendingFocusSourceNodeId : null
+          if (focusedNodeId !== null) nodes = selectOnlySourceNode(nodes, focusedNodeId)
           const sourceNodeCount = countSourceNodes(nodes)
           const selectedSourceNodeIds = collectSelectedSourceNodeIds(nodes)
           return {
@@ -44,7 +51,10 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
             selectedSourceNodeIds: areStringArraysEqual(selectedSourceNodeIds, state.selectedSourceNodeIds)
               ? state.selectedSourceNodeIds
               : selectedSourceNodeIds,
-            toolbarSourceNodeId: resolveToolbarSourceNodeId(state.toolbarSourceNodeId, selectedSourceNodeIds),
+            toolbarSourceNodeId: focusedNodeId !== null
+              ? focusedNodeId
+              : resolveToolbarSourceNodeId(state.toolbarSourceNodeId, selectedSourceNodeIds),
+            pendingFocusSourceNodeId: focusedNodeId !== null ? null : pendingFocusSourceNodeId,
           }
         })
       },
@@ -88,6 +98,20 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       closePreview: () => {
         set({ previewNodeId: null })
       },
+      focusSourceNode: (nodeId) => {
+        set((state) => {
+          const nodeExists = state.nodes.some(
+            (node) => node.data.sourceType === 'node' && node.data.sourceId === nodeId,
+          )
+          if (!nodeExists) return { pendingFocusSourceNodeId: nodeId }
+          return {
+            nodes: selectOnlySourceNode(state.nodes, nodeId),
+            selectedSourceNodeIds: [nodeId],
+            toolbarSourceNodeId: nodeId,
+            pendingFocusSourceNodeId: null,
+          }
+        })
+      },
     }
 
     return {
@@ -98,6 +122,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       toolbarSourceNodeId: null,
       previewNodeId: null,
       detailLevel: 'full',
+      pendingFocusSourceNodeId: null,
       actions,
     }
   })
@@ -205,6 +230,13 @@ function countSourceNodes(nodes: StoryFlowNode[]) {
     if (node.data.sourceType === 'node') count += 1
   }
   return count
+}
+
+function selectOnlySourceNode(nodes: StoryFlowNode[], nodeId: string) {
+  return nodes.map((node) => {
+    const selected = node.data.sourceType === 'node' && node.data.sourceId === nodeId
+    return node.selected === selected ? node : { ...node, selected }
+  })
 }
 
 function areStringArraysEqual(left: string[], right: string[]) {

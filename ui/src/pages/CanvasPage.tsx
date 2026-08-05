@@ -2,6 +2,7 @@ import { ReactFlowProvider } from '@xyflow/react'
 import { useParams } from 'react-router-dom'
 
 import '@xyflow/react/dist/style.css'
+import '@/features/canvas/canvas.css'
 
 import { useCanvasCandidates, useCanvasEdges, useCanvasNodes } from '@/apis/canvas-apis'
 import { CanvasAgentWorkspace } from '@/features/canvas/CanvasAgentWorkspace'

@@ -19,11 +19,21 @@ type CanvasController struct {
 }
 
 type createCanvasNodeRequest struct {
-	Kind    string  `json:"kind"`
-	Title   string  `json:"title"`
-	Content string  `json:"content"`
-	X       float64 `json:"x"`
-	Y       float64 `json:"y"`
+	Kind           string   `json:"kind"`
+	Title          string   `json:"title"`
+	Content        string   `json:"content"`
+	X              float64  `json:"x"`
+	Y              float64  `json:"y"`
+	ContextNodeIDs []string `json:"contextNodeIds"`
+}
+
+type createCanvasEdgeRequest struct {
+	SourceNodeID string `json:"sourceNodeId"`
+	TargetNodeID string `json:"targetNodeId"`
+}
+
+type deleteCanvasEdgesRequest struct {
+	EdgeIDs []string `json:"edgeIds"`
 }
 
 type getCanvasNodesRequest struct {
@@ -64,10 +74,14 @@ func (c *CanvasController) CreateNode(response http.ResponseWriter, request *htt
 	}
 	node, err := c.service.CreateNode(request.Context(), canvas.CreateNodeInput{
 		WorkID: request.PathValue("workID"), Kind: input.Kind, Title: input.Title, Content: input.Content,
-		X: input.X, Y: input.Y,
+		X: input.X, Y: input.Y, ContextNodeIDs: input.ContextNodeIDs,
 	})
 	if errors.Is(err, service.ErrInvalidCanvasRequest) {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID、节点类型或标题无效"})
+		return
+	}
+	if errors.Is(err, canvas.ErrNodeNotFound) {
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "部分上下文节点不存在"})
 		return
 	}
 	if err != nil {
@@ -239,6 +253,44 @@ func (c *CanvasController) ListEdges(response http.ResponseWriter, request *http
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"edges": edges})
+}
+
+func (c *CanvasController) CreateEdge(response http.ResponseWriter, request *http.Request) {
+	var input createCanvasEdgeRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	edge, err := c.service.CreateEdge(request.Context(), canvas.CreateEdgeInput{
+		WorkID: request.PathValue("workID"), SourceNodeID: input.SourceNodeID, TargetNodeID: input.TargetNodeID,
+	})
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "连接节点无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "连接节点不存在"})
+	case err != nil:
+		c.internalError(response, "create canvas edge", err)
+	default:
+		writeJSON(response, http.StatusCreated, edge)
+	}
+}
+
+func (c *CanvasController) DeleteEdges(response http.ResponseWriter, request *http.Request) {
+	var input deleteCanvasEdgesRequest
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	err := c.service.DeleteEdges(request.Context(), request.PathValue("workID"), input.EdgeIDs)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请选择 1 到 100 条连接"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "部分连接不存在"})
+	case err != nil:
+		c.internalError(response, "delete canvas edges", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (c *CanvasController) GetNodes(response http.ResponseWriter, request *http.Request) {

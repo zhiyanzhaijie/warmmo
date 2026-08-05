@@ -12,12 +12,12 @@ import (
 )
 
 var (
-	ErrNodeNotFound      = errors.New("canvas node not found")
-	ErrInvalidNode       = errors.New("invalid canvas node")
-	ErrRevisionConflict  = errors.New("canvas node revision conflict")
+	ErrNodeNotFound       = errors.New("canvas node not found")
+	ErrInvalidNode        = errors.New("invalid canvas node")
+	ErrRevisionConflict   = errors.New("canvas node revision conflict")
 	ErrHistoryUnavailable = errors.New("canvas history action unavailable")
-	ErrCandidateNotFound = errors.New("canvas candidate not found")
-	ErrCandidateResolved = errors.New("canvas candidate is already resolved")
+	ErrCandidateNotFound  = errors.New("canvas candidate not found")
+	ErrCandidateResolved  = errors.New("canvas candidate is already resolved")
 )
 
 const (
@@ -57,12 +57,13 @@ type Node struct {
 }
 
 type CreateNodeInput struct {
-	WorkID  string
-	Kind    string
-	Title   string
-	Content string
-	X       float64
-	Y       float64
+	WorkID         string
+	Kind           string
+	Title          string
+	Content        string
+	X              float64
+	Y              float64
+	ContextNodeIDs []string
 }
 
 type UpdateNodeInput struct {
@@ -94,6 +95,12 @@ type Edge struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
+type CreateEdgeInput struct {
+	WorkID       string
+	SourceNodeID string
+	TargetNodeID string
+}
+
 type AcceptCandidateInput struct {
 	WorkID      string
 	CandidateID string
@@ -113,6 +120,8 @@ type Store interface {
 	Undo(context.Context, string) (HistoryState, error)
 	Redo(context.Context, string) (HistoryState, error)
 	ListEdges(context.Context, string) ([]Edge, error)
+	CreateEdge(context.Context, CreateEdgeInput) (Edge, error)
+	DeleteEdges(context.Context, string, []string) error
 	CreateCandidate(context.Context, agent.Candidate) (agent.Candidate, error)
 	ListCandidates(context.Context, string) ([]agent.Candidate, error)
 	UpdateCandidatePosition(context.Context, string, string, float64, float64) error
