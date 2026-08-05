@@ -4,10 +4,10 @@ import { memo, type ReactNode, useCallback, useMemo, useState } from 'react'
 
 import { useCreateAgentRun } from '@/apis/canvas-apis'
 import { ModelSelector } from '@/components/models/ModelSelector'
-import { agentEventLabels, getAgentEventSummary } from '@/features/canvas/agent-events'
-import { CanvasContextNodes } from '@/features/canvas/CanvasContextNodes'
+import { CanvasContextNodes } from '@/features/canvas/agent-workspace/ContextNodes'
+import { agentEventLabels, getAgentEventSummary } from '@/features/canvas/agent-workspace/events'
+import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
-import { useAgentRunStream } from '@/features/canvas/use-agent-run-stream'
 import type { EnabledModel } from '@/types/provider'
 
 export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({ workId }: { workId: string }) {

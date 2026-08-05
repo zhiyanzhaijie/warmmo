@@ -28,9 +28,10 @@ export const agentEventLabels: Record<string, string> = {
 }
 
 export const streamedAgentEventTypes = [...Object.keys(agentEventLabels), 'message.delta']
+const terminalAgentEventTypes = new Set(['run.completed', 'run.failed', 'run.cancelled'])
 
 export function isTerminalAgentEvent(type: string) {
-  return type === 'run.completed' || type === 'run.failed' || type === 'run.cancelled'
+  return terminalAgentEventTypes.has(type)
 }
 
 export function getAgentEventSummary(event: AgentEvent) {

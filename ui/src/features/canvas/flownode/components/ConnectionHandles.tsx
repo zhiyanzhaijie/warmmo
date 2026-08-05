@@ -25,11 +25,13 @@ const restingOffsets: MagneticOffsets = {
   right: restingOffset,
 }
 
+interface ConnectionHandlesProps {
+  mode?: 'node' | 'selection'
+}
+
 export const ConnectionHandles = memo(function ConnectionHandles({
   mode = 'node',
-}: {
-  mode?: 'node' | 'selection'
-}) {
+}: ConnectionHandlesProps) {
   const nodeId = useNodeId()
   const updateNodeInternals = useUpdateNodeInternals()
   const frameRef = useRef<number | null>(null)

@@ -4,7 +4,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 import { nodeDefinitions } from '@/features/canvas/nodes/definitions'
 
-export const CanvasContextNodes = memo(function CanvasContextNodes({ nodes }: { nodes: StoryFlowNode[] }) {
+interface CanvasContextNodesProps {
+  nodes: StoryFlowNode[]
+}
+
+export const CanvasContextNodes = memo(function CanvasContextNodes({ nodes }: CanvasContextNodesProps) {
   if (nodes.length === 0) return null
 
   return (

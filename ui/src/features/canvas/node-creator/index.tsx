@@ -3,10 +3,10 @@ import { LoaderCircle, Redo2, Undo2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { useCreateCanvasNode } from '@/apis/canvas-apis'
-import { isTextEntryTarget } from '@/features/canvas/keyboard'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
+import { isTextEntryTarget } from '@/features/canvas/keyboard'
+import { useCanvasHistoryActions } from '@/features/canvas/node-creator/hook'
 import { creatableNodeKinds, nodeDefinitions } from '@/features/canvas/nodes/definitions'
-import { useCanvasHistoryActions } from '@/features/canvas/use-canvas-history-actions'
 import type { CanvasNodeKind } from '@/types/canvas'
 
 export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { workId: string }) {

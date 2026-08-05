@@ -10,7 +10,16 @@ import {
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { isTextEntryTarget } from '@/features/canvas/keyboard'
 
-export function useCanvasHistoryActions(workId: string) {
+interface CanvasHistoryActions {
+  canUndo: boolean
+  canRedo: boolean
+  undo: () => void
+  redo: () => void
+  undoLabel: string
+  redoLabel: string
+}
+
+export function useCanvasHistoryActions(workId: string): CanvasHistoryActions {
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
   const edges = useFlowNodeStore((state) => state.edges)
   const selectedEdgeIds = useMemo(() => edges.flatMap((edge) =>

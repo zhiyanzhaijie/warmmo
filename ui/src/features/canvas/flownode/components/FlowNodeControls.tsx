@@ -1,3 +1,3 @@
-import { ConnectionHandles } from '@/features/canvas/ConnectionTrigger'
+import { ConnectionHandles } from '@/features/canvas/flownode/components/ConnectionHandles'
 
 export const FlowNodeControls = ConnectionHandles

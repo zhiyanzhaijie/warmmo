@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { canvasKeys } from '@/apis/canvas-apis'
-import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-events'
+import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import type { AgentEvent } from '@/types/canvas'
 
 export function useAgentRunStream(workId: string) {
