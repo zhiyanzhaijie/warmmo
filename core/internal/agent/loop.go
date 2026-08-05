@@ -14,7 +14,22 @@ const (
 	maxDecisionAttempts        = 2
 	maxDecisionDiagnosticRunes = 512
 	maxDecisionRepairRunes     = 4 * 1024
-	decisionInstruction        = `You are the decision maker inside Warmnote's explicit novel-writing agent loop.
+	nodeUpdateMergeContract    = `# Existing Node Merge Contract
+
+The targetNode object is the existing node being updated and is the authoritative baseline.
+- Preserve its existing title, content, identity, and established facts unless the user's request explicitly changes them.
+- Apply the requested changes to the targetNode instead of generating a replacement concept from the reference nodes.
+- Treat referenceContext as supporting constraints and related facts; none of its nodes is the update target.
+- Return the complete merged title and content because the result replaces the stored node fields in full.
+- Never silently omit established targetNode details that are unrelated to the requested change.`
+	nodeUpdateReplaceContract = `# Existing Node Replacement Contract
+
+The selected target is a storage slot whose previous semantic content must be replaced.
+- Create a completely new node concept that follows the user's request and userResponses.
+- Do not preserve, continue, paraphrase, or reuse the previous node's title, identity, or content.
+- Treat referenceContext as supporting world constraints and related facts; none of its nodes is the new target identity.
+- Return a complete new title and content because the result replaces the stored node fields in full.`
+	decisionInstruction = `You are the decision maker inside Warmnote's explicit novel-writing agent loop.
 Choose exactly one next action and return exactly one JSON object without markdown or commentary.
 The top-level "kind" field is required and must be one of: continue_brainstorm, complete_plan, select_skill, call_tool, ask_user, produce_candidate, finish, fail.
 The JSON object uses this shape:
@@ -33,8 +48,9 @@ Examples:
 {"kind":"produce_candidate"}
 Do not nest the decision under "decision", "action", or any other field.
 Use produce_candidate when enough context and planning exist to write the requested output.
-This is a single-request API without an interactive follow-up channel. Infer ordinary creative details from the request and context; do not choose ask_user for optional details such as names, ages, occupations, locations, or scene styling.
+An interactive follow-up channel is available, but infer ordinary creative details from the request and context; do not choose ask_user for optional details such as names, ages, occupations, locations, or scene styling.
 Only choose ask_user when proceeding would necessarily contradict an explicit established fact, not merely because a detail was omitted.
+When userResponses is present, treat those answers as authoritative clarification and do not repeat an answered question.
 Do not put the final novel prose in this decision response.`
 )
 
@@ -318,10 +334,14 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 }
 
 func (l *Loop) produceNodeUpdate(ctx context.Context, state loopState, model TextModel, emit Emitter) (RunResult, error) {
+	mode := nodeUpdateMode(state.input)
+	if err := emit(EventGenerationStarted, map[string]any{"nodeId": state.input.TargetNodeID, "mode": mode}); err != nil {
+		return RunResult{}, err
+	}
 	response, _, err := model.Complete(ctx, ModelRequest{
-		ModelID: state.input.ModelID,
-		System:  state.activeSkill.Instructions,
-		Prompt:  state.candidatePrompt(),
+		ModelID:        state.input.ModelID,
+		System:         nodeUpdateSystemPrompt(state.activeSkill.Instructions, mode),
+		Prompt:         state.candidatePrompt(),
 		ResponseFormat: ModelResponseFormatJSONObject,
 	})
 	if err != nil {
@@ -444,10 +464,9 @@ type loopState struct {
 }
 
 func (s loopState) decisionPrompt(step int, tools *ToolRegistry) string {
-	payload := map[string]any{
-		"step": step, "request": s.input.Prompt, "target": s.input.Target,
-		"context": s.snapshot, "skillMatches": s.matches, "plan": s.plan, "observations": s.observations,
-	}
+	payload := s.promptPayload()
+	payload["step"] = step
+	payload["skillMatches"] = s.matches
 	if s.activeSkill.ID != "" {
 		payload["activeSkill"] = map[string]any{
 			"id": s.activeSkill.ID, "version": s.activeSkill.Version,
@@ -459,12 +478,104 @@ func (s loopState) decisionPrompt(step int, tools *ToolRegistry) string {
 }
 
 func (s loopState) candidatePrompt() string {
-	payload := map[string]any{
-		"request": s.input.Prompt, "target": s.input.Target, "context": s.snapshot,
-		"plan": s.plan, "observations": s.observations,
-	}
+	payload := s.promptPayload()
 	encoded, _ := json.Marshal(payload)
 	return string(encoded)
+}
+
+func (s loopState) promptPayload() map[string]any {
+	payload := map[string]any{
+		"request": s.input.Prompt, "target": s.input.Target,
+		"plan": s.plan, "observations": s.observations,
+	}
+	if len(s.input.UserResponses) > 0 {
+		payload["userResponses"] = s.input.UserResponses
+	}
+	if !IsNodeUpdateTarget(s.input.Target) {
+		payload["context"] = s.snapshot
+		return payload
+	}
+
+	targetNode, referenceNodes := s.nodeUpdateContext()
+	mode := nodeUpdateMode(s.input)
+	payload["operation"] = "update_existing_node"
+	payload["mutationMode"] = mode
+	payload["targetNodeId"] = s.input.TargetNodeID
+	payload["referenceContext"] = ContextSnapshot{
+		ID: s.snapshot.ID, WorkID: s.snapshot.WorkID, Nodes: referenceNodes,
+	}
+	if mode == "replace" {
+		payload["targetNode"] = map[string]string{
+			"id": targetNode.ID, "revision": targetNode.Revision, "type": targetNode.Type,
+		}
+		payload["updatePolicy"] = []string{
+			"Replace the target node's previous semantic content with a completely new concept.",
+			"Do not reuse the previous title, identity, or content.",
+			"Return the complete new title and content for full-field replacement.",
+		}
+		return payload
+	}
+	payload["targetNode"] = targetNode
+	payload["updatePolicy"] = []string{
+		"Use targetNode as the authoritative existing baseline.",
+		"Preserve details not explicitly changed by the request.",
+		"Return the complete merged title and content for full-field replacement.",
+	}
+	return payload
+}
+
+func (s loopState) nodeUpdateContext() (NodeSnapshot, []NodeSnapshot) {
+	var targetNode NodeSnapshot
+	referenceNodes := make([]NodeSnapshot, 0, len(s.snapshot.Nodes))
+	for _, node := range s.snapshot.Nodes {
+		if node.ID == s.input.TargetNodeID {
+			targetNode = node
+			continue
+		}
+		referenceNodes = append(referenceNodes, node)
+	}
+	return targetNode, referenceNodes
+}
+
+func nodeUpdateSystemPrompt(skillInstructions, mode string) string {
+	contract := nodeUpdateMergeContract
+	if mode == "replace" {
+		contract = nodeUpdateReplaceContract
+	}
+	return strings.TrimSpace(skillInstructions) + "\n\n" + contract
+}
+
+func nodeUpdateMode(input RunInput) string {
+	if requestsNodeReplacement(input.Prompt, strings.TrimPrefix(input.Target, TargetNodeUpdate+":")) {
+		return "replace"
+	}
+	return "merge"
+}
+
+func requestsNodeReplacement(prompt, nodeKind string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+	for _, phrase := range []string{
+		"替换这个节点", "替换当前节点", "重做这个节点", "重写这个节点", "清空重写", "完全重写",
+		"replace this node", "rewrite this node", "start this node over",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	phrasesByKind := map[string][]string{
+		"character":       {"新角色", "新人物", "另一个角色", "另一个人物", "创建角色", "创建一个角色", "new character", "another character", "create a character"},
+		"world":           {"新世界观", "另一个世界观", "创建世界观", "new world", "create a world"},
+		"location":        {"新地点", "新场景", "另一个地点", "创建地点", "new location", "create a location"},
+		"event":           {"新事件", "另一个事件", "创建事件", "new event", "create an event"},
+		"mechanism":       {"新机制", "另一个机制", "创建机制", "new mechanism", "create a mechanism"},
+		"chapter-outline": {"新章节", "新大纲", "创建章节", "创建大纲", "new chapter", "new outline"},
+	}
+	for _, phrase := range phrasesByKind[nodeKind] {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseDecision(value string) (Decision, error) {

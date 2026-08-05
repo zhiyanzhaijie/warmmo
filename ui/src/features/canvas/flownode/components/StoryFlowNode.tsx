@@ -5,6 +5,7 @@ import { CandidateFlowNodeActions } from '@/features/canvas/flownode/components/
 import { FlowNodeLabel } from '@/features/canvas/flownode/components/FlowNodeLabel'
 import { FlowNodeControls } from '@/features/canvas/flownode/components/FlowNodeControls'
 import { nodeDefinitions } from '@/features/canvas/nodes/definitions'
+import { NodeAgentExecution } from '@/features/canvas/flownode/components/NodeAgentExecution'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 
 export const StoryFlowNodeRenderer = memo(function StoryFlowNodeRenderer({ data, selected }: NodeProps<StoryFlowNode>) {
@@ -33,6 +34,7 @@ function FlowNodeShell({
         <div className="min-h-20 max-h-44 overflow-hidden px-space-sm py-space-sm text-body-sm leading-5 text-body">
           {children}
         </div>
+        {data.sourceType === 'node' ? <NodeAgentExecution nodeId={data.sourceId} /> : null}
         {data.sourceType === 'candidate' ? (
           <CandidateFlowNodeActions
             workId={data.workId}

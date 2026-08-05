@@ -21,14 +21,15 @@ type RunStatus string
 type CandidateStatus string
 
 const (
-	TargetNodeUpdate  = "node-update"
+	TargetNodeUpdate   = "node-update"
 	TargetSectionDraft = "section-draft"
 
-	RunStatusQueued    RunStatus = "queued"
-	RunStatusRunning   RunStatus = "running"
-	RunStatusCompleted RunStatus = "completed"
-	RunStatusFailed    RunStatus = "failed"
-	RunStatusCancelled RunStatus = "cancelled"
+	RunStatusQueued       RunStatus = "queued"
+	RunStatusRunning      RunStatus = "running"
+	RunStatusWaitingInput RunStatus = "waiting_input"
+	RunStatusCompleted    RunStatus = "completed"
+	RunStatusFailed       RunStatus = "failed"
+	RunStatusCancelled    RunStatus = "cancelled"
 
 	CandidateStatusPending  CandidateStatus = "pending"
 	CandidateStatusAccepted CandidateStatus = "accepted"
@@ -38,37 +39,42 @@ const (
 type EventType string
 
 const (
-	EventRunQueued           EventType = "run.queued"
-	EventRunStarted          EventType = "run.started"
-	EventContextPreparing    EventType = "context.preparing"
-	EventContextReady        EventType = "context.ready"
-	EventBrainstormStarted   EventType = "brainstorm.started"
-	EventBrainstormCompleted EventType = "brainstorm.completed"
-	EventPlanStarted         EventType = "plan.started"
-	EventPlanCompleted       EventType = "plan.completed"
-	EventSkillSearching      EventType = "skill.searching"
-	EventSkillMatched        EventType = "skill.matched"
-	EventSkillLoaded         EventType = "skill.loaded"
-	EventSkillCompleted      EventType = "skill.completed"
-	EventDecisionInvalid     EventType = "decision.invalid"
-	EventToolRequested       EventType = "tool.requested"
-	EventToolStarted         EventType = "tool.started"
-	EventToolCompleted       EventType = "tool.completed"
-	EventToolFailed          EventType = "tool.failed"
-	EventApprovalRequired    EventType = "approval.required"
-	EventMessageDelta        EventType = "message.delta"
-	EventValidationCompleted EventType = "validation.completed"
-	EventCandidateCreated    EventType = "candidate.created"
-	EventNodeUpdated         EventType = "node.updated"
-	EventRunCompleted        EventType = "run.completed"
-	EventRunFailed           EventType = "run.failed"
-	EventRunCancelled        EventType = "run.cancelled"
+	EventRunQueued            EventType = "run.queued"
+	EventRunStarted           EventType = "run.started"
+	EventContextPreparing     EventType = "context.preparing"
+	EventContextReady         EventType = "context.ready"
+	EventBrainstormStarted    EventType = "brainstorm.started"
+	EventBrainstormCompleted  EventType = "brainstorm.completed"
+	EventPlanStarted          EventType = "plan.started"
+	EventPlanCompleted        EventType = "plan.completed"
+	EventSkillSearching       EventType = "skill.searching"
+	EventSkillMatched         EventType = "skill.matched"
+	EventSkillLoaded          EventType = "skill.loaded"
+	EventSkillCompleted       EventType = "skill.completed"
+	EventDecisionInvalid      EventType = "decision.invalid"
+	EventToolRequested        EventType = "tool.requested"
+	EventToolStarted          EventType = "tool.started"
+	EventToolCompleted        EventType = "tool.completed"
+	EventToolFailed           EventType = "tool.failed"
+	EventApprovalRequired     EventType = "approval.required"
+	EventUserResponseReceived EventType = "user.response.received"
+	EventRunResumed           EventType = "run.resumed"
+	EventGenerationStarted    EventType = "generation.started"
+	EventMessageDelta         EventType = "message.delta"
+	EventValidationCompleted  EventType = "validation.completed"
+	EventCandidateCreated     EventType = "candidate.created"
+	EventNodeUpdated          EventType = "node.updated"
+	EventRunCompleted         EventType = "run.completed"
+	EventRunFailed            EventType = "run.failed"
+	EventRunCancelled         EventType = "run.cancelled"
 )
 
 var (
-	ErrRunNotFound       = errors.New("agent run not found")
-	ErrRunNotCancellable = errors.New("agent run cannot be cancelled")
-	ErrCanvasUnavailable = errors.New("canvas context is not available")
+	ErrRunNotFound         = errors.New("agent run not found")
+	ErrRunNotCancellable   = errors.New("agent run cannot be cancelled")
+	ErrRunNotWaitingInput  = errors.New("agent run is not waiting for input")
+	ErrInvalidUserResponse = errors.New("invalid agent user response")
+	ErrCanvasUnavailable   = errors.New("canvas context is not available")
 )
 
 type Run struct {
@@ -77,6 +83,7 @@ type Run struct {
 	Status         RunStatus `json:"status"`
 	Prompt         string    `json:"prompt"`
 	Target         string    `json:"target"`
+	TargetNodeID   string    `json:"targetNodeId,omitempty"`
 	ProviderID     string    `json:"providerId"`
 	ModelID        string    `json:"modelId"`
 	ContextNodeIDs []string  `json:"contextNodeIds"`
@@ -128,14 +135,21 @@ type RunInput struct {
 	ProviderID     string
 	ModelID        string
 	ContextNodeIDs []string
+	UserResponses  []UserResponse
+}
+
+type UserResponse struct {
+	ApprovalEventID string `json:"approvalEventId"`
+	Question        string `json:"question"`
+	Answer          string `json:"answer"`
 }
 
 type RunResult struct {
-	Title      string
-	Content      string
-	SkillID      string
-	SkillVersion string
-	CandidateID  string
+	Title            string
+	Content          string
+	SkillID          string
+	SkillVersion     string
+	CandidateID      string
 	ExpectedRevision int64
 }
 

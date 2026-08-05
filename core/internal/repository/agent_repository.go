@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -41,7 +42,7 @@ func (r *AgentRepository) CreateRun(input warmagent.RunInput) (warmagent.Run, er
 	now := time.Now().UTC()
 	run := warmagent.Run{
 		ID: input.RunID, WorkID: input.WorkID, Status: warmagent.RunStatusQueued,
-		Prompt: input.Prompt, Target: input.Target, ProviderID: input.ProviderID, ModelID: input.ModelID,
+		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, ProviderID: input.ProviderID, ModelID: input.ModelID,
 		ContextNodeIDs: append([]string(nil), input.ContextNodeIDs...), CreatedAt: now, UpdatedAt: now,
 	}
 	transaction, err := r.database.Begin()
@@ -51,9 +52,9 @@ func (r *AgentRepository) CreateRun(input warmagent.RunInput) (warmagent.Run, er
 	defer transaction.Rollback()
 	_, err = transaction.Exec(`
 INSERT INTO agent_runs (
-    id, work_id, status, prompt, target, provider_id, model_id, context_node_ids_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.WorkID, run.Status, run.Prompt, run.Target, run.ProviderID, run.ModelID,
+    id, work_id, status, prompt, target, target_node_id, provider_id, model_id, context_node_ids_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.ID, run.WorkID, run.Status, run.Prompt, run.Target, run.TargetNodeID, run.ProviderID, run.ModelID,
 		string(contextNodeIDs), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return warmagent.Run{}, fmt.Errorf("insert agent run: %w", err)
@@ -69,7 +70,7 @@ INSERT INTO agent_runs (
 
 func (r *AgentRepository) GetRun(runID string) (warmagent.Run, error) {
 	return scanRun(r.database.QueryRow(`
-SELECT id, work_id, status, prompt, target, provider_id, model_id, context_node_ids_json,
+SELECT id, work_id, status, prompt, target, target_node_id, provider_id, model_id, context_node_ids_json,
        error_message, created_at, updated_at
 FROM agent_runs WHERE id = ?`, runID))
 }
@@ -114,6 +115,21 @@ func (r *AgentRepository) AppendEvent(runID string, eventType warmagent.EventTyp
 	if err != nil {
 		return warmagent.Event{}, err
 	}
+	if eventType == warmagent.EventApprovalRequired {
+		result, err := transaction.Exec(`
+UPDATE agent_runs SET status = ?, error_message = '', updated_at = ?
+WHERE id = ? AND status = ?`, warmagent.RunStatusWaitingInput, event.Timestamp.Format(time.RFC3339Nano), runID, warmagent.RunStatusRunning)
+		if err != nil {
+			return warmagent.Event{}, fmt.Errorf("wait for agent input: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return warmagent.Event{}, fmt.Errorf("read waiting agent run: %w", err)
+		}
+		if changed == 0 {
+			return warmagent.Event{}, warmagent.ErrRunNotCancellable
+		}
+	}
 	if err := transaction.Commit(); err != nil {
 		return warmagent.Event{}, fmt.Errorf("commit agent event: %w", err)
 	}
@@ -144,6 +160,105 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 		return err
 	}
 	return transaction.Commit()
+}
+
+func (r *AgentRepository) QueueResponse(runID, approvalEventID, answer string) error {
+	transaction, err := r.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin queue agent response: %w", err)
+	}
+	defer transaction.Rollback()
+	var status warmagent.RunStatus
+	if err := transaction.QueryRow(`SELECT status FROM agent_runs WHERE id = ?`, runID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return warmagent.ErrRunNotFound
+	} else if err != nil {
+		return fmt.Errorf("read agent response status: %w", err)
+	}
+	if status != warmagent.RunStatusWaitingInput {
+		return warmagent.ErrRunNotWaitingInput
+	}
+	var latestID, dataJSON string
+	if err := transaction.QueryRow(`
+SELECT id, data_json FROM agent_run_events
+WHERE run_id = ? AND type = ? ORDER BY sequence DESC LIMIT 1`, runID, warmagent.EventApprovalRequired).Scan(&latestID, &dataJSON); errors.Is(err, sql.ErrNoRows) {
+		return warmagent.ErrInvalidUserResponse
+	} else if err != nil {
+		return fmt.Errorf("read pending agent question: %w", err)
+	}
+	if latestID != approvalEventID {
+		return warmagent.ErrInvalidUserResponse
+	}
+	var approval struct {
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(dataJSON), &approval); err != nil {
+		return fmt.Errorf("decode pending agent question: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := appendEvent(transaction, runID, warmagent.EventUserResponseReceived, map[string]string{
+		"approvalEventId": approvalEventID, "question": approval.Question, "answer": answer,
+	}, now); err != nil {
+		return err
+	}
+	result, err := transaction.Exec(`
+UPDATE agent_runs SET status = ?, error_message = '', updated_at = ?
+WHERE id = ? AND status = ?`, warmagent.RunStatusQueued, now.Format(time.RFC3339Nano), runID, warmagent.RunStatusWaitingInput)
+	if err != nil {
+		return fmt.Errorf("queue agent response: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read queued agent response: %w", err)
+	}
+	if changed == 0 {
+		return warmagent.ErrRunNotWaitingInput
+	}
+	return transaction.Commit()
+}
+
+func (r *AgentRepository) MarkResumed(runID string) error {
+	transaction, err := r.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin resume agent run: %w", err)
+	}
+	defer transaction.Rollback()
+	now := time.Now().UTC()
+	result, err := transaction.Exec(`
+UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		warmagent.RunStatusRunning, now.Format(time.RFC3339Nano), runID, warmagent.RunStatusQueued)
+	if err != nil {
+		return fmt.Errorf("resume agent run: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read resumed agent run: %w", err)
+	}
+	if changed == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	if _, err := appendEvent(transaction, runID, warmagent.EventRunResumed, nil, now); err != nil {
+		return err
+	}
+	return transaction.Commit()
+}
+
+func (r *AgentRepository) ListUserResponses(runID string) ([]warmagent.UserResponse, error) {
+	events, err := r.ListEvents(runID, 0)
+	if err != nil {
+		return nil, err
+	}
+	responses := make([]warmagent.UserResponse, 0)
+	for _, event := range events {
+		if event.Type != warmagent.EventUserResponseReceived {
+			continue
+		}
+		var response warmagent.UserResponse
+		if err := json.Unmarshal(event.Data, &response); err != nil {
+			return nil, fmt.Errorf("decode agent user response: %w", err)
+		}
+		responses = append(responses, response)
+	}
+	return responses, nil
 }
 
 func (r *AgentRepository) Complete(run warmagent.Run, result warmagent.RunResult) (warmagent.Candidate, error) {
@@ -179,14 +294,31 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 	return candidate, nil
 }
 
-func (r *AgentRepository) CompleteNodeUpdate(run warmagent.Run, nodeID string, result warmagent.RunResult) error {
+func (r *AgentRepository) CompleteNodeUpdate(
+	ctx context.Context,
+	run warmagent.Run,
+	nodeID string,
+	result warmagent.RunResult,
+) error {
 	now := time.Now().UTC()
-	transaction, err := r.database.Begin()
+	transaction, err := r.database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin complete node update: %w", err)
 	}
 	defer transaction.Rollback()
-	updated, err := transaction.Exec(`
+	before, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
+SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
+FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, nodeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return canvas.ErrNodeNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read canvas node before agent update: %w", err)
+	}
+	if before.Revision != result.ExpectedRevision {
+		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
+	}
+	updated, err := transaction.ExecContext(ctx, `
 UPDATE canvas_nodes
 SET title = ?, content = ?, revision = revision + 1, updated_at = ?
 WHERE work_id = ? AND id = ? AND revision = ?`,
@@ -201,7 +333,16 @@ WHERE work_id = ? AND id = ? AND revision = ?`,
 	if changed == 0 {
 		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
 	}
-	statusResult, err := transaction.Exec(`
+	if before.Title != result.Title || before.Content != result.Content {
+		payload := updateNodeActionPayload{
+			Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content},
+			After:  nodeContentState{NodeID: before.ID, Title: result.Title, Content: result.Content},
+		}
+		if err := appendCanvasAction(ctx, transaction, run.WorkID, actionUpdateNode, "Agent 更新节点", payload); err != nil {
+			return err
+		}
+	}
+	statusResult, err := transaction.ExecContext(ctx, `
 UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 		warmagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, warmagent.RunStatusRunning)
 	if err != nil {
@@ -239,8 +380,8 @@ func (r *AgentRepository) Cancel(runID string) error {
 	now := time.Now().UTC()
 	result, err := transaction.Exec(`
 UPDATE agent_runs SET status = ?, updated_at = ?
-WHERE id = ? AND status IN (?, ?)`, warmagent.RunStatusCancelled, now.Format(time.RFC3339Nano), runID,
-		warmagent.RunStatusQueued, warmagent.RunStatusRunning)
+	WHERE id = ? AND status IN (?, ?, ?)`, warmagent.RunStatusCancelled, now.Format(time.RFC3339Nano), runID,
+		warmagent.RunStatusQueued, warmagent.RunStatusRunning, warmagent.RunStatusWaitingInput)
 	if err != nil {
 		return fmt.Errorf("cancel agent run: %w", err)
 	}
@@ -349,7 +490,7 @@ VALUES (?, ?, ?, ?, ?, ?)`, event.ID, event.RunID, event.Sequence, event.Type, s
 func scanRun(scanner rowScanner) (warmagent.Run, error) {
 	var run warmagent.Run
 	var contextNodeIDsJSON, createdAt, updatedAt string
-	if err := scanner.Scan(&run.ID, &run.WorkID, &run.Status, &run.Prompt, &run.Target, &run.ProviderID,
+	if err := scanner.Scan(&run.ID, &run.WorkID, &run.Status, &run.Prompt, &run.Target, &run.TargetNodeID, &run.ProviderID,
 		&run.ModelID, &contextNodeIDsJSON, &run.ErrorMessage, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
 		return warmagent.Run{}, warmagent.ErrRunNotFound
 	} else if err != nil {

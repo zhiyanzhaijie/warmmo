@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 8
+	currentSchemaVersion = 9
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     status TEXT NOT NULL,
     prompt TEXT NOT NULL,
     target TEXT NOT NULL,
+    target_node_id TEXT NOT NULL DEFAULT '',
     provider_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
     context_node_ids_json TEXT NOT NULL,
@@ -167,6 +168,8 @@ ALTER TABLE works ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE works ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS idx_works_status_folder_updated
     ON works(status, folder_id, updated_at DESC);`
+	agentRunResumeSchemaSQL = `
+ALTER TABLE agent_runs ADD COLUMN target_node_id TEXT NOT NULL DEFAULT '';`
 )
 
 var (
@@ -449,7 +452,12 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add work metadata: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 8"); err != nil {
+	if schemaVersion >= 2 && schemaVersion < 9 {
+		if _, err := transaction.Exec(agentRunResumeSchemaSQL); err != nil {
+			return fmt.Errorf("add resumable agent run input: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 9"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

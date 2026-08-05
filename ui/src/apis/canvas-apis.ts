@@ -276,3 +276,13 @@ export function useCreateAgentRun(workId: string) {
       }),
   })
 }
+
+export function useRespondToAgentRun() {
+  return useMutation({
+    mutationFn: (input: { runId: string; approvalEventId: string; answer: string }) =>
+      coreClient<AgentRun>(`/agent-runs/${input.runId}/responses`, {
+        method: 'POST',
+        body: { approvalEventId: input.approvalEventId, answer: input.answer },
+      }),
+  })
+}

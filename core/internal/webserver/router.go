@@ -24,6 +24,7 @@ func NewRouter(runtimeController *controller.RuntimeController, providerControll
 	router.HandleFunc("POST /api/v1/works/{workID}/agent-runs", agentController.CreateRun)
 	router.HandleFunc("GET /api/v1/agent-runs/{runID}", agentController.GetRun)
 	router.HandleFunc("GET /api/v1/agent-runs/{runID}/events", agentController.StreamEvents)
+	router.HandleFunc("POST /api/v1/agent-runs/{runID}/responses", agentController.RespondToRun)
 	router.HandleFunc("POST /api/v1/agent-runs/{runID}/cancel", agentController.CancelRun)
 	router.HandleFunc("POST /api/v1/works/{workID}/nodes", canvasController.CreateNode)
 	router.HandleFunc("DELETE /api/v1/works/{workID}/nodes", canvasController.DeleteNodes)

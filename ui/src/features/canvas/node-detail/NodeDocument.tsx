@@ -1,4 +1,5 @@
 import { nodeDefinitions } from '@/features/canvas/nodes/definitions'
+import { NodeMarkdown } from '@/features/canvas/node-detail/NodeMarkdown'
 import type { CanvasNode } from '@/types/canvas'
 
 interface NodeDocumentProps {
@@ -52,9 +53,7 @@ export function NodeDocument({
             placeholder="输入节点正文"
           />
         ) : (
-          <div className="whitespace-pre-wrap break-words text-body-lg leading-8 text-body">
-            {node.content}
-          </div>
+          <NodeMarkdown>{node.content}</NodeMarkdown>
         )}
       </div>
     </article>

@@ -4,6 +4,17 @@ import { useStore } from 'zustand'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 
 import type { FlowNodeData, FlowNodeDetailLevel, StoryFlowNode } from '@/features/canvas/flownode/types'
+import type { AgentEvent } from '@/types/canvas'
+
+export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed' | 'failed'
+
+export interface NodeAgentRunState {
+  runId: string | null
+  nodeId: string
+  status: NodeAgentRunStatus
+  events: AgentEvent[]
+  error: string
+}
 
 interface FlowNodeStoreActions {
   syncNodes: (nodes: StoryFlowNode[]) => void
@@ -16,6 +27,10 @@ interface FlowNodeStoreActions {
   openPreview: (nodeId: string) => void
   closePreview: () => void
   focusSourceNode: (nodeId: string) => void
+  beginNodeAgentRun: (nodeId: string) => void
+  attachNodeAgentRun: (nodeId: string, runId: string) => void
+  appendNodeAgentEvent: (nodeId: string, event: AgentEvent) => void
+  failNodeAgentRun: (nodeId: string, message: string) => void
 }
 
 export interface FlowNodeStore {
@@ -27,6 +42,7 @@ export interface FlowNodeStore {
   previewNodeId: string | null
   detailLevel: FlowNodeDetailLevel
   pendingFocusSourceNodeId: string | null
+  nodeAgentRuns: Record<string, NodeAgentRunState>
   actions: FlowNodeStoreActions
 }
 
@@ -112,6 +128,68 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
           }
         })
       },
+      beginNodeAgentRun: (nodeId) => {
+        set((state) => ({
+          nodeAgentRuns: {
+            ...state.nodeAgentRuns,
+            [nodeId]: { runId: null, nodeId, status: 'submitting', events: [], error: '' },
+          },
+        }))
+      },
+      attachNodeAgentRun: (nodeId, runId) => {
+        set((state) => {
+          const current = state.nodeAgentRuns[nodeId]
+          return {
+            nodeAgentRuns: {
+              ...state.nodeAgentRuns,
+              [nodeId]: current === undefined
+                ? { runId, nodeId, status: 'running', events: [], error: '' }
+                : { ...current, runId, status: 'running', error: '' },
+            },
+          }
+        })
+      },
+      appendNodeAgentEvent: (nodeId, event) => {
+        set((state) => {
+          const current = state.nodeAgentRuns[nodeId]
+          if (current === undefined) return state
+          if (current.events.some((existing) => existing.id === event.id || existing.sequence === event.sequence)) return state
+          if (event.type === 'run.completed') {
+            const nodeAgentRuns = { ...state.nodeAgentRuns }
+            delete nodeAgentRuns[nodeId]
+            return { nodeAgentRuns }
+          }
+          const status = event.type === 'run.failed' || event.type === 'run.cancelled'
+            ? 'failed'
+            : event.type === 'approval.required'
+              ? 'waiting_input'
+              : 'running'
+          return {
+            nodeAgentRuns: {
+              ...state.nodeAgentRuns,
+              [nodeId]: {
+                ...current,
+                status,
+                events: [...current.events, event],
+                error: status === 'failed' ? agentEventMessage(event) : current.error,
+              },
+            },
+          }
+        })
+      },
+      failNodeAgentRun: (nodeId, message) => {
+        set((state) => {
+          const current = state.nodeAgentRuns[nodeId]
+          return {
+            nodeAgentRuns: {
+              ...state.nodeAgentRuns,
+              [nodeId]: current === undefined
+                ? { runId: null, nodeId, status: 'failed', events: [], error: message }
+                : { ...current, status: 'failed', error: message },
+            },
+          }
+        })
+      },
     }
 
     return {
@@ -123,9 +201,15 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       previewNodeId: null,
       detailLevel: 'full',
       pendingFocusSourceNodeId: null,
+      nodeAgentRuns: {},
       actions,
     }
   })
+}
+
+function agentEventMessage(event: AgentEvent) {
+  const message = event.data?.message
+  return typeof message === 'string' ? message : 'Agent 执行失败'
 }
 
 export const FlowNodeStoreContext = createContext<FlowNodeStoreApi | null>(null)

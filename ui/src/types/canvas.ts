@@ -54,7 +54,7 @@ export interface AgentCandidate {
   decidedAt?: string
 }
 
-export type AgentRunStatus = 'queued' | 'running' | 'waiting-for-user' | 'completed' | 'failed' | 'cancelled'
+export type AgentRunStatus = 'queued' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'cancelled'
 
 export interface AgentRun {
   id: string
@@ -62,6 +62,7 @@ export interface AgentRun {
   status: AgentRunStatus
   prompt: string
   target: string
+  targetNodeId?: string
   providerId: string
   modelId: string
   contextNodeIds: string[]

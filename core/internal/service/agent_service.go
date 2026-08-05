@@ -64,7 +64,7 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	if err != nil {
 		return agent.Run{}, err
 	}
-	go s.execute(run, input)
+	go s.execute(run, input, false)
 	return run, nil
 }
 
@@ -93,7 +93,34 @@ func (s *AgentService) CancelRun(runID string) error {
 	return nil
 }
 
-func (s *AgentService) execute(run agent.Run, input agent.RunInput) {
+func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agent.Run, error) {
+	runID = strings.TrimSpace(runID)
+	approvalEventID = strings.TrimSpace(approvalEventID)
+	answer = strings.TrimSpace(answer)
+	if runID == "" || approvalEventID == "" || answer == "" {
+		return agent.Run{}, fmt.Errorf("%w: approvalEventId and answer are required", ErrInvalidAgentRun)
+	}
+	if err := s.repository.QueueResponse(runID, approvalEventID, answer); err != nil {
+		return agent.Run{}, err
+	}
+	run, err := s.repository.GetRun(runID)
+	if err != nil {
+		return agent.Run{}, err
+	}
+	responses, err := s.repository.ListUserResponses(runID)
+	if err != nil {
+		return agent.Run{}, err
+	}
+	input := agent.RunInput{
+		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
+		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
+		ContextNodeIDs: append([]string(nil), run.ContextNodeIDs...), UserResponses: responses,
+	}
+	go s.execute(run, input, true)
+	return run, nil
+}
+
+func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool) {
 	runCtx, cancel := context.WithCancel(s.ctx)
 	s.mu.Lock()
 	s.cancels[run.ID] = cancel
@@ -105,9 +132,15 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput) {
 		s.mu.Unlock()
 	}()
 
-	if err := s.repository.MarkStarted(run.ID); err != nil {
-		if !errors.Is(err, agent.ErrRunNotCancellable) {
-			s.logger.Error("start agent run", "runId", run.ID, "error", err)
+	var startErr error
+	if resumed {
+		startErr = s.repository.MarkResumed(run.ID)
+	} else {
+		startErr = s.repository.MarkStarted(run.ID)
+	}
+	if startErr != nil {
+		if !errors.Is(startErr, agent.ErrRunNotCancellable) {
+			s.logger.Error("start agent run", "runId", run.ID, "error", startErr)
 		}
 		return
 	}
@@ -120,6 +153,9 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput) {
 		if errors.Is(runCtx.Err(), context.Canceled) {
 			return
 		}
+		if errors.Is(err, agent.ErrApprovalRequired) {
+			return
+		}
 		if failErr := s.repository.Fail(run.ID, publicAgentError(err)); failErr != nil && !errors.Is(failErr, agent.ErrRunNotCancellable) {
 			s.logger.Error("fail agent run", "runId", run.ID, "error", failErr)
 		}
@@ -128,7 +164,7 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput) {
 	}
 	var completeErr error
 	if agent.IsNodeUpdateTarget(input.Target) {
-		completeErr = s.repository.CompleteNodeUpdate(run, input.TargetNodeID, result)
+		completeErr = s.repository.CompleteNodeUpdate(runCtx, run, input.TargetNodeID, result)
 	} else {
 		_, completeErr = s.repository.Complete(run, result)
 	}

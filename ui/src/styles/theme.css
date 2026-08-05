@@ -1,7 +1,14 @@
 @import url("https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5.3.0/index.css");
 @import url("https://cdn.jsdelivr.net/npm/@fontsource-variable/geist-mono@5.3.0/index.css");
+@import "streamdown/styles.css";
 @import "tailwindcss";
 @import "tw-animate-css";
+
+@source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/cjk/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+@source "../../node_modules/@streamdown/math/dist/*.js";
+@source "../../node_modules/@streamdown/mermaid/dist/*.js";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -10,6 +17,7 @@
   --font-mono: "Geist Mono Variable", "Geist Mono", "JetBrains Mono", monospace;
 
   --color-primary: #171717;
+  --color-primary-foreground: var(--color-on-primary);
   --color-on-primary: #ffffff;
   --color-ink: #171717;
   --color-body: #4d4d4d;
@@ -35,6 +43,8 @@
   --color-popover-foreground: #171717;
   --color-accent: #f2f2f2;
   --color-accent-foreground: #171717;
+  --color-secondary: #f2f2f2;
+  --color-secondary-foreground: #171717;
   --color-muted-foreground: #8f8f8f;
   --color-border: #ebebeb;
   --color-input: #ebebeb;
@@ -142,6 +152,8 @@
   --color-popover-foreground: #ededed;
   --color-accent: #262626;
   --color-accent-foreground: #ededed;
+  --color-secondary: #262626;
+  --color-secondary-foreground: #ededed;
   --color-muted-foreground: #8f8f8f;
   --color-border: #2a2a2a;
   --color-input: #2a2a2a;

@@ -31,6 +31,11 @@ type createAgentRunRequest struct {
 	ModelID        string   `json:"modelId"`
 }
 
+type respondToAgentRunRequest struct {
+	ApprovalEventID string `json:"approvalEventId"`
+	Answer          string `json:"answer"`
+}
+
 func NewAgentController(agentService *service.AgentService, logger *slog.Logger) *AgentController {
 	return &AgentController{service: agentService, logger: logger}
 }
@@ -123,7 +128,7 @@ func (c *AgentController) StreamEvents(response http.ResponseWriter, request *ht
 		if err != nil {
 			return
 		}
-		if len(events) == 0 && isTerminal(run.Status) {
+		if len(events) == 0 && isStreamComplete(run.Status) {
 			return
 		}
 		select {
@@ -153,6 +158,33 @@ func (c *AgentController) CancelRun(response http.ResponseWriter, request *http.
 	}
 }
 
+func (c *AgentController) RespondToRun(response http.ResponseWriter, request *http.Request) {
+	var input respondToAgentRunRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, maxAgentRequestBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "回答内容无效"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求只能包含一个 JSON 对象"})
+		return
+	}
+	run, err := c.service.RespondToRun(request.PathValue("runID"), input.ApprovalEventID, input.Answer)
+	switch {
+	case errors.Is(err, agent.ErrRunNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Agent Run 不存在"})
+	case errors.Is(err, agent.ErrRunNotWaitingInput), errors.Is(err, agent.ErrInvalidUserResponse):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "这个问题已经回答或不再有效"})
+	case errors.Is(err, service.ErrInvalidAgentRun):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": strings.TrimPrefix(err.Error(), service.ErrInvalidAgentRun.Error()+": ")})
+	case err != nil:
+		c.internalError(response, "respond to agent run", err)
+	default:
+		writeJSON(response, http.StatusAccepted, run)
+	}
+}
+
 func (c *AgentController) internalError(response http.ResponseWriter, operation string, err error) {
 	c.logger.Error(operation, "error", err)
 	writeJSON(response, http.StatusInternalServerError, map[string]string{"message": "Agent 服务不可用"})
@@ -175,4 +207,8 @@ func eventCursor(request *http.Request) (int64, error) {
 
 func isTerminal(status agent.RunStatus) bool {
 	return status == agent.RunStatusCompleted || status == agent.RunStatusFailed || status == agent.RunStatusCancelled
+}
+
+func isStreamComplete(status agent.RunStatus) bool {
+	return isTerminal(status) || status == agent.RunStatusWaitingInput
 }
