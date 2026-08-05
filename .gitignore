@@ -1,3 +1,4 @@
 /.data/
 *.md
+!/.agents/skills/**/*.md
 README.md
