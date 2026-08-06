@@ -129,26 +129,27 @@
   height: 24px;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--color-canvas-elevated) 94%, transparent);
+  border: 0;
+  background: transparent;
   color: var(--color-mute);
-  box-shadow: var(--shadow-floating);
   pointer-events: all;
   cursor: pointer;
-  backdrop-filter: blur(8px);
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, scale 120ms ease;
+  transition: color 120ms ease, scale 120ms ease;
 }
 
 .warmnote-flow__edge-cut:hover {
-  border-color: var(--color-hairline);
-  background: var(--color-hairline-soft);
-  color: var(--color-ink);
+  color: var(--color-error);
   scale: 1.04;
 }
 
 .warmnote-flow__edge-cut:active {
+  color: var(--color-error-deep);
   scale: 0.96;
+}
+
+.warmnote-flow__edge-cut:focus-visible {
+  outline: 2px solid var(--color-link);
+  outline-offset: 2px;
 }
 
 .warmnote-flow__viewport-toolbar {

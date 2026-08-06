@@ -2,10 +2,11 @@ import {
   BaseEdge,
   EdgeToolbar,
   getBezierPath,
+  useReactFlow,
   type EdgeProps,
 } from '@xyflow/react'
 import { Scissors } from 'lucide-react'
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, type MouseEvent } from 'react'
 
 import type { CanvasFlowEdge as CanvasFlowEdgeType } from '@/features/canvas/flowedge/types'
 
@@ -23,9 +24,11 @@ export const CanvasFlowEdge = memo(function CanvasFlowEdge({
   targetX,
   targetY,
 }: EdgeProps<CanvasFlowEdgeType>) {
+  const { screenToFlowPosition } = useReactFlow()
   const [hovered, setHovered] = useState(false)
+  const [actionPosition, setActionPosition] = useState({ x: 0, y: 0 })
   const hideTimerRef = useRef<number | null>(null)
-  const [path, labelX, labelY] = getBezierPath({
+  const [path] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -35,10 +38,27 @@ export const CanvasFlowEdge = memo(function CanvasFlowEdge({
   })
   const canDelete = data?.persisted === true && data.onDelete !== undefined
 
+  const updateActionPosition = (event: MouseEvent<SVGGElement>) => {
+    const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+    setActionPosition((currentPosition) =>
+      currentPosition.x === position.x && currentPosition.y === position.y
+        ? currentPosition
+        : position)
+  }
+
   const showActions = () => {
     if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current)
     hideTimerRef.current = null
     setHovered(true)
+  }
+
+  const handleEdgeMouseEnter = (event: MouseEvent<SVGGElement>) => {
+    updateActionPosition(event)
+    showActions()
+  }
+
+  const handleEdgeMouseMove = (event: MouseEvent<SVGGElement>) => {
+    updateActionPosition(event)
   }
 
   const scheduleHideActions = () => {
@@ -55,7 +75,11 @@ export const CanvasFlowEdge = memo(function CanvasFlowEdge({
 
   return (
     <>
-      <g onMouseEnter={showActions} onMouseLeave={scheduleHideActions}>
+      <g
+        onMouseEnter={handleEdgeMouseEnter}
+        onMouseLeave={scheduleHideActions}
+        onMouseMove={handleEdgeMouseMove}
+      >
         <BaseEdge
           id={id}
           className="warmnote-flow__edge-path"
@@ -74,9 +98,9 @@ export const CanvasFlowEdge = memo(function CanvasFlowEdge({
       {canDelete ? (
         <EdgeToolbar
           edgeId={id}
-          isVisible={hovered || selected}
-          x={labelX}
-          y={labelY}
+          isVisible={hovered}
+          x={actionPosition.x}
+          y={actionPosition.y}
           onMouseEnter={showActions}
           onMouseLeave={scheduleHideActions}
         >
