@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,10 @@ func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {
 	if err := agentRepository.CompleteChapterArchive(ctx, run, result); err != nil {
 		t.Fatalf("complete archive: %v", err)
 	}
+	historyState, err := canvasRepository.GetHistoryState(ctx, character.WorkID)
+	if err != nil || historyState.CanUndo || historyState.CanRedo {
+		t.Fatalf("archive history checkpoint = %+v, err = %v", historyState, err)
+	}
 	archives, err := canvasRepository.ListCurrentChapterArchives(ctx, character.WorkID)
 	if err != nil || len(archives) != 1 {
 		t.Fatalf("current archives = %d, err = %v", len(archives), err)
@@ -80,6 +85,45 @@ func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {
 	}
 	if len(firstArchive.Sections) != 1 || firstArchive.Sections[0].Content != section.Content || firstArchive.Sections[0].ChapterSectionVersionID == "" {
 		t.Fatalf("first archive sections = %+v", firstArchive.Sections)
+	}
+	layoutChapter, err := canvasRepository.GetNode(ctx, character.WorkID, chapter.ID)
+	if err != nil {
+		t.Fatalf("read archived chapter layout origin: %v", err)
+	}
+	layoutSectionOutline, err := canvasRepository.GetNode(ctx, character.WorkID, sectionOutline.ID)
+	if err != nil {
+		t.Fatalf("read archived section outline layout: %v", err)
+	}
+	layoutSection, err := canvasRepository.GetNode(ctx, character.WorkID, section.ID)
+	if err != nil {
+		t.Fatalf("read archived chapter section layout: %v", err)
+	}
+	if layoutChapter.X != chapter.X || layoutChapter.Y != chapter.Y {
+		t.Fatalf("chapter outline moved during archive: got (%v,%v), want (%v,%v)", layoutChapter.X, layoutChapter.Y, chapter.X, chapter.Y)
+	}
+	if layoutSectionOutline.X != chapter.X+chapterLayoutColumnGap || layoutSectionOutline.Y != chapter.Y {
+		t.Fatalf("section outline layout = (%v,%v)", layoutSectionOutline.X, layoutSectionOutline.Y)
+	}
+	if layoutSection.X != chapter.X+2*chapterLayoutColumnGap || layoutSection.Y != chapter.Y {
+		t.Fatalf("chapter section layout = (%v,%v)", layoutSection.X, layoutSection.Y)
+	}
+	if err := canvasRepository.UpdateNodePositions(ctx, character.WorkID, []canvas.NodePosition{
+		{NodeID: sectionOutline.ID, X: -10, Y: -20},
+		{NodeID: section.ID, X: -30, Y: -40},
+	}); err != nil {
+		t.Fatalf("move archived chapter layout nodes: %v", err)
+	}
+	layoutPositions, err := canvasRepository.LayoutChapter(ctx, character.WorkID, chapter.ID)
+	if err != nil || len(layoutPositions) != 2 {
+		t.Fatalf("layout archived chapter positions = %+v, err = %v", layoutPositions, err)
+	}
+	layoutPositions, err = canvasRepository.LayoutChapter(ctx, character.WorkID, chapter.ID)
+	if err != nil || len(layoutPositions) != 0 {
+		t.Fatalf("idempotent archived chapter layout positions = %+v, err = %v", layoutPositions, err)
+	}
+	layoutHistory, err := canvasRepository.ListChapterArchiveHistory(ctx, character.WorkID, chapter.ID)
+	if err != nil || len(layoutHistory) != 1 || layoutHistory[0].OutlineContent != chapter.Content || layoutHistory[0].Sections[0].Content != section.Content {
+		t.Fatalf("layout changed immutable archive: %+v, err = %v", layoutHistory, err)
 	}
 	projectionPath := filepath.Join(dataDirectory, "works", character.WorkID, "story-spine", "chapters", chapter.ID+".md")
 	projection, err := os.ReadFile(projectionPath)
@@ -108,56 +152,79 @@ func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {
 		t.Fatalf("node identity changed: %s != %s", updated.ID, accepted.ID)
 	}
 
-	updatedChapter, err := canvasRepository.UpdateNode(ctx, canvas.UpdateNodeInput{
+	_, err = canvasRepository.UpdateNode(ctx, canvas.UpdateNodeInput{
 		WorkID: chapter.WorkID, NodeID: chapter.ID, Title: chapter.Title,
 		Content: "重写后的章节规划", ExpectedRevision: chapter.Revision,
 	})
-	if err != nil {
-		t.Fatalf("update chapter outline: %v", err)
+	if !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("update archived chapter outline error = %v", err)
 	}
-	updatedSection, err := canvasRepository.UpdateNode(ctx, canvas.UpdateNodeInput{
+	_, err = canvasRepository.UpdateNode(ctx, canvas.UpdateNodeInput{
 		WorkID: section.WorkID, NodeID: section.ID, Title: section.Title,
 		Content: "重写后的正文", ExpectedRevision: section.Revision,
 	})
-	if err != nil {
-		t.Fatalf("update chapter section: %v", err)
+	if !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("update archived chapter section error = %v", err)
 	}
-	secondRun, err := agentRepository.CreateRun(agent.RunInput{
-		RunID: "archive-run-2", WorkID: character.WorkID, Prompt: "重新归档",
-		Target: agent.TargetChapterArchive, TargetNodeID: chapter.ID,
-		ProviderID: "provider", ModelID: "model", ContextNodeIDs: archiveContext,
+	_, err = canvasRepository.SwitchNodeVersion(ctx, section.WorkID, section.ID, firstArchive.Sections[0].ChapterSectionVersionID)
+	if !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("switch archived chapter section version error = %v", err)
+	}
+	if err := canvasRepository.DeleteNodes(ctx, chapter.WorkID, []string{section.ID}); !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("delete archived chapter section error = %v", err)
+	}
+	outgoingEdge, err := canvasRepository.CreateEdge(ctx, canvas.CreateEdgeInput{
+		WorkID: chapter.WorkID, SourceNodeID: chapter.ID, TargetNodeID: character.ID,
 	})
 	if err != nil {
-		t.Fatalf("create second archive run: %v", err)
+		t.Fatalf("create edge from archived chapter: %v", err)
 	}
-	if err := agentRepository.MarkStarted(secondRun.ID); err != nil {
-		t.Fatalf("start second archive run: %v", err)
+	if err := canvasRepository.DeleteEdges(ctx, chapter.WorkID, []string{outgoingEdge.ID}); err != nil {
+		t.Fatalf("delete edge from archived chapter: %v", err)
 	}
-	secondResult := agent.RunResult{SkillID: "chapter-archive", SkillVersion: "1.0.0", ExpectedRevision: updatedChapter.Revision, Content: `{"archive":{"summary":"重写后的章节事实","sections":[{"sectionOutlineNodeId":"` + sectionOutline.ID + `","chapterSectionNodeId":"` + section.ID + `","nodeRevision":2,"ordinal":1,"summary":"重写后的小节事实"}]},"proposals":[]}`}
-	if err := agentRepository.CompleteChapterArchive(ctx, secondRun, secondResult); err != nil {
-		t.Fatalf("complete second archive: %v", err)
+	edges, err := canvasRepository.ListEdges(ctx, chapter.WorkID)
+	if err != nil {
+		t.Fatalf("list archived chapter edges: %v", err)
+	}
+	var archivedEdgeID string
+	for _, edge := range edges {
+		if edge.TargetNodeID == chapter.ID || edge.TargetNodeID == sectionOutline.ID || edge.TargetNodeID == section.ID {
+			archivedEdgeID = edge.ID
+			break
+		}
+	}
+	if archivedEdgeID == "" {
+		t.Fatal("archived chapter has no edge to verify deletion lock")
+	}
+	if err := canvasRepository.DeleteEdges(ctx, chapter.WorkID, []string{archivedEdgeID}); !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("delete archived chapter edge error = %v", err)
+	}
+	if err := agentRepository.CompleteNodeUpdate(ctx, agent.Run{WorkID: chapter.WorkID}, section.ID, agent.RunResult{
+		ExpectedRevision: section.Revision, Title: section.Title, Content: "Agent 重写后的正文",
+	}); !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("agent update archived chapter section error = %v", err)
+	}
+	if err := agentRepository.CompleteChapterArchive(ctx, run, result); !errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		t.Fatalf("repeat chapter archive error = %v", err)
 	}
 
 	history, err := canvasRepository.ListChapterArchiveHistory(ctx, character.WorkID, chapter.ID)
-	if err != nil || len(history) != 2 {
+	if err != nil || len(history) != 1 {
 		t.Fatalf("archive history = %d, err = %v", len(history), err)
 	}
-	if history[0].IsCurrent || history[0].Revision != 1 || history[0].OutlineContent != chapter.Content || history[0].Sections[0].Content != section.Content {
-		t.Fatalf("immutable first archive changed: %+v", history[0])
-	}
-	if !history[1].IsCurrent || history[1].Revision != 2 || history[1].OutlineContent != updatedChapter.Content || history[1].Sections[0].Content != updatedSection.Content {
-		t.Fatalf("second archive = %+v", history[1])
+	if !history[0].IsCurrent || history[0].Revision != 1 || history[0].OutlineContent != chapter.Content || history[0].Sections[0].Content != section.Content {
+		t.Fatalf("immutable archive changed: %+v", history[0])
 	}
 	archives, err = canvasRepository.ListCurrentChapterArchives(ctx, character.WorkID)
-	if err != nil || len(archives) != 1 || archives[0].ID != history[1].ID {
+	if err != nil || len(archives) != 1 || archives[0].ID != history[0].ID {
 		t.Fatalf("latest current archives = %+v, err = %v", archives, err)
 	}
 	projection, err = os.ReadFile(projectionPath)
 	if err != nil {
 		t.Fatalf("read updated chapter projection: %v", err)
 	}
-	if !strings.Contains(string(projection), "archiveRevision: 2") || !strings.Contains(string(projection), "重写后的章节事实") {
-		t.Fatalf("chapter projection was not replaced:\n%s", projection)
+	if !strings.Contains(string(projection), "archiveRevision: 1") || !strings.Contains(string(projection), "角色 A 经历了本章事件") {
+		t.Fatalf("chapter projection changed unexpectedly:\n%s", projection)
 	}
 	if err := os.WriteFile(projectionPath, []byte("stale"), 0o600); err != nil {
 		t.Fatalf("make chapter projection stale: %v", err)
@@ -170,7 +237,7 @@ func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read repaired chapter projection: %v", err)
 	}
-	if string(projection) == "stale" || !strings.Contains(string(projection), "archiveRevision: 2") {
+	if string(projection) == "stale" || !strings.Contains(string(projection), "archiveRevision: 1") {
 		t.Fatalf("stale chapter projection was not repaired:\n%s", projection)
 	}
 }

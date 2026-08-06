@@ -6,12 +6,42 @@ import {
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 import type { AgentCandidate, CanvasEdge, CanvasNode } from '@/types/canvas'
 
-export function toFlowNodes(nodes: CanvasNode[], candidates: AgentCandidate[]): StoryFlowNode[] {
-  const result = new Array<StoryFlowNode>(nodes.length + candidates.length)
+const emptyHiddenNodeIds: ReadonlySet<string> = new Set()
+const emptyNodeProxyIds: ReadonlyMap<string, string> = new Map()
 
-  for (let index = 0; index < nodes.length; index += 1) {
-    const node = nodes[index]
-    result[index] = {
+export interface FlowNodeArchiveOptions {
+  stateResolved: boolean
+  lockedNodeIds: ReadonlySet<string>
+  expandedChapterNodeIds: ReadonlySet<string>
+  layoutPending: boolean
+  layoutPendingChapterNodeId: string | null
+  onToggleChapter: (chapterNodeId: string) => void
+  onLayoutChapter: (chapterNodeId: string) => void
+}
+
+const defaultArchiveOptions: FlowNodeArchiveOptions = {
+  stateResolved: false,
+  lockedNodeIds: emptyHiddenNodeIds,
+  expandedChapterNodeIds: emptyHiddenNodeIds,
+  layoutPending: false,
+  layoutPendingChapterNodeId: null,
+  onToggleChapter: () => undefined,
+  onLayoutChapter: () => undefined,
+}
+
+export function toFlowNodes(
+  nodes: CanvasNode[],
+  candidates: AgentCandidate[],
+  hiddenNodeIds: ReadonlySet<string> = emptyHiddenNodeIds,
+  archiveOptions: FlowNodeArchiveOptions = defaultArchiveOptions,
+): StoryFlowNode[] {
+  const result: StoryFlowNode[] = []
+
+  for (const node of nodes) {
+    if (hiddenNodeIds.has(node.id)) continue
+    const archiveLocked = archiveOptions.lockedNodeIds.has(node.id)
+    const isArchivedChapter = archiveLocked && node.kind === 'chapter-outline'
+    result.push({
       id: node.id,
       type: 'flow-node',
       position: { x: node.x, y: node.y },
@@ -25,13 +55,24 @@ export function toFlowNodes(nodes: CanvasNode[], candidates: AgentCandidate[]): 
         revision: node.revision,
         layerId: 'main',
         contextTags: [],
+        archiveStateResolved: archiveOptions.stateResolved,
+        archiveLocked,
+        archiveExpanded: isArchivedChapter
+          ? archiveOptions.expandedChapterNodeIds.has(node.id)
+          : undefined,
+        archiveLayoutPending: isArchivedChapter
+          ? archiveOptions.layoutPendingChapterNodeId === node.id
+          : undefined,
+        archiveLayoutDisabled: isArchivedChapter ? archiveOptions.layoutPending : undefined,
+        onToggleArchive: isArchivedChapter ? archiveOptions.onToggleChapter : undefined,
+        onLayoutArchive: isArchivedChapter ? archiveOptions.onLayoutChapter : undefined,
       },
-    }
+    })
   }
 
-  for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index]
-    result[nodes.length + index] = {
+  for (const candidate of candidates) {
+    if (candidate.nodeId !== undefined && hiddenNodeIds.has(candidate.nodeId)) continue
+    result.push({
       id: `candidate:${candidate.id}`,
       type: 'flow-node',
       position: { x: candidate.x, y: candidate.y },
@@ -45,45 +86,60 @@ export function toFlowNodes(nodes: CanvasNode[], candidates: AgentCandidate[]): 
         revision: 0,
         layerId: 'candidate',
         contextTags: [],
+        archiveStateResolved: archiveOptions.stateResolved,
+        archiveLocked: false,
         candidateType: candidate.candidateType,
         candidateReason: candidate.reason,
         candidateScore: candidate.changeScore,
       },
-    }
+    })
   }
 
   return result
 }
 
-export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): CanvasFlowEdge[] {
-  const result = new Array<CanvasFlowEdge>(
-    edges.length + candidates.reduce((count, candidate) => count + candidate.contextNodeIds.length, 0),
-  )
-  let resultIndex = 0
+export function toFlowEdges(
+  edges: CanvasEdge[],
+  candidates: AgentCandidate[],
+  collapsedNodeProxyIds: ReadonlyMap<string, string> = emptyNodeProxyIds,
+): CanvasFlowEdge[] {
+  const result: CanvasFlowEdge[] = []
+  const edgeKeys = new Set<string>()
 
   for (const edge of edges) {
-    result[resultIndex] = {
-      id: edge.id,
+    const sourceNodeId = collapsedNodeProxyIds.get(edge.sourceNodeId) ?? edge.sourceNodeId
+    const targetNodeId = collapsedNodeProxyIds.get(edge.targetNodeId) ?? edge.targetNodeId
+    if (sourceNodeId === targetNodeId) continue
+    const edgeKey = `${sourceNodeId}\u0000${targetNodeId}\u0000${edge.kind}`
+    if (edgeKeys.has(edgeKey)) continue
+    edgeKeys.add(edgeKey)
+    const collapsed = sourceNodeId !== edge.sourceNodeId || targetNodeId !== edge.targetNodeId
+    result.push({
+      id: collapsed ? `collapsed:${sourceNodeId}:${targetNodeId}:${edge.kind}` : edge.id,
       type: 'canvas-edge',
-      source: edge.sourceNodeId,
+      source: sourceNodeId,
       sourceHandle: flowNodeEdgeSourceHandleId,
-      target: edge.targetNodeId,
+      target: targetNodeId,
       targetHandle: flowNodeEdgeTargetHandleId,
-      selectable: true,
-      deletable: true,
+      selectable: !collapsed,
+      deletable: !collapsed,
       interactionWidth: 28,
       style: { stroke: 'var(--color-mute)', strokeWidth: 1.25 },
-      data: { kind: edge.kind, persisted: true, workId: edge.workId },
-    }
-    resultIndex += 1
+      data: { kind: edge.kind, persisted: !collapsed, workId: edge.workId },
+    })
   }
 
   for (const candidate of candidates) {
+    if (candidate.nodeId !== undefined && collapsedNodeProxyIds.has(candidate.nodeId)) continue
     for (const sourceNodeId of candidate.contextNodeIds) {
-      result[resultIndex] = {
-        id: `candidate-context:${candidate.id}:${sourceNodeId}`,
+      const visibleSourceNodeId = collapsedNodeProxyIds.get(sourceNodeId) ?? sourceNodeId
+      const edgeKey = `${visibleSourceNodeId}\u0000candidate:${candidate.id}\u0000candidate_context`
+      if (edgeKeys.has(edgeKey)) continue
+      edgeKeys.add(edgeKey)
+      result.push({
+        id: `candidate-context:${candidate.id}:${visibleSourceNodeId}`,
         type: 'canvas-edge',
-        source: sourceNodeId,
+        source: visibleSourceNodeId,
         sourceHandle: flowNodeEdgeSourceHandleId,
         target: `candidate:${candidate.id}`,
         targetHandle: flowNodeEdgeTargetHandleId,
@@ -95,8 +151,7 @@ export function toFlowEdges(edges: CanvasEdge[], candidates: AgentCandidate[]): 
           strokeDasharray: '5 5',
         },
         data: { kind: 'candidate_context', persisted: false, workId: candidate.workId },
-      }
-      resultIndex += 1
+      })
     }
   }
 

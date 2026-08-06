@@ -318,6 +318,13 @@ func (r *CanvasRepository) UpdateNode(ctx context.Context, input canvas.UpdateNo
 		return canvas.Node{}, fmt.Errorf("begin update canvas node: %w", err)
 	}
 	defer transaction.Rollback()
+	locked, err := isNodeArchiveLocked(ctx, transaction, input.WorkID, input.NodeID)
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	if locked {
+		return canvas.Node{}, canvas.ErrArchivedNodeLocked
+	}
 	before, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
 SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
 FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, input.NodeID))
@@ -406,6 +413,13 @@ WHERE work_id = ? AND id IN (?, ?)`, input.WorkID, input.SourceNodeID, input.Tar
 	}
 	if nodeCount != 2 {
 		return canvas.Edge{}, canvas.ErrNodeNotFound
+	}
+	locked, err := isNodeArchiveLocked(ctx, transaction, input.WorkID, input.TargetNodeID)
+	if err != nil {
+		return canvas.Edge{}, err
+	}
+	if locked {
+		return canvas.Edge{}, canvas.ErrArchivedNodeLocked
 	}
 
 	existing, err := scanCanvasEdge(transaction.QueryRowContext(ctx, `
@@ -653,9 +667,16 @@ WHERE work_id = ? AND id = ? AND status = ?`,
 }
 
 func (r *CanvasRepository) acceptVersionCandidate(ctx context.Context, transaction *sql.Tx, input canvas.AcceptCandidateInput, candidate agent.Candidate) (canvas.Node, error) {
+	locked, err := isNodeArchiveLocked(ctx, transaction, candidate.WorkID, candidate.NodeID)
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	if locked {
+		return canvas.Node{}, canvas.ErrArchivedNodeLocked
+	}
 	var node canvas.Node
 	var currentVersionID string
-	node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at FROM canvas_nodes WHERE work_id=? AND id=?`, candidate.WorkID, candidate.NodeID))
+	node, err = scanCanvasNode(transaction.QueryRowContext(ctx, `SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at FROM canvas_nodes WHERE work_id=? AND id=?`, candidate.WorkID, candidate.NodeID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return canvas.Node{}, canvas.ErrNodeNotFound
 	}
@@ -776,6 +797,13 @@ func (r *CanvasRepository) SwitchNodeVersion(ctx context.Context, workID, nodeID
 		return canvas.Node{}, err
 	}
 	defer tx.Rollback()
+	locked, err := isNodeArchiveLocked(ctx, tx, workID, nodeID)
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	if locked {
+		return canvas.Node{}, canvas.ErrArchivedNodeLocked
+	}
 	var title, content string
 	if err := tx.QueryRowContext(ctx, `SELECT title,content FROM canvas_node_versions WHERE id=? AND work_id=? AND node_id=?`, versionID, workID, nodeID).Scan(&title, &content); errors.Is(err, sql.ErrNoRows) {
 		return canvas.Node{}, canvas.ErrNodeNotFound

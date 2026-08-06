@@ -21,6 +21,7 @@ var (
 	ErrCandidateResolved     = errors.New("canvas candidate is already resolved")
 	ErrDerivationExists      = errors.New("canvas node already has derived children")
 	ErrInvalidChapterArchive = errors.New("invalid chapter archive")
+	ErrArchivedNodeLocked    = errors.New("archived canvas node is locked")
 )
 
 type NodeKind string
@@ -186,6 +187,7 @@ type Store interface {
 	UpdateNode(context.Context, UpdateNodeInput) (Node, error)
 	UpdateNodePosition(context.Context, string, string, float64, float64) error
 	UpdateNodePositions(context.Context, string, []NodePosition) error
+	LayoutChapter(context.Context, string, string) ([]NodePosition, error)
 	DeleteNodes(context.Context, string, []string) error
 	GetHistoryState(context.Context, string) (HistoryState, error)
 	Undo(context.Context, string) (HistoryState, error)

@@ -1,4 +1,4 @@
-import { Maximize2 } from 'lucide-react'
+import { LockKeyhole, Maximize2 } from 'lucide-react'
 import { memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -13,12 +13,16 @@ import {
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { NodeDocument } from '@/features/canvas/node-detail/NodeDocument'
 import { NodeVersionControl } from '@/features/canvas/node-detail/NodeVersionControl'
+import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 
 export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workId: string }) {
   const navigate = useNavigate()
   const nodeId = useFlowNodeStore((state) => state.previewNodeId)
   const closePreview = useFlowNodeStore((state) => state.actions.closePreview)
   const nodeQuery = useCanvasNode(workId, nodeId)
+  const archiveLocks = useArchiveLocks(workId)
+  const isArchiveLocked = nodeId !== null && archiveLocks.lockedNodeIds.has(nodeId)
+  const canMutateNode = archiveLocks.isResolved && !isArchiveLocked
 
   return (
     <Sheet
@@ -35,8 +39,15 @@ export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workI
           </div>
           {nodeQuery.data !== undefined ? (
             <div className="mr-10 ml-auto flex min-w-0 items-center gap-space-sm">
-              <NodeVersionControl workId={workId} node={nodeQuery.data} />
-              <button
+              {!canMutateNode ? (
+                <span className="inline-flex h-9 items-center gap-space-xs text-body-sm text-mute">
+                  <LockKeyhole aria-hidden="true" size={14} />
+                  {!archiveLocks.isResolved
+                    ? archiveLocks.isError ? '无法确认归档状态' : '正在确认归档状态'
+                    : '已归档锁定'}
+                </span>
+              ) : <NodeVersionControl workId={workId} node={nodeQuery.data} />}
+              {canMutateNode ? <button
                 className="flex h-9 shrink-0 items-center gap-space-xs rounded-sm border border-hairline px-space-sm text-button-md text-ink transition-colors hover:bg-hairline-soft"
                 type="button"
                 aria-label="全屏编辑"
@@ -49,7 +60,7 @@ export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workI
               >
                 <Maximize2 size={15} />
                 <span className="hidden sm:inline">全屏编辑</span>
-              </button>
+              </button> : null}
             </div>
           ) : null}
         </SheetHeader>

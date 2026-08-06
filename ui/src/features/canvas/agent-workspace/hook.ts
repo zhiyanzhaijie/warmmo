@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef } from 'react'
 
 import { canvasKeys } from '@/apis/canvas-apis'
+import { chapterArchiveKeys } from '@/apis/chapter-archive-apis'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import type { AgentEvent } from '@/types/canvas'
@@ -49,9 +50,19 @@ export function useAgentRunStream(workId: string) {
 
       if (isTerminalAgentEvent(event.type)) {
         closeSource()
-        void queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) })
-        void queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) })
-        void queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) })
+        const invalidations = [
+          queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) }),
+          queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) }),
+          queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) }),
+        ]
+        if (event.type === 'run.completed' && typeof event.data?.archiveId === 'string') {
+          invalidations.push(
+            queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.current(workId) }),
+            queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.history(workId, nodeId) }),
+            queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) }),
+          )
+        }
+        void Promise.all(invalidations)
       }
     }
 

@@ -27,10 +27,14 @@ const restingOffsets: MagneticOffsets = {
 
 interface ConnectionHandlesProps {
   mode?: 'node' | 'selection'
+  allowIncoming?: boolean
+  allowOutgoing?: boolean
 }
 
 export const ConnectionHandles = memo(function ConnectionHandles({
   mode = 'node',
+  allowIncoming = true,
+  allowOutgoing = true,
 }: ConnectionHandlesProps) {
   const nodeId = useNodeId()
   const updateNodeInternals = useUpdateNodeInternals()
@@ -98,16 +102,20 @@ export const ConnectionHandles = memo(function ConnectionHandles({
       className={`warmnote-flow__connection-controls warmnote-flow__connection-controls--${mode}`}
       onPointerLeave={() => setActiveSide(null)}
     >
-      <div
-        aria-hidden="true"
-        className="warmnote-flow__connection-proximity warmnote-flow__connection-proximity--left nodrag nopan"
-        onPointerMove={(event) => followPointer(event, 'left')}
-      />
-      <div
-        aria-hidden="true"
-        className="warmnote-flow__connection-proximity warmnote-flow__connection-proximity--right nodrag nopan"
-        onPointerMove={(event) => followPointer(event, 'right')}
-      />
+      {allowIncoming ? (
+        <div
+          aria-hidden="true"
+          className="warmnote-flow__connection-proximity warmnote-flow__connection-proximity--left nodrag nopan"
+          onPointerMove={(event) => followPointer(event, 'left')}
+        />
+      ) : null}
+      {allowOutgoing ? (
+        <div
+          aria-hidden="true"
+          className="warmnote-flow__connection-proximity warmnote-flow__connection-proximity--right nodrag nopan"
+          onPointerMove={(event) => followPointer(event, 'right')}
+        />
+      ) : null}
       <Handle
         id={flowNodeEdgeTargetHandleId}
         className="warmnote-flow__edge-anchor warmnote-flow__edge-anchor--target"
@@ -122,22 +130,26 @@ export const ConnectionHandles = memo(function ConnectionHandles({
         type="source"
         position={Position.Right}
       />
-      <Handle
-        id={flowNodeCreateTargetHandleId}
-        className="warmnote-flow__connection-trigger warmnote-flow__connection-trigger--target"
-        data-active={activeSide === 'left' || undefined}
-        style={targetHandleStyle}
-        type="target"
-        position={Position.Left}
-      />
-      <Handle
-        id={flowNodeCreateSourceHandleId}
-        className="warmnote-flow__connection-trigger warmnote-flow__connection-trigger--source"
-        data-active={activeSide === 'right' || undefined}
-        style={sourceHandleStyle}
-        type="source"
-        position={Position.Right}
-      />
+      {allowIncoming ? (
+        <Handle
+          id={flowNodeCreateTargetHandleId}
+          className="warmnote-flow__connection-trigger warmnote-flow__connection-trigger--target"
+          data-active={activeSide === 'left' || undefined}
+          style={targetHandleStyle}
+          type="target"
+          position={Position.Left}
+        />
+      ) : null}
+      {allowOutgoing ? (
+        <Handle
+          id={flowNodeCreateSourceHandleId}
+          className="warmnote-flow__connection-trigger warmnote-flow__connection-trigger--source"
+          data-active={activeSide === 'right' || undefined}
+          style={sourceHandleStyle}
+          type="source"
+          position={Position.Right}
+        />
+      ) : null}
     </div>
   )
 })

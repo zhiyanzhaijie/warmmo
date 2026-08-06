@@ -133,6 +133,15 @@ func (s *CanvasService) UpdateNodePositions(
 	return s.store.UpdateNodePositions(ctx, workID, positions)
 }
 
+func (s *CanvasService) LayoutChapter(ctx context.Context, workID, chapterOutlineNodeID string) ([]canvas.NodePosition, error) {
+	workID = strings.TrimSpace(workID)
+	chapterOutlineNodeID = strings.TrimSpace(chapterOutlineNodeID)
+	if workID == "" || chapterOutlineNodeID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
+	return s.store.LayoutChapter(ctx, workID, chapterOutlineNodeID)
+}
+
 func (s *CanvasService) DeleteNodes(ctx context.Context, workID string, nodeIDs []string) error {
 	workID = strings.TrimSpace(workID)
 	if workID == "" || len(nodeIDs) == 0 || len(nodeIDs) > 100 {

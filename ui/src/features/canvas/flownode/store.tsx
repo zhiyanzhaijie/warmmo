@@ -4,7 +4,7 @@ import { useStore } from 'zustand'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 
 import type { FlowNodeData, FlowNodeDetailLevel, StoryFlowNode } from '@/features/canvas/flownode/types'
-import type { AgentEvent } from '@/types/canvas'
+import type { AgentEvent, CanvasNodePosition } from '@/types/canvas'
 
 export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed' | 'failed'
 export type NodeAgentOperation = 'update' | 'derive'
@@ -23,6 +23,7 @@ interface FlowNodeStoreActions {
   syncEdges: (edges: Edge[]) => void
   onNodesChange: OnNodesChange<StoryFlowNode>
   onEdgesChange: OnEdgesChange<Edge>
+  setNodePositions: (positions: CanvasNodePosition[]) => void
   setDetailLevel: (detailLevel: FlowNodeDetailLevel) => void
   showNodeToolbar: (nodeId: string) => void
   hideNodeToolbar: () => void
@@ -98,6 +99,17 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       },
       onEdgesChange: (changes) => {
         set((state) => ({ edges: applyEdgeChanges(changes, state.edges) }))
+      },
+      setNodePositions: (positions) => {
+        const positionByNodeId = new Map(positions.map((position) => [position.nodeId, position]))
+        set((state) => ({
+          nodes: state.nodes.map((node) => {
+            const position = positionByNodeId.get(node.id)
+            return position === undefined || (node.position.x === position.x && node.position.y === position.y)
+              ? node
+              : { ...node, position: { x: position.x, y: position.y } }
+          }),
+        }))
       },
       setDetailLevel: (detailLevel) => {
         set((state) => state.detailLevel === detailLevel ? state : { detailLevel })
@@ -272,6 +284,13 @@ function isSameNodeData(current: FlowNodeData, incoming: FlowNodeData) {
     && current.content === incoming.content
     && current.revision === incoming.revision
     && current.layerId === incoming.layerId
+    && current.archiveStateResolved === incoming.archiveStateResolved
+    && current.archiveLocked === incoming.archiveLocked
+    && current.archiveExpanded === incoming.archiveExpanded
+    && current.archiveLayoutDisabled === incoming.archiveLayoutDisabled
+    && current.archiveLayoutPending === incoming.archiveLayoutPending
+    && current.onToggleArchive === incoming.onToggleArchive
+    && current.onLayoutArchive === incoming.onLayoutArchive
     && areStringArraysEqual(current.contextTags, incoming.contextTags)
 }
 

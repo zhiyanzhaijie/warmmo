@@ -12,6 +12,33 @@ import (
 	"warmnote/core/internal/canvas"
 )
 
+type archiveLockQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func isNodeArchiveLocked(ctx context.Context, querier archiveLockQuerier, workID, nodeID string) (bool, error) {
+	var locked int
+	err := querier.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM chapter_archives archive
+    WHERE archive.work_id=? AND archive.is_current=1
+      AND (
+          archive.chapter_outline_node_id=?
+          OR EXISTS (
+              SELECT 1
+              FROM chapter_archive_sections section
+              WHERE section.archive_id=archive.id
+                AND (section.section_outline_node_id=? OR section.chapter_section_node_id=?)
+          )
+      )
+)`, workID, nodeID, nodeID, nodeID).Scan(&locked)
+	if err != nil {
+		return false, fmt.Errorf("read chapter archive lock: %w", err)
+	}
+	return locked != 0, nil
+}
+
 func (r *CanvasRepository) ListCurrentChapterArchives(ctx context.Context, workID string) ([]canvas.ChapterArchive, error) {
 	return r.listChapterArchives(ctx, workID, "", true)
 }

@@ -70,7 +70,8 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
       onSuccess: () => streamRun(pendingInput.runId, targetNodeId, pendingInput.lastSequence),
     })
   }, [pendingInput, respondToRun, streamRun, targetNodeId])
-  return targetNodeId !== null && targetNode !== undefined && toolbarSourceNodeId === targetNodeId && !isNodeDragging ? (
+  return targetNodeId !== null && targetNode !== undefined && targetNode.data.archiveStateResolved &&
+    !targetNode.data.archiveLocked && toolbarSourceNodeId === targetNodeId && !isNodeDragging ? (
     <NodeToolbar
       nodeId={targetNodeId}
       position={Position.Bottom}

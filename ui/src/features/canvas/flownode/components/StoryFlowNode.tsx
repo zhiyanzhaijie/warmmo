@@ -26,11 +26,24 @@ function FlowNodeShell({
   children: ReactNode
 }) {
   const definition = nodeDefinitions[data.kind]
+  const accentColor = data.archiveLocked ? 'var(--color-archive)' : definition.accentColor
+  const contentLocked = data.sourceType === 'node' && (!data.archiveStateResolved || data.archiveLocked)
+  const canCreateFromContext = data.sourceType !== 'node' || data.archiveStateResolved
 
   return (
     <article className="group relative w-64 overflow-visible">
       <FlowNodeLabel data={data} selected={selected} />
-      <div className="relative overflow-hidden rounded-sm border border-hairline bg-canvas-elevated">
+      <div
+        className="relative overflow-hidden rounded-sm border bg-canvas-elevated"
+        style={{
+          borderColor: data.archiveLocked
+            ? 'color-mix(in srgb, var(--color-archive) 48%, var(--color-hairline))'
+            : 'var(--color-hairline)',
+          backgroundColor: data.archiveLocked
+            ? 'color-mix(in srgb, var(--color-archive) 7%, var(--color-canvas-elevated))'
+            : undefined,
+        }}
+      >
         {data.sourceType === 'candidate' && data.candidateType === 'version' ? (
           <div className="flex items-center justify-between border-b border-hairline bg-canvas-subtle px-space-sm py-space-xs text-[0.625rem] uppercase text-mute">
             <span>版本候选</span>
@@ -47,7 +60,7 @@ function FlowNodeShell({
             {data.candidateReason}
           </p>
         ) : null}
-        {data.sourceType === 'node' ? <NodeAgentExecution nodeId={data.sourceId} /> : null}
+        {data.sourceType === 'node' && !contentLocked ? <NodeAgentExecution nodeId={data.sourceId} /> : null}
         {data.sourceType === 'candidate' ? (
           <CandidateFlowNodeActions
             workId={data.workId}
@@ -58,10 +71,13 @@ function FlowNodeShell({
         <span
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 rounded-[inherit]"
-          style={{ boxShadow: selected ? `inset 0 0 0 1px ${definition.accentColor}` : undefined }}
+          style={{ boxShadow: selected ? `inset 0 0 0 1px ${accentColor}` : undefined }}
         />
       </div>
-      <FlowNodeControls />
+      <FlowNodeControls
+        allowIncoming={!contentLocked}
+        allowOutgoing={canCreateFromContext}
+      />
     </article>
   )
 }

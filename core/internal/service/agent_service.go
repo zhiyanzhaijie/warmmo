@@ -242,5 +242,8 @@ func publicAgentError(err error) string {
 	if errors.Is(err, canvas.ErrInvalidChapterArchive) {
 		return "模型返回的章节归档不完整，请重试或切换模型"
 	}
+	if errors.Is(err, canvas.ErrArchivedNodeLocked) {
+		return "章节已归档并锁定，不能再次修改或归档"
+	}
 	return "Agent 执行失败，请检查模型配置后重试"
 }

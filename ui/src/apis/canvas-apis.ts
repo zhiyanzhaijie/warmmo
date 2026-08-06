@@ -202,6 +202,25 @@ export function useUpdateCanvasNodePositions(workId: string) {
   })
 }
 
+export function useLayoutCanvasChapter(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (chapterOutlineNodeId: string) => coreClient<{ positions: CanvasNodePosition[] }>(
+      `/works/${encodeURIComponent(workId)}/nodes/${encodeURIComponent(chapterOutlineNodeId)}/layout`,
+      { method: 'POST' },
+    ),
+    onSuccess: ({ positions }) => {
+      const positionByNodeId = new Map(positions.map((position) => [position.nodeId, position]))
+      queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) =>
+        nodes.map((node) => {
+          const position = positionByNodeId.get(node.id)
+          return position === undefined ? node : { ...node, x: position.x, y: position.y }
+        }))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
+    },
+  })
+}
+
 export function useDeleteCanvasNodes(workId: string) {
   const queryClient = useQueryClient()
   return useMutation({

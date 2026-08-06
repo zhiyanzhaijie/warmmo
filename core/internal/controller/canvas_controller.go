@@ -126,6 +126,26 @@ func (c *CanvasController) UpdateNodePositions(response http.ResponseWriter, req
 	}
 }
 
+func (c *CanvasController) LayoutChapter(response http.ResponseWriter, request *http.Request) {
+	positions, err := c.service.LayoutChapter(
+		request.Context(),
+		request.PathValue("workID"),
+		request.PathValue("nodeID"),
+	)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest), errors.Is(err, canvas.ErrInvalidNode):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "章节布局请求无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "章节或子章节节点不存在"})
+	case errors.Is(err, canvas.ErrInvalidChapterArchive):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "章节尚未归档，无法整理归档布局"})
+	case err != nil:
+		c.internalError(response, "layout chapter nodes", err)
+	default:
+		writeJSON(response, http.StatusOK, map[string]any{"positions": positions})
+	}
+}
+
 func (c *CanvasController) DeleteNodes(response http.ResponseWriter, request *http.Request) {
 	var input deleteCanvasNodesRequest
 	if !decodeCanvasRequest(response, request, &input) {
@@ -137,6 +157,8 @@ func (c *CanvasController) DeleteNodes(response http.ResponseWriter, request *ht
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请选择 1 到 100 个节点"})
 	case errors.Is(err, canvas.ErrNodeNotFound):
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "部分画布节点不存在"})
+	case errors.Is(err, canvas.ErrArchivedNodeLocked):
+		writeJSON(response, http.StatusLocked, map[string]string{"message": "已归档章节及其子章节不能删除"})
 	case err != nil:
 		c.internalError(response, "delete canvas nodes", err)
 	default:
@@ -269,6 +291,8 @@ func (c *CanvasController) SwitchNodeVersion(response http.ResponseWriter, reque
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "版本切换请求无效"})
 	case errors.Is(err, canvas.ErrNodeNotFound):
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "节点或版本不存在"})
+	case errors.Is(err, canvas.ErrArchivedNodeLocked):
+		writeJSON(response, http.StatusLocked, map[string]string{"message": "已归档章节及其子章节不能切换版本"})
 	case err != nil:
 		c.internalError(response, "switch canvas node version", err)
 	default:
@@ -295,6 +319,8 @@ func (c *CanvasController) UpdateNode(response http.ResponseWriter, request *htt
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "画布节点不存在"})
 	case errors.Is(err, canvas.ErrRevisionConflict):
 		writeJSON(response, http.StatusConflict, map[string]string{"message": "节点已在其他位置更新，请重新加载后再保存"})
+	case errors.Is(err, canvas.ErrArchivedNodeLocked):
+		writeJSON(response, http.StatusLocked, map[string]string{"message": "已归档章节及其子章节不能修改"})
 	case err != nil:
 		c.internalError(response, "update canvas node", err)
 	default:
@@ -328,6 +354,8 @@ func (c *CanvasController) CreateEdge(response http.ResponseWriter, request *htt
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "连接节点无效"})
 	case errors.Is(err, canvas.ErrNodeNotFound):
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "连接节点不存在"})
+	case errors.Is(err, canvas.ErrArchivedNodeLocked):
+		writeJSON(response, http.StatusLocked, map[string]string{"message": "已归档章节及其子章节不能新增连接"})
 	case err != nil:
 		c.internalError(response, "create canvas edge", err)
 	default:
@@ -346,6 +374,8 @@ func (c *CanvasController) DeleteEdges(response http.ResponseWriter, request *ht
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请选择 1 到 100 条连接"})
 	case errors.Is(err, canvas.ErrNodeNotFound):
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "部分连接不存在"})
+	case errors.Is(err, canvas.ErrArchivedNodeLocked):
+		writeJSON(response, http.StatusLocked, map[string]string{"message": "已归档章节及其子章节不能删除连接"})
 	case err != nil:
 		c.internalError(response, "delete canvas edges", err)
 	default:
@@ -423,6 +453,8 @@ func (c *CanvasController) AcceptCandidate(response http.ResponseWriter, request
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Candidate 不存在"})
 	case errors.Is(err, canvas.ErrCandidateResolved):
 		writeJSON(response, http.StatusConflict, map[string]string{"message": "Candidate 已被丢弃，不能接受"})
+	case errors.Is(err, canvas.ErrArchivedNodeLocked):
+		writeJSON(response, http.StatusLocked, map[string]string{"message": "Candidate 目标属于已归档章节，不能修改"})
 	case err != nil:
 		c.internalError(response, "accept canvas candidate", err)
 	default:

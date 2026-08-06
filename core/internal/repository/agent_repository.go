@@ -505,6 +505,13 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run warmag
 		return err
 	}
 	defer tx.Rollback()
+	locked, err := isNodeArchiveLocked(ctx, tx, run.WorkID, run.TargetNodeID)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return canvas.ErrArchivedNodeLocked
+	}
 	var chapterKind canvas.NodeKind
 	var outlineVersionID, outlineTitle, outlineContent string
 	var outlineRevision int64
@@ -545,6 +552,20 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run warmag
 			NodeRevision: section.NodeRevision, Title: section.Title, Summary: section.Summary,
 			Content: section.Content, ContentHash: contentHash,
 		})
+	}
+	layoutSections := make([]chapterLayoutSection, len(sections))
+	for index, section := range sections {
+		layoutSections[index] = chapterLayoutSection{
+			SectionOutlineNodeID: section.SectionOutlineNodeID,
+			ChapterSectionNodeID: section.ChapterSectionNodeID,
+		}
+	}
+	layoutPositions, _, err := layoutChapterNodes(ctx, tx, run.WorkID, run.TargetNodeID, layoutSections)
+	if err != nil {
+		return fmt.Errorf("layout archived chapter: %w", err)
+	}
+	if err := applyNodePositions(ctx, tx, run.WorkID, layoutPositions); err != nil {
+		return fmt.Errorf("apply archived chapter layout: %w", err)
 	}
 	created := make([]string, 0, len(decoded.Proposals))
 	for _, proposal := range decoded.Proposals {
@@ -592,6 +613,12 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run warmag
 	}
 	if _, err := appendEvent(tx, run.ID, warmagent.EventRunCompleted, map[string]any{"archiveId": archiveID, "candidateIds": created}, now); err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM canvas_actions WHERE work_id=?`, run.WorkID); err != nil {
+		return fmt.Errorf("clear canvas actions at chapter archive checkpoint: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM canvas_history_state WHERE work_id=?`, run.WorkID); err != nil {
+		return fmt.Errorf("clear canvas history at chapter archive checkpoint: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -746,6 +773,13 @@ func (r *AgentRepository) CompleteNodeUpdate(
 		return fmt.Errorf("begin complete node update: %w", err)
 	}
 	defer transaction.Rollback()
+	locked, err := isNodeArchiveLocked(ctx, transaction, run.WorkID, nodeID)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return canvas.ErrArchivedNodeLocked
+	}
 	before, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
 SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
 FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, nodeID))

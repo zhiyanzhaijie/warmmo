@@ -80,6 +80,13 @@ FROM canvas_edges WHERE work_id = ? AND id = ?`, workID, edgeID))
 		if err != nil {
 			return fmt.Errorf("read deleted canvas edge: %w", err)
 		}
+		locked, err := isNodeArchiveLocked(ctx, transaction, workID, edge.TargetNodeID)
+		if err != nil {
+			return err
+		}
+		if locked {
+			return canvas.ErrArchivedNodeLocked
+		}
 		edges = append(edges, edge)
 	}
 	if err := deleteEdgeSnapshots(ctx, transaction, workID, edgeIDs); err != nil {
@@ -179,6 +186,13 @@ func (r *CanvasRepository) DeleteNodes(ctx context.Context, workID string, nodeI
 	nodes := make([]canvas.Node, 0, len(nodeIDs))
 	deletedNodeIDs := make(map[string]struct{}, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
+		locked, err := isNodeArchiveLocked(ctx, transaction, workID, nodeID)
+		if err != nil {
+			return err
+		}
+		if locked {
+			return canvas.ErrArchivedNodeLocked
+		}
 		node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
 SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
 FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))

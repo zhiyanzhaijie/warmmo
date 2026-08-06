@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
+import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 import type { CanvasNodeKind } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
@@ -52,6 +53,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
   model,
 }: NodeDerivationToolbarProps) {
   const createRun = useCreateNodeDerivationRun(workId)
+  const archiveLocks = useArchiveLocks(workId)
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
   const toolbarSourceNodeId = useFlowNodeStore((state) => state.toolbarSourceNodeId)
   const nodes = useFlowNodeStore((state) => state.nodes)
@@ -69,6 +71,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
     ? undefined
     : nodeById.get(targetNodeId),
   [nodeById, targetNodeId])
+  const isTargetArchiveLocked = targetNodeId !== null && archiveLocks.lockedNodeIds.has(targetNodeId)
   const definitions = targetNode === undefined ? [] : (derivations[targetNode.data.kind] ?? [])
   const hasChildOfKind = useCallback((kind: CanvasNodeKind) => targetNodeId !== null && edges.some((edge) => {
     if (edge.source !== targetNodeId || edge.data?.kind !== 'generated_from') return false
@@ -114,7 +117,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
   const isCreatingTargetRun = createRun.isPending && createRun.variables?.targetNodeId === targetNodeId
   const isPending = isCreatingTargetRun || targetAgentRun?.status === 'submitting' || targetAgentRun?.status === 'running'
   const derive = useCallback((definition: DerivationDefinition) => {
-    const disabled = model === null || !hasRequiredChildren(definition) ||
+    const disabled = !archiveLocks.isResolved || isTargetArchiveLocked || model === null || !hasRequiredChildren(definition) ||
       (definition.blocksWhenDerived && hasChildOfKind(
         targetNode?.data.kind === 'chapter-outline' ? 'section-outline' : 'chapter-section',
       )) || hasBlockingRun || isPending
@@ -133,9 +136,9 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
         error instanceof Error ? error.message : '无法创建节点派生任务',
       ),
     })
-  }, [beginNodeAgentRun, contextNodeIds, createRun, failNodeAgentRun, hasBlockingRun, hasChildOfKind, hasRequiredChildren, isPending, model, streamRun, targetNodeId, targetNode])
+  }, [archiveLocks.isResolved, beginNodeAgentRun, contextNodeIds, createRun, failNodeAgentRun, hasBlockingRun, hasChildOfKind, hasRequiredChildren, isPending, isTargetArchiveLocked, model, streamRun, targetNodeId, targetNode])
 
-  if (targetNodeId === null || targetNode === undefined || definitions.length === 0 ||
+  if (!archiveLocks.isResolved || isTargetArchiveLocked || targetNodeId === null || targetNode === undefined || definitions.length === 0 ||
     toolbarSourceNodeId !== targetNodeId || isNodeDragging) return null
 
   return (
@@ -176,7 +179,11 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
                       className="rounded-sm border-hairline bg-canvas-elevated text-ink shadow-floating hover:bg-canvas-subtle"
                       onClick={() => derive(definition)}
                     >
-                      {isPending ? <LoaderCircle aria-hidden="true" className="animate-spin" size={15} /> : definition.target === 'chapter-archive' ? <Archive aria-hidden="true" size={15} /> : <Bomb aria-hidden="true" size={15} />}
+                      {isPending
+                        ? <LoaderCircle aria-hidden="true" className="animate-spin" size={15} />
+                        : definition.target === 'chapter-archive'
+                          ? <Archive aria-hidden="true" size={15} />
+                          : <Bomb aria-hidden="true" size={15} />}
                     </Button>
                   </span>
                 </TooltipTrigger>

@@ -9,6 +9,7 @@ import {
 } from '@/apis/canvas-apis'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { isTextEntryTarget } from '@/features/canvas/keyboard'
+import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 
 interface CanvasHistoryActions {
   canUndo: boolean
@@ -20,10 +21,12 @@ interface CanvasHistoryActions {
 }
 
 export function useCanvasHistoryActions(workId: string): CanvasHistoryActions {
+  const archiveLocks = useArchiveLocks(workId)
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
   const edges = useFlowNodeStore((state) => state.edges)
-  const selectedEdgeIds = useMemo(() => edges.flatMap((edge) =>
-    edge.selected && edge.data?.persisted === true ? [edge.id] : []), [edges])
+  const selectedEdges = useMemo(() => edges.filter((edge) =>
+    edge.selected && edge.data?.persisted === true), [edges])
+  const selectedEdgeIds = useMemo(() => selectedEdges.map((edge) => edge.id), [selectedEdges])
   const history = useCanvasHistory(workId)
   const { mutate: undoMutation, isPending: isUndoPending } = useUndoCanvasAction(workId)
   const { mutate: redoMutation, isPending: isRedoPending } = useRedoCanvasAction(workId)
@@ -43,15 +46,20 @@ export function useCanvasHistoryActions(workId: string): CanvasHistoryActions {
 
   const deleteSelectedNodes = useCallback(() => {
     if (selectedNodeIds.length === 0 || isDeletePending) return
+    if (!archiveLocks.isResolved || selectedNodeIds.some((nodeId) => archiveLocks.lockedNodeIds.has(nodeId))) return
     if (selectedNodeIds.length > 1 && !window.confirm(`删除选中的 ${selectedNodeIds.length} 个节点？`)) return
     deleteNodes(selectedNodeIds)
-  }, [deleteNodes, isDeletePending, selectedNodeIds])
+  }, [archiveLocks.isResolved, archiveLocks.lockedNodeIds, deleteNodes, isDeletePending, selectedNodeIds])
 
   const deleteSelectedEdges = useCallback(() => {
     if (selectedEdgeIds.length === 0 || isEdgeDeletePending) return
+    if (
+      !archiveLocks.isResolved
+      || selectedEdges.some((edge) => archiveLocks.lockedNodeIds.has(edge.target))
+    ) return
     if (selectedEdgeIds.length > 1 && !window.confirm(`删除选中的 ${selectedEdgeIds.length} 条连接？`)) return
     deleteEdges(selectedEdgeIds)
-  }, [deleteEdges, isEdgeDeletePending, selectedEdgeIds])
+  }, [archiveLocks.isResolved, archiveLocks.lockedNodeIds, deleteEdges, isEdgeDeletePending, selectedEdgeIds, selectedEdges])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {

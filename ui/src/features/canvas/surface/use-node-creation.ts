@@ -10,12 +10,14 @@ import { useCallback, useState, type MouseEvent as ReactMouseEvent } from 'react
 import { useCreateCanvasEdge } from '@/apis/canvas-apis'
 import type { CanvasFlowEdge } from '@/features/canvas/flowedge/types'
 import type { CanvasFlowNode } from '@/features/canvas/flownode/types'
+import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 import type { NodeCreationSession } from '@/features/canvas/surface/types'
 
 type OpenNodeCreationRequest = Omit<NodeCreationSession, 'id'>
 
 export function useCanvasNodeCreation(workId: string) {
   const flow = useReactFlow<CanvasFlowNode, CanvasFlowEdge>()
+  const archiveLocks = useArchiveLocks(workId)
   const { mutate: createEdge } = useCreateCanvasEdge(workId)
   const [session, setSession] = useState<NodeCreationSession | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
@@ -48,7 +50,11 @@ export function useCanvasNodeCreation(workId: string) {
         ? [sourceNode.data.sourceId]
         : []
     const screenPoint = getConnectionEndScreenPoint(event)
-    if (contextNodeIds.length === 0 || screenPoint === null) return
+    if (
+      contextNodeIds.length === 0
+      || screenPoint === null
+      || !archiveLocks.isResolved
+    ) return
 
     open({
       contextNodeIds,
@@ -56,7 +62,7 @@ export function useCanvasNodeCreation(workId: string) {
       sourcePoint: connectionState.from,
       sourcePosition: connectionState.fromPosition,
     })
-  }, [flow, open])
+  }, [archiveLocks.isResolved, flow, open])
 
   const onConnect = useCallback((connection: Connection) => {
     const sourceNode = flow.getNode(connection.source)
@@ -66,13 +72,15 @@ export function useCanvasNodeCreation(workId: string) {
       || targetNode?.type !== 'flow-node'
       || sourceNode.data.sourceType !== 'node'
       || targetNode.data.sourceType !== 'node'
+      || !archiveLocks.isResolved
+      || archiveLocks.lockedNodeIds.has(targetNode.data.sourceId)
     ) return
 
     createEdge({
       sourceNodeId: sourceNode.data.sourceId,
       targetNodeId: targetNode.data.sourceId,
     })
-  }, [createEdge, flow])
+  }, [archiveLocks.isResolved, archiveLocks.lockedNodeIds, createEdge, flow])
 
   const onPaneContextMenu = useCallback((event: ReactMouseEvent) => {
     event.preventDefault()

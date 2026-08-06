@@ -16,6 +16,13 @@ export interface FlowNodeData extends Record<string, unknown> {
   revision: number
   layerId: string
   contextTags: string[]
+  archiveStateResolved: boolean
+  archiveLocked: boolean
+  archiveExpanded?: boolean
+  archiveLayoutDisabled?: boolean
+  archiveLayoutPending?: boolean
+  onToggleArchive?: (chapterNodeId: string) => void
+  onLayoutArchive?: (chapterNodeId: string) => void
   candidateType?: 'node' | 'version'
   candidateReason?: string
   candidateScore?: number
