@@ -9,6 +9,7 @@ import type {
   CanvasNode,
   CanvasNodeKind,
   CanvasNodePosition,
+  CanvasNodeVersion,
 } from '@/types/canvas'
 import type { ModelReference } from '@/types/provider'
 
@@ -27,6 +28,7 @@ interface EdgesResponse {
 export const canvasKeys = {
   nodes: (workId: string) => ['canvas', workId, 'nodes'] as const,
   node: (workId: string, nodeId: string) => ['canvas', workId, 'nodes', nodeId] as const,
+  nodeVersions: (workId: string, nodeId: string) => ['canvas', workId, 'nodes', nodeId, 'versions'] as const,
   edges: (workId: string) => ['canvas', workId, 'edges'] as const,
   candidates: (workId: string) => ['canvas', workId, 'candidates'] as const,
   history: (workId: string) => ['canvas', workId, 'history'] as const,
@@ -138,6 +140,38 @@ export function useCanvasNode(workId: string, nodeId: string | null) {
     queryFn: ({ signal }) => coreClient<CanvasNode>(`/works/${workId}/nodes/${nodeId}`, { signal }),
   })
 }
+
+interface NodeVersionsResponse {
+  versions: CanvasNodeVersion[]
+}
+
+export function useCanvasNodeVersions(workId: string, nodeId: string | null) {
+  return useQuery({
+    queryKey: canvasKeys.nodeVersions(workId, nodeId ?? ''),
+    enabled: nodeId !== null,
+    queryFn: ({ signal }) => coreClient<NodeVersionsResponse>(
+      `/works/${workId}/nodes/${nodeId}/versions`,
+      { signal },
+    ).then((response) => response.versions),
+  })
+}
+
+export function useSwitchCanvasNodeVersion(workId: string, nodeId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (versionId: string) => coreClient<CanvasNode>(
+      `/works/${workId}/nodes/${nodeId}/versions/current`,
+      { method: 'POST', body: { versionId } },
+    ),
+    onSuccess: (node) => {
+      queryClient.setQueryData(canvasKeys.node(workId, nodeId), node)
+      queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) =>
+        nodes.map((existing) => existing.id === node.id ? node : existing))
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.nodeVersions(workId, nodeId) })
+      void queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) })
+    },
+  })
+}
 export function useUpdateCanvasNodePosition(workId: string) {
   return useMutation({
     mutationFn: (input: { nodeId: string; x: number; y: number }) =>
@@ -238,9 +272,12 @@ export function useAcceptCanvasCandidate(workId: string) {
       }),
     onSuccess: (node, input) => {
       queryClient.setQueryData<CanvasNode[]>(canvasKeys.nodes(workId), (nodes = []) => {
-        if (nodes.some((existing) => existing.id === node.id)) return nodes
+        if (nodes.some((existing) => existing.id === node.id)) {
+          return nodes.map((existing) => existing.id === node.id ? node : existing)
+        }
         return [...nodes, node]
       })
+      queryClient.setQueryData(canvasKeys.node(workId, node.id), node)
       queryClient.setQueryData<AgentCandidate[]>(canvasKeys.candidates(workId), (candidates = []) =>
         candidates.filter((candidate) => candidate.id !== input.candidateId))
       void queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) })
@@ -277,7 +314,7 @@ export function useCreateAgentRun(workId: string) {
   })
 }
 
-export type NodeDerivationTarget = 'section-outline-batch' | 'chapter-section'
+export type NodeDerivationTarget = 'section-outline-batch' | 'chapter-section' | 'chapter-archive'
 
 export function useCreateNodeDerivationRun(workId: string) {
   return useMutation({

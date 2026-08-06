@@ -311,7 +311,7 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 	if IsNodeUpdateTarget(state.input.Target) {
 		return l.produceNodeUpdate(ctx, state, model, emit)
 	}
-	if state.input.Target == TargetSectionOutlineBatch || state.input.Target == TargetChapterSection {
+	if state.input.Target == TargetSectionOutlineBatch || state.input.Target == TargetChapterSection || state.input.Target == TargetChapterArchive {
 		return l.produceDerivation(ctx, state, model, emit)
 	}
 	var content strings.Builder
@@ -412,7 +412,7 @@ func (l *Loop) completeContent(ctx context.Context, state loopState, content str
 			ExpectedRevision: revision,
 		}, nil
 	}
-	if state.input.Target == TargetSectionOutlineBatch || state.input.Target == TargetChapterSection {
+	if state.input.Target == TargetSectionOutlineBatch || state.input.Target == TargetChapterSection || state.input.Target == TargetChapterArchive {
 		revision, err := targetNodeRevision(state)
 		if err != nil {
 			return RunResult{}, err
@@ -536,15 +536,19 @@ func (s loopState) promptPayload() map[string]any {
 	}
 	if !IsNodeUpdateTarget(s.input.Target) &&
 		s.input.Target != TargetSectionOutlineBatch &&
-		s.input.Target != TargetChapterSection {
+		s.input.Target != TargetChapterSection &&
+		s.input.Target != TargetChapterArchive {
 		payload["context"] = s.snapshot
 		return payload
 	}
 
 	targetNode, referenceNodes := s.nodeUpdateContext()
 	mode := nodeUpdateMode(s.input)
-	if s.input.Target == TargetSectionOutlineBatch || s.input.Target == TargetChapterSection {
+	if s.input.Target == TargetSectionOutlineBatch || s.input.Target == TargetChapterSection || s.input.Target == TargetChapterArchive {
 		payload["operation"] = "derive_child_nodes"
+		if s.input.Target == TargetChapterArchive {
+			payload["operation"] = "archive_chapter_and_propose_entity_versions"
+		}
 		payload["targetNodeId"] = s.input.TargetNodeID
 		payload["targetNode"] = targetNode
 		payload["referenceContext"] = ContextSnapshot{

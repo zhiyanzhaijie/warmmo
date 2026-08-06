@@ -42,7 +42,8 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	}
 	if input.Target != agent.TargetNodeUpdate &&
 		input.Target != agent.TargetSectionOutlineBatch &&
-		input.Target != agent.TargetChapterSection {
+		input.Target != agent.TargetChapterSection &&
+		input.Target != agent.TargetChapterArchive {
 		return agent.Run{}, fmt.Errorf("%w: target %q is not supported", ErrInvalidAgentRun, input.Target)
 	}
 	if input.TargetNodeID == "" {
@@ -69,11 +70,20 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 		if input.Target == agent.TargetChapterSection {
 			expectedKind = canvas.NodeKindSectionOutline
 		}
+		if input.Target == agent.TargetChapterArchive {
+			expectedKind = canvas.NodeKindChapterOutline
+		}
 		if nodeKind != expectedKind {
 			return agent.Run{}, fmt.Errorf("%w: target %q requires a %q node", ErrInvalidAgentRun, input.Target, expectedKind)
 		}
 		if input.Target == agent.TargetSectionOutlineBatch {
 			input.ContextNodeIDs = []string{input.TargetNodeID}
+		} else if input.Target == agent.TargetChapterArchive {
+			contextNodeIDs, err := s.repository.GetChapterArchiveContext(input.WorkID, input.TargetNodeID)
+			if err != nil {
+				return agent.Run{}, fmt.Errorf("%w: resolve chapter archive context: %v", ErrInvalidAgentRun, err)
+			}
+			input.ContextNodeIDs = contextNodeIDs
 		} else {
 			contextNodeIDs, err := s.repository.GetChapterSectionContext(input.WorkID, input.TargetNodeID)
 			if err != nil {
@@ -190,6 +200,8 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 		completeErr = s.repository.CompleteNodeUpdate(runCtx, run, input.TargetNodeID, result)
 	} else if input.Target == agent.TargetSectionOutlineBatch || input.Target == agent.TargetChapterSection {
 		completeErr = s.repository.CompleteDerivation(runCtx, run, input.TargetNodeID, result)
+	} else if input.Target == agent.TargetChapterArchive {
+		completeErr = s.repository.CompleteChapterArchive(runCtx, run, result)
 	} else {
 		_, completeErr = s.repository.Complete(run, result)
 	}
@@ -226,6 +238,9 @@ func publicAgentError(err error) string {
 	}
 	if errors.Is(err, canvas.ErrInvalidSectionOutline) || errors.Is(err, canvas.ErrInvalidNode) {
 		return "模型返回的派生内容不符合节点结构，请重试或切换模型"
+	}
+	if errors.Is(err, canvas.ErrInvalidChapterArchive) {
+		return "模型返回的章节归档不完整，请重试或切换模型"
 	}
 	return "Agent 执行失败，请检查模型配置后重试"
 }

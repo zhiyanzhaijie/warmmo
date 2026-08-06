@@ -24,6 +24,7 @@ const (
 	TargetNodeUpdate          = "node-update"
 	TargetSectionOutlineBatch = "section-outline-batch"
 	TargetChapterSection      = "chapter-section"
+	TargetChapterArchive      = "chapter-archive"
 
 	RunStatusQueued       RunStatus = "queued"
 	RunStatusRunning      RunStatus = "running"
@@ -118,6 +119,11 @@ type Candidate struct {
 	SkillVersion   string          `json:"skillVersion"`
 	Status         CandidateStatus `json:"status"`
 	Kind           string          `json:"kind"`
+	CandidateType  string          `json:"candidateType,omitempty"`
+	NodeID         string          `json:"nodeId,omitempty"`
+	BaseVersionID  string          `json:"baseVersionId,omitempty"`
+	Reason         string          `json:"reason,omitempty"`
+	ChangeScore    float64         `json:"changeScore,omitempty"`
 	Title          string          `json:"title"`
 	Content        string          `json:"content"`
 	X              float64         `json:"x"`

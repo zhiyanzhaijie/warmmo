@@ -31,9 +31,22 @@ function FlowNodeShell({
     <article className="group relative w-64 overflow-visible">
       <FlowNodeLabel data={data} selected={selected} />
       <div className="relative overflow-hidden rounded-sm border border-hairline bg-canvas-elevated">
+        {data.sourceType === 'candidate' && data.candidateType === 'version' ? (
+          <div className="flex items-center justify-between border-b border-hairline bg-canvas-subtle px-space-sm py-space-xs text-[0.625rem] uppercase text-mute">
+            <span>版本候选</span>
+            {typeof data.candidateScore === 'number' && data.candidateScore > 0 ? (
+              <span>{data.candidateScore.toFixed(1)} / 10</span>
+            ) : null}
+          </div>
+        ) : null}
         <div className="min-h-20 max-h-44 overflow-hidden px-space-sm py-space-sm text-body-sm leading-5 text-body">
           {children}
         </div>
+        {data.sourceType === 'candidate' && data.candidateType === 'version' && data.candidateReason ? (
+          <p className="border-t border-hairline px-space-sm py-space-xs text-body-sm leading-4 text-mute">
+            {data.candidateReason}
+          </p>
+        ) : null}
         {data.sourceType === 'node' ? <NodeAgentExecution nodeId={data.sourceId} /> : null}
         {data.sourceType === 'candidate' ? (
           <CandidateFlowNodeActions

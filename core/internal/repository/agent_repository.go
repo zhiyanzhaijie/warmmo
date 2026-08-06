@@ -2,11 +2,14 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -18,11 +21,15 @@ import (
 )
 
 type AgentRepository struct {
-	database *sql.DB
+	database      *sql.DB
+	dataDirectory string
 }
 
 func NewAgentRepository(providerRepository *ProviderRepository) *AgentRepository {
-	return &AgentRepository{database: providerRepository.database}
+	return &AgentRepository{
+		database:      providerRepository.database,
+		dataDirectory: filepath.Dir(providerRepository.databasePath),
+	}
 }
 
 func (r *AgentRepository) GetCanvasNodeKind(workID, nodeID string) (canvas.NodeKind, error) {
@@ -90,6 +97,91 @@ ORDER BY created_at`, workID, chapterOutlineNodeID)
 		}
 		if err := chapterContextRows.Err(); err != nil {
 			return nil, fmt.Errorf("iterate chapter outline inherited context: %w", err)
+		}
+	}
+	return uniqueStrings(contextNodeIDs), nil
+}
+
+func (r *AgentRepository) GetChapterArchiveContext(workID, chapterOutlineNodeID string) ([]string, error) {
+	contextNodeIDs := []string{chapterOutlineNodeID}
+	rows, err := r.database.Query(`
+SELECT source_node_id
+FROM canvas_edges
+WHERE work_id=? AND target_node_id=? AND kind='generated_from'
+ORDER BY created_at`, workID, chapterOutlineNodeID)
+	if err != nil {
+		return nil, fmt.Errorf("read chapter archive context: %w", err)
+	}
+	inheritedNodeIDs := make([]string, 0)
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		inheritedNodeIDs = append(inheritedNodeIDs, nodeID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	contextNodeIDs = append(contextNodeIDs, inheritedNodeIDs...)
+
+	sectionRows, err := r.database.Query(`
+SELECT n.id, n.kind
+FROM canvas_edges e
+JOIN canvas_nodes n ON n.work_id=e.work_id AND n.id=e.target_node_id
+WHERE e.work_id=? AND e.source_node_id=? AND e.kind='generated_from'
+  AND n.kind IN (?, ?)
+ORDER BY n.created_at`, workID, chapterOutlineNodeID, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection)
+	if err != nil {
+		return nil, fmt.Errorf("read archived chapter children: %w", err)
+	}
+	sectionOutlineNodeIDs := make([]string, 0)
+	for sectionRows.Next() {
+		var nodeID string
+		var kind canvas.NodeKind
+		if err := sectionRows.Scan(&nodeID, &kind); err != nil {
+			sectionRows.Close()
+			return nil, err
+		}
+		contextNodeIDs = append(contextNodeIDs, nodeID)
+		if kind == canvas.NodeKindSectionOutline {
+			sectionOutlineNodeIDs = append(sectionOutlineNodeIDs, nodeID)
+		}
+	}
+	if err := sectionRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := sectionRows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, sectionOutlineNodeID := range sectionOutlineNodeIDs {
+		chapterSectionRows, err := r.database.Query(`
+SELECT n.id
+FROM canvas_edges e
+JOIN canvas_nodes n ON n.work_id=e.work_id AND n.id=e.target_node_id
+WHERE e.work_id=? AND e.source_node_id=? AND e.kind='generated_from' AND n.kind=?
+ORDER BY n.created_at`, workID, sectionOutlineNodeID, canvas.NodeKindChapterSection)
+		if err != nil {
+			return nil, fmt.Errorf("read archived chapter sections: %w", err)
+		}
+		for chapterSectionRows.Next() {
+			var nodeID string
+			if err := chapterSectionRows.Scan(&nodeID); err != nil {
+				chapterSectionRows.Close()
+				return nil, err
+			}
+			contextNodeIDs = append(contextNodeIDs, nodeID)
+		}
+		if err := chapterSectionRows.Close(); err != nil {
+			return nil, err
+		}
+		if err := chapterSectionRows.Err(); err != nil {
+			return nil, err
 		}
 	}
 	return uniqueStrings(contextNodeIDs), nil
@@ -355,6 +447,293 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 	return candidate, nil
 }
 
+type archiveProposal struct {
+	NodeID      string  `json:"nodeId"`
+	Kind        string  `json:"kind"`
+	Title       string  `json:"title"`
+	Content     string  `json:"content"`
+	ChangeScore float64 `json:"changeScore"`
+	Reason      string  `json:"reason"`
+}
+
+type archiveSectionResult struct {
+	SectionOutlineNodeID string `json:"sectionOutlineNodeId"`
+	ChapterSectionNodeID string `json:"chapterSectionNodeId"`
+	NodeRevision         int64  `json:"nodeRevision"`
+	Ordinal              int    `json:"ordinal"`
+	Summary              string `json:"summary"`
+}
+
+type archiveContentResult struct {
+	Summary  string                 `json:"summary"`
+	Sections []archiveSectionResult `json:"sections"`
+}
+
+type archiveResult struct {
+	Archive   archiveContentResult `json:"archive"`
+	Proposals []archiveProposal    `json:"proposals"`
+}
+
+type archiveSectionSource struct {
+	SectionOutlineNodeID    string
+	ChapterSectionNodeID    string
+	ChapterSectionVersionID string
+	NodeRevision            int64
+	Title                   string
+	Content                 string
+	Ordinal                 int
+	Summary                 string
+}
+
+func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run warmagent.Run, result warmagent.RunResult) error {
+	var decoded archiveResult
+	decoder := json.NewDecoder(strings.NewReader(result.Content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode chapter archive result: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: archive result must contain one JSON object", canvas.ErrInvalidChapterArchive)
+	}
+	decoded.Archive.Summary = strings.TrimSpace(decoded.Archive.Summary)
+	if decoded.Archive.Summary == "" {
+		return fmt.Errorf("%w: archive summary is required", canvas.ErrInvalidChapterArchive)
+	}
+	now := time.Now().UTC()
+	tx, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var chapterKind canvas.NodeKind
+	var outlineVersionID, outlineTitle, outlineContent string
+	var outlineRevision int64
+	if err := tx.QueryRowContext(ctx, `SELECT kind,current_version_id,revision,title,content FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, run.TargetNodeID).Scan(&chapterKind, &outlineVersionID, &outlineRevision, &outlineTitle, &outlineContent); err != nil {
+		return err
+	}
+	if chapterKind != canvas.NodeKindChapterOutline {
+		return canvas.ErrInvalidNode
+	}
+	if outlineRevision != result.ExpectedRevision {
+		return fmt.Errorf("%w: chapter outline changed before archive completion", canvas.ErrRevisionConflict)
+	}
+	sections, err := readChapterArchiveSections(ctx, tx, run.WorkID, run.TargetNodeID, decoded.Archive.Sections)
+	if err != nil {
+		return err
+	}
+	var archiveRevision int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0)+1 FROM chapter_archives WHERE work_id=? AND chapter_outline_node_id=?`, run.WorkID, run.TargetNodeID).Scan(&archiveRevision); err != nil {
+		return err
+	}
+	archiveID := uuid.NewString()
+	sourceDigest := chapterArchiveDigest(run.TargetNodeID, outlineRevision, outlineContent, sections)
+	if _, err := tx.ExecContext(ctx, `UPDATE chapter_archives SET is_current=0,superseded_at=? WHERE work_id=? AND chapter_outline_node_id=? AND is_current=1`, now.Format(time.RFC3339Nano), run.WorkID, run.TargetNodeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO chapter_archives (id,work_id,chapter_outline_node_id,revision,run_id,outline_version_id,outline_revision,outline_title,outline_content,summary,source_digest,is_current,projection_status,created_at,superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, archiveID, run.WorkID, run.TargetNodeID, archiveRevision, run.ID, outlineVersionID, outlineRevision, outlineTitle, outlineContent, decoded.Archive.Summary, sourceDigest, 1, "pending", now.Format(time.RFC3339Nano), ""); err != nil {
+		return fmt.Errorf("create chapter archive: %w", err)
+	}
+	archiveSections := make([]canvas.ChapterArchiveSection, 0, len(sections))
+	for _, section := range sections {
+		contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(section.Content)))
+		if _, err := tx.ExecContext(ctx, `INSERT INTO chapter_archive_sections (archive_id,work_id,ordinal,section_outline_node_id,chapter_section_node_id,chapter_section_version_id,node_revision,title,summary,content,content_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, archiveID, run.WorkID, section.Ordinal, section.SectionOutlineNodeID, section.ChapterSectionNodeID, section.ChapterSectionVersionID, section.NodeRevision, section.Title, section.Summary, section.Content, contentHash); err != nil {
+			return fmt.Errorf("create chapter archive section: %w", err)
+		}
+		archiveSections = append(archiveSections, canvas.ChapterArchiveSection{
+			ArchiveID: archiveID, Ordinal: section.Ordinal, SectionOutlineNodeID: section.SectionOutlineNodeID,
+			ChapterSectionNodeID: section.ChapterSectionNodeID, ChapterSectionVersionID: section.ChapterSectionVersionID,
+			NodeRevision: section.NodeRevision, Title: section.Title, Summary: section.Summary,
+			Content: section.Content, ContentHash: contentHash,
+		})
+	}
+	created := make([]string, 0, len(decoded.Proposals))
+	for _, proposal := range decoded.Proposals {
+		if proposal.NodeID == "" || !containsString(run.ContextNodeIDs, proposal.NodeID) || proposal.NodeID == run.TargetNodeID || strings.TrimSpace(proposal.Content) == "" {
+			continue
+		}
+		var kind canvas.NodeKind
+		var title string
+		var baseVersionID string
+		if err := tx.QueryRowContext(ctx, `SELECT kind,title,current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, proposal.NodeID).Scan(&kind, &title, &baseVersionID); err != nil {
+			continue
+		}
+		if proposal.Kind != "" && proposal.Kind != string(kind) {
+			continue
+		}
+		x, y := 0.0, 0.0
+		if err := tx.QueryRowContext(ctx, `SELECT x,y FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, proposal.NodeID).Scan(&x, &y); err != nil {
+			continue
+		}
+		var pending int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_candidates WHERE work_id=? AND status=?`, run.WorkID, warmagent.CandidateStatusPending).Scan(&pending); err != nil {
+			return err
+		}
+		x += 320 + float64(pending/8)*36
+		y += float64(pending%8) * 36
+		candidateID := uuid.NewString()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_candidates (id,run_id,work_id,skill_id,skill_version,status,kind,title,content,x,y,accepted_node_id,created_at,decided_at,candidate_type,node_id,base_version_id,reason,change_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, candidateID, run.ID, run.WorkID, result.SkillID, result.SkillVersion, warmagent.CandidateStatusPending, kind, valueOrArchiveTitle(proposal.Title, title), proposal.Content, x, y, "", now.Format(time.RFC3339Nano), "", "version", proposal.NodeID, baseVersionID, proposal.Reason, proposal.ChangeScore); err != nil {
+			return err
+		}
+		created = append(created, candidateID)
+	}
+	statusResult, err := tx.ExecContext(ctx, `UPDATE agent_runs SET status=?,updated_at=? WHERE id=? AND status=?`, warmagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, warmagent.RunStatusRunning)
+	if err != nil {
+		return err
+	}
+	changed, err := statusResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read completed chapter archive run: %w", err)
+	}
+	if changed == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	if _, err := appendEvent(tx, run.ID, warmagent.EventCandidateCreated, map[string]any{"candidateIds": created, "candidateType": "version"}, now); err != nil {
+		return err
+	}
+	if _, err := appendEvent(tx, run.ID, warmagent.EventRunCompleted, map[string]any{"archiveId": archiveID, "candidateIds": created}, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	archive := canvas.ChapterArchive{
+		ID: archiveID, WorkID: run.WorkID, ChapterOutlineNodeID: run.TargetNodeID,
+		Revision: archiveRevision, RunID: run.ID, OutlineVersionID: outlineVersionID,
+		OutlineRevision: outlineRevision, OutlineTitle: outlineTitle, OutlineContent: outlineContent,
+		Summary: decoded.Archive.Summary, SourceDigest: sourceDigest, IsCurrent: true,
+		ProjectionStatus: "pending", Sections: archiveSections, CreatedAt: now,
+	}
+	projectionStatus := "ready"
+	if err := writeChapterArchiveProjection(r.dataDirectory, archive); err != nil {
+		projectionStatus = "pending"
+	}
+	_, _ = r.database.ExecContext(ctx, `UPDATE chapter_archives SET projection_status=? WHERE id=?`, projectionStatus, archiveID)
+	return nil
+}
+
+func readChapterArchiveSections(ctx context.Context, tx *sql.Tx, workID, chapterOutlineNodeID string, summaries []archiveSectionResult) ([]archiveSectionSource, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT so.id,cs.id,cs.current_version_id,cs.revision,cs.title,cs.content FROM canvas_edges chapter_edge JOIN canvas_nodes so ON so.work_id=chapter_edge.work_id AND so.id=chapter_edge.target_node_id AND so.kind=? JOIN canvas_edges section_edge ON section_edge.work_id=chapter_edge.work_id AND section_edge.source_node_id=so.id AND section_edge.kind='generated_from' JOIN canvas_nodes cs ON cs.work_id=section_edge.work_id AND cs.id=section_edge.target_node_id AND cs.kind=? WHERE chapter_edge.work_id=? AND chapter_edge.source_node_id=? AND chapter_edge.kind='generated_from'`, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection, workID, chapterOutlineNodeID)
+	if err != nil {
+		return nil, fmt.Errorf("read chapter archive sections: %w", err)
+	}
+	defer rows.Close()
+	sourcesByNodeID := make(map[string]archiveSectionSource)
+	for rows.Next() {
+		var source archiveSectionSource
+		if err := rows.Scan(&source.SectionOutlineNodeID, &source.ChapterSectionNodeID, &source.ChapterSectionVersionID, &source.NodeRevision, &source.Title, &source.Content); err != nil {
+			return nil, err
+		}
+		sourcesByNodeID[source.ChapterSectionNodeID] = source
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(sourcesByNodeID) == 0 {
+		return nil, fmt.Errorf("%w: chapter has no completed sections", canvas.ErrInvalidChapterArchive)
+	}
+	if len(summaries) != len(sourcesByNodeID) {
+		return nil, fmt.Errorf("%w: every completed section must be summarized", canvas.ErrInvalidChapterArchive)
+	}
+	ordinals := make(map[int]struct{}, len(summaries))
+	sections := make([]archiveSectionSource, 0, len(summaries))
+	for _, summary := range summaries {
+		source, ok := sourcesByNodeID[strings.TrimSpace(summary.ChapterSectionNodeID)]
+		if !ok || source.SectionOutlineNodeID != strings.TrimSpace(summary.SectionOutlineNodeID) || summary.Ordinal < 1 || strings.TrimSpace(summary.Summary) == "" {
+			return nil, fmt.Errorf("%w: section summary does not match chapter graph", canvas.ErrInvalidChapterArchive)
+		}
+		if source.NodeRevision != summary.NodeRevision {
+			return nil, fmt.Errorf("%w: chapter section %q changed before archive completion", canvas.ErrRevisionConflict, source.ChapterSectionNodeID)
+		}
+		if _, exists := ordinals[summary.Ordinal]; exists {
+			return nil, fmt.Errorf("%w: duplicate section ordinal", canvas.ErrInvalidChapterArchive)
+		}
+		ordinals[summary.Ordinal] = struct{}{}
+		source.Ordinal = summary.Ordinal
+		source.Summary = strings.TrimSpace(summary.Summary)
+		sections = append(sections, source)
+	}
+	sort.Slice(sections, func(i, j int) bool { return sections[i].Ordinal < sections[j].Ordinal })
+	for index, section := range sections {
+		if section.Ordinal != index+1 {
+			return nil, fmt.Errorf("%w: section ordinals must be contiguous", canvas.ErrInvalidChapterArchive)
+		}
+	}
+	return sections, nil
+}
+
+func chapterArchiveDigest(chapterOutlineNodeID string, outlineRevision int64, outlineContent string, sections []archiveSectionSource) string {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%s", chapterOutlineNodeID, outlineRevision, outlineContent)
+	for _, section := range sections {
+		_, _ = fmt.Fprintf(hash, "\x00%s\x00%s\x00%d\x00%d\x00%s", section.SectionOutlineNodeID, section.ChapterSectionNodeID, section.Ordinal, section.NodeRevision, section.Content)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func renderChapterArchiveProjection(archive canvas.ChapterArchive) []byte {
+	var content strings.Builder
+	fmt.Fprintf(&content, "---\narchiveId: %q\nworkId: %q\nchapterOutlineNodeId: %q\narchiveRevision: %d\ncontentHash: %q\n---\n\n# %s\n\n%s\n", archive.ID, archive.WorkID, archive.ChapterOutlineNodeID, archive.Revision, archive.SourceDigest, archive.OutlineTitle, archive.Summary)
+	for _, section := range archive.Sections {
+		fmt.Fprintf(&content, "\n## %d. %s\n\n%s\n\n<!-- sectionOutlineNodeId: %s; chapterSectionNodeId: %s; chapterSectionVersionId: %s; nodeRevision: %d; contentHash: %s -->\n", section.Ordinal, section.Title, section.Summary, section.SectionOutlineNodeID, section.ChapterSectionNodeID, section.ChapterSectionVersionID, section.NodeRevision, section.ContentHash)
+	}
+	return []byte(content.String())
+}
+
+func chapterArchiveProjectionPath(dataDirectory string, archive canvas.ChapterArchive) string {
+	return filepath.Join(dataDirectory, "works", safeArchivePathComponent(archive.WorkID), "story-spine", "chapters", safeArchivePathComponent(archive.ChapterOutlineNodeID)+".md")
+}
+
+func writeChapterArchiveProjection(dataDirectory string, archive canvas.ChapterArchive) error {
+	projectionPath := chapterArchiveProjectionPath(dataDirectory, archive)
+	directory := filepath.Dir(projectionPath)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".chapter-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(renderChapterArchiveProjection(archive)); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, projectionPath)
+}
+
+func safeArchivePathComponent(value string) string {
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_') {
+			digest := sha256.Sum256([]byte(value))
+			return fmt.Sprintf("%x", digest[:12])
+		}
+	}
+	if value == "" {
+		digest := sha256.Sum256(nil)
+		return fmt.Sprintf("%x", digest[:12])
+	}
+	return value
+}
+
+func valueOrArchiveTitle(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
+}
+
 func (r *AgentRepository) CompleteNodeUpdate(
 	ctx context.Context,
 	run warmagent.Run,
@@ -489,6 +868,9 @@ INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, cre
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
 			node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("create derived canvas node: %w", err)
+		}
+		if _, err := createInitialNodeVersion(ctx, transaction, node); err != nil {
+			return err
 		}
 		sourceNodeIDs := uniqueStrings(append([]string{parentNodeID}, input.ContextNodeIDs...))
 		for _, sourceNodeID := range sourceNodeIDs {

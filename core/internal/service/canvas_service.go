@@ -52,6 +52,42 @@ func (s *CanvasService) GetNode(ctx context.Context, workID, nodeID string) (can
 	return s.store.GetNode(ctx, workID, nodeID)
 }
 
+func (s *CanvasService) ListNodeVersions(ctx context.Context, workID, nodeID string) ([]canvas.NodeVersion, error) {
+	workID = strings.TrimSpace(workID)
+	nodeID = strings.TrimSpace(nodeID)
+	if workID == "" || nodeID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
+	return s.store.ListNodeVersions(ctx, workID, nodeID)
+}
+
+func (s *CanvasService) ListCurrentChapterArchives(ctx context.Context, workID string) ([]canvas.ChapterArchive, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
+	return s.store.ListCurrentChapterArchives(ctx, workID)
+}
+
+func (s *CanvasService) ListChapterArchiveHistory(ctx context.Context, workID, chapterOutlineNodeID string) ([]canvas.ChapterArchive, error) {
+	workID = strings.TrimSpace(workID)
+	chapterOutlineNodeID = strings.TrimSpace(chapterOutlineNodeID)
+	if workID == "" || chapterOutlineNodeID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
+	return s.store.ListChapterArchiveHistory(ctx, workID, chapterOutlineNodeID)
+}
+
+func (s *CanvasService) SwitchNodeVersion(ctx context.Context, workID, nodeID, versionID string) (canvas.Node, error) {
+	workID = strings.TrimSpace(workID)
+	nodeID = strings.TrimSpace(nodeID)
+	versionID = strings.TrimSpace(versionID)
+	if workID == "" || nodeID == "" || versionID == "" {
+		return canvas.Node{}, ErrInvalidCanvasRequest
+	}
+	return s.store.SwitchNodeVersion(ctx, workID, nodeID, versionID)
+}
+
 func (s *CanvasService) GetNodes(ctx context.Context, workID string, nodeIDs []string) ([]canvas.Node, error) {
 	if len(nodeIDs) == 0 {
 		return nil, ErrInvalidCanvasRequest

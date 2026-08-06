@@ -45,6 +45,9 @@ export function toFlowNodes(nodes: CanvasNode[], candidates: AgentCandidate[]): 
         revision: 0,
         layerId: 'candidate',
         contextTags: [],
+        candidateType: candidate.candidateType,
+        candidateReason: candidate.reason,
+        candidateScore: candidate.changeScore,
       },
     }
   }

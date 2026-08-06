@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 10
+	currentSchemaVersion = 12
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -174,6 +174,91 @@ ALTER TABLE agent_runs ADD COLUMN target_node_id TEXT NOT NULL DEFAULT '';`
 UPDATE canvas_nodes SET kind = 'chapter-section' WHERE kind = 'section-draft';
 UPDATE agent_candidates SET kind = 'chapter-section' WHERE kind = 'section-draft';
 UPDATE agent_runs SET target = 'chapter-section' WHERE target = 'section-draft';`
+	versionSchemaSQL = `
+CREATE TABLE IF NOT EXISTS canvas_node_versions (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL REFERENCES canvas_nodes(id) ON DELETE CASCADE,
+    work_id TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    parent_version_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_run_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(node_id, version_number)
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_node_versions_node_created
+    ON canvas_node_versions(node_id, version_number DESC);
+INSERT OR IGNORE INTO canvas_node_versions (id,node_id,work_id,version_number,title,content,created_at)
+SELECT 'initial:' || id, id, work_id, 1, title, content, created_at FROM canvas_nodes;
+UPDATE canvas_nodes SET current_version_id = 'initial:' || id WHERE current_version_id = '';`
+	candidateVersionSchemaSQL = `CREATE TABLE agent_candidates_v11 (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    work_id TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    skill_version TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    kind TEXT NOT NULL DEFAULT 'chapter-section',
+    title TEXT NOT NULL DEFAULT '章节小节候选',
+    x REAL NOT NULL DEFAULT 520,
+    y REAL NOT NULL DEFAULT 80,
+    accepted_node_id TEXT NOT NULL DEFAULT '',
+    decided_at TEXT NOT NULL DEFAULT '',
+    candidate_type TEXT NOT NULL DEFAULT 'node',
+    node_id TEXT NOT NULL DEFAULT '',
+    base_version_id TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    change_score REAL NOT NULL DEFAULT 0
+);
+INSERT INTO agent_candidates_v11 (id,run_id,work_id,skill_id,skill_version,content,created_at,status,kind,title,x,y,accepted_node_id,decided_at)
+SELECT id,run_id,work_id,skill_id,skill_version,content,created_at,status,kind,title,x,y,accepted_node_id,decided_at FROM agent_candidates;
+DROP TABLE agent_candidates;
+ALTER TABLE agent_candidates_v11 RENAME TO agent_candidates;
+CREATE INDEX idx_agent_candidates_work_status_created ON agent_candidates(work_id,status,created_at DESC);
+CREATE INDEX idx_agent_candidates_run ON agent_candidates(run_id);`
+	chapterArchiveSchemaSQL = `
+CREATE TABLE IF NOT EXISTS chapter_archives (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    chapter_outline_node_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    outline_version_id TEXT NOT NULL DEFAULT '',
+    outline_revision INTEGER NOT NULL,
+    outline_title TEXT NOT NULL,
+    outline_content TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    source_digest TEXT NOT NULL,
+    is_current INTEGER NOT NULL DEFAULT 1,
+    projection_status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    superseded_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(work_id, chapter_outline_node_id, revision)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_archives_current
+    ON chapter_archives(work_id, chapter_outline_node_id) WHERE is_current = 1;
+CREATE INDEX IF NOT EXISTS idx_chapter_archives_work_created
+    ON chapter_archives(work_id, created_at);
+CREATE TABLE IF NOT EXISTS chapter_archive_sections (
+    archive_id TEXT NOT NULL REFERENCES chapter_archives(id) ON DELETE CASCADE,
+    work_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    section_outline_node_id TEXT NOT NULL,
+    chapter_section_node_id TEXT NOT NULL,
+    chapter_section_version_id TEXT NOT NULL DEFAULT '',
+    node_revision INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY(archive_id, chapter_section_node_id),
+    UNIQUE(archive_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_chapter_archive_sections_work_node
+    ON chapter_archive_sections(work_id, chapter_section_node_id);`
 )
 
 var (
@@ -466,13 +551,62 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("rename chapter section node kinds: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 10"); err != nil {
+	if schemaVersion < 11 {
+		hasCurrentVersionID, err := tableHasColumn(transaction, "canvas_nodes", "current_version_id")
+		if err != nil {
+			return fmt.Errorf("inspect canvas node version column: %w", err)
+		}
+		if !hasCurrentVersionID {
+			if _, err := transaction.Exec("ALTER TABLE canvas_nodes ADD COLUMN current_version_id TEXT NOT NULL DEFAULT ''"); err != nil {
+				return fmt.Errorf("add current node version: %w", err)
+			}
+		}
+		if _, err := transaction.Exec(versionSchemaSQL); err != nil {
+			return fmt.Errorf("add canvas node versions: %w", err)
+		}
+		hasCandidateType, err := tableHasColumn(transaction, "agent_candidates", "candidate_type")
+		if err != nil {
+			return fmt.Errorf("inspect candidate version column: %w", err)
+		}
+		if !hasCandidateType {
+			if _, err := transaction.Exec(candidateVersionSchemaSQL); err != nil {
+				return fmt.Errorf("add version candidates: %w", err)
+			}
+		}
+	}
+	if schemaVersion < 12 {
+		if _, err := transaction.Exec(chapterArchiveSchemaSQL); err != nil {
+			return fmt.Errorf("add chapter archives: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 12"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite schema migration: %w", err)
 	}
 	return nil
+}
+
+func tableHasColumn(transaction *sql.Tx, table, column string) (bool, error) {
+	rows, err := transaction.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 type rowScanner interface {

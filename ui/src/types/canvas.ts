@@ -13,6 +13,19 @@ export interface CanvasNode {
   y: number
   createdAt: string
   updatedAt: string
+  currentVersionId?: string
+}
+
+export interface CanvasNodeVersion {
+  id: string
+  nodeId: string
+  workId: string
+  versionNumber: number
+  parentVersionId?: string
+  title: string
+  content: string
+  sourceRunId?: string
+  createdAt: string
 }
 export interface CanvasEdge {
   id: string
@@ -67,6 +80,11 @@ export interface AgentCandidate {
   skillVersion: string
   status: 'pending' | 'accepted' | 'rejected'
   kind: CanvasNodeKind
+  candidateType?: 'node' | 'version'
+  nodeId?: string
+  baseVersionId?: string
+  reason?: string
+  changeScore?: number
   title: string
   content: string
   x: number

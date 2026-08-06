@@ -16,6 +16,9 @@ export interface FlowNodeData extends Record<string, unknown> {
   revision: number
   layerId: string
   contextTags: string[]
+  candidateType?: 'node' | 'version'
+  candidateReason?: string
+  candidateScore?: number
 }
 
 export type StoryFlowNode = Node<FlowNodeData, 'flow-node'>

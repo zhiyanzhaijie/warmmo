@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/sheet'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { NodeDocument } from '@/features/canvas/node-detail/NodeDocument'
+import { NodeVersionControl } from '@/features/canvas/node-detail/NodeVersionControl'
 
 export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workId: string }) {
   const navigate = useNavigate()
@@ -27,25 +28,29 @@ export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workI
       }}
     >
       <SheetContent>
-        <SheetHeader className="flex min-h-16 items-center justify-between gap-space-md py-space-sm">
+        <SheetHeader className="flex min-h-16 flex-wrap items-center justify-between gap-space-md py-space-sm">
           <div>
             <SheetTitle className="text-label-sm">节点预览</SheetTitle>
             <SheetDescription>完整内容只读视图</SheetDescription>
           </div>
           {nodeQuery.data !== undefined ? (
-            <button
-              className="mr-10 flex h-9 items-center gap-space-xs rounded-sm border border-hairline px-space-sm text-button-md text-ink transition-colors hover:bg-hairline-soft"
-              type="button"
-              onClick={() => {
-                closePreview()
-                navigate(`/works/${workId}/nodes/${nodeQuery.data.id}/edit`, {
-                  state: { fromCanvas: true },
-                })
-              }}
-            >
-              <Maximize2 size={15} />
-              全屏编辑
-            </button>
+            <div className="mr-10 ml-auto flex min-w-0 items-center gap-space-sm">
+              <NodeVersionControl workId={workId} node={nodeQuery.data} />
+              <button
+                className="flex h-9 shrink-0 items-center gap-space-xs rounded-sm border border-hairline px-space-sm text-button-md text-ink transition-colors hover:bg-hairline-soft"
+                type="button"
+                aria-label="全屏编辑"
+                onClick={() => {
+                  closePreview()
+                  navigate(`/works/${workId}/nodes/${nodeQuery.data.id}/edit`, {
+                    state: { fromCanvas: true },
+                  })
+                }}
+              >
+                <Maximize2 size={15} />
+                <span className="hidden sm:inline">全屏编辑</span>
+              </button>
+            </div>
           ) : null}
         </SheetHeader>
 

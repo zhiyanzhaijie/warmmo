@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,11 +18,15 @@ import (
 )
 
 type CanvasRepository struct {
-	database *sql.DB
+	database      *sql.DB
+	dataDirectory string
 }
 
 func NewCanvasRepository(providerRepository *ProviderRepository) *CanvasRepository {
-	return &CanvasRepository{database: providerRepository.database}
+	return &CanvasRepository{
+		database:      providerRepository.database,
+		dataDirectory: filepath.Dir(providerRepository.databasePath),
+	}
 }
 
 func (r *CanvasRepository) CreateNode(ctx context.Context, input canvas.CreateNodeInput) (canvas.Node, error) {
@@ -48,6 +53,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, nod
 		node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("create canvas node: %w", err)
+	}
+	_, err = createInitialNodeVersion(ctx, transaction, node)
+	if err != nil {
+		return canvas.Node{}, err
 	}
 	contextNodeIDs := uniqueStrings(input.ContextNodeIDs)
 	edges := make([]canvas.Edge, 0, len(contextNodeIDs))
@@ -89,6 +98,17 @@ VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.Target
 	return node, nil
 }
 
+func createInitialNodeVersion(ctx context.Context, transaction *sql.Tx, node canvas.Node) (string, error) {
+	versionID := uuid.NewString()
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO canvas_node_versions (id,node_id,work_id,version_number,title,content,created_at) VALUES (?,?,?,?,?,?,?)`, versionID, node.ID, node.WorkID, 1, node.Title, node.Content, node.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		return "", fmt.Errorf("create initial node version: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `UPDATE canvas_nodes SET current_version_id=? WHERE work_id=? AND id=?`, versionID, node.WorkID, node.ID); err != nil {
+		return "", fmt.Errorf("set initial node version: %w", err)
+	}
+	return versionID, nil
+}
+
 type candidateQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -96,7 +116,8 @@ type candidateQuerier interface {
 func candidateByID(ctx context.Context, querier candidateQuerier, workID, candidateID string) (agent.Candidate, error) {
 	candidate, err := scanCandidate(querier.QueryRowContext(ctx, `
 SELECT c.id, c.run_id, c.work_id, c.skill_id, c.skill_version, c.status, c.kind, c.title,
-       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json
+       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json,
+       c.candidate_type, c.node_id, c.base_version_id, c.reason, c.change_score
 FROM agent_candidates c
 JOIN agent_runs r ON r.id = c.run_id
 WHERE c.work_id = ? AND c.id = ?`, workID, candidateID))
@@ -113,11 +134,15 @@ func scanCandidate(scanner rowScanner) (agent.Candidate, error) {
 		&candidate.ID, &candidate.RunID, &candidate.WorkID, &candidate.SkillID, &candidate.SkillVersion,
 		&candidate.Status, &candidate.Kind, &candidate.Title, &candidate.Content, &candidate.X, &candidate.Y,
 		&candidate.AcceptedNodeID, &createdAt, &decidedAt, &contextNodeIDsJSON,
+		&candidate.CandidateType, &candidate.NodeID, &candidate.BaseVersionID, &candidate.Reason, &candidate.ChangeScore,
 	); err != nil {
 		return agent.Candidate{}, err
 	}
 	if err := json.Unmarshal([]byte(contextNodeIDsJSON), &candidate.ContextNodeIDs); err != nil {
 		return agent.Candidate{}, fmt.Errorf("decode canvas candidate context node ids: %w", err)
+	}
+	if candidate.CandidateType == "version" && candidate.NodeID != "" {
+		candidate.ContextNodeIDs = []string{candidate.NodeID}
 	}
 	var err error
 	candidate.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
@@ -224,6 +249,11 @@ FROM canvas_nodes WHERE work_id = ? ORDER BY created_at`, workID)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate canvas nodes: %w", err)
 	}
+	for index := range nodes {
+		if err := r.hydrateCurrentVersionID(ctx, &nodes[index]); err != nil {
+			return nil, err
+		}
+	}
 	return nodes, nil
 }
 
@@ -236,6 +266,9 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
 	}
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("get canvas node: %w", err)
+	}
+	if err := r.hydrateCurrentVersionID(ctx, &node); err != nil {
+		return canvas.Node{}, err
 	}
 	return node, nil
 }
@@ -258,9 +291,25 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
 		if err != nil {
 			return nil, err
 		}
+		if err := r.hydrateCurrentVersionID(ctx, &node); err != nil {
+			return nil, err
+		}
 		nodes = append(nodes, node)
 	}
 	return nodes, nil
+}
+
+func (r *CanvasRepository) hydrateCurrentVersionID(ctx context.Context, node *canvas.Node) error {
+	var versionID string
+	err := r.database.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, node.WorkID, node.ID).Scan(&versionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return canvas.ErrNodeNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read current node version: %w", err)
+	}
+	node.CurrentVersionID = versionID
+	return nil
 }
 
 func (r *CanvasRepository) UpdateNode(ctx context.Context, input canvas.UpdateNodeInput) (canvas.Node, error) {
@@ -437,11 +486,11 @@ FROM agent_runs WHERE id = ? AND work_id = ?`, candidate.RunID, candidate.WorkID
 	_, err = transaction.ExecContext(ctx, `
 INSERT INTO agent_candidates (
     id, run_id, work_id, skill_id, skill_version, status, kind, title, content, x, y,
-    accepted_node_id, created_at, decided_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '')`,
+    accepted_node_id, created_at, decided_at, candidate_type, node_id, base_version_id, reason, change_score
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', ?, ?, ?, ?, ?)`,
 		candidate.ID, candidate.RunID, candidate.WorkID, candidate.SkillID, candidate.SkillVersion,
 		candidate.Status, candidate.Kind, candidate.Title, candidate.Content, candidate.X, candidate.Y,
-		candidate.CreatedAt.Format(time.RFC3339Nano))
+		candidate.CreatedAt.Format(time.RFC3339Nano), valueOrDefault(candidate.CandidateType, "node"), candidate.NodeID, candidate.BaseVersionID, candidate.Reason, candidate.ChangeScore)
 	if err != nil {
 		return agent.Candidate{}, fmt.Errorf("create canvas candidate: %w", err)
 	}
@@ -468,7 +517,8 @@ func scanCanvasEdge(scanner rowScanner) (canvas.Edge, error) {
 func (r *CanvasRepository) candidateByRun(ctx context.Context, runID string) (agent.Candidate, error) {
 	return scanCandidate(r.database.QueryRowContext(ctx, `
 SELECT c.id, c.run_id, c.work_id, c.skill_id, c.skill_version, c.status, c.kind, c.title,
-       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json
+       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json,
+       c.candidate_type, c.node_id, c.base_version_id, c.reason, c.change_score
 FROM agent_candidates c
 JOIN agent_runs r ON r.id = c.run_id
 WHERE c.run_id = ?`, runID))
@@ -477,7 +527,8 @@ WHERE c.run_id = ?`, runID))
 func (r *CanvasRepository) ListCandidates(ctx context.Context, workID string) ([]agent.Candidate, error) {
 	rows, err := r.database.QueryContext(ctx, `
 SELECT c.id, c.run_id, c.work_id, c.skill_id, c.skill_version, c.status, c.kind, c.title,
-       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json
+       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json,
+       c.candidate_type, c.node_id, c.base_version_id, c.reason, c.change_score
 FROM agent_candidates c
 JOIN agent_runs r ON r.id = c.run_id
 WHERE c.work_id = ? AND c.status = ?
@@ -541,6 +592,9 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, candidate.Accepte
 	case agent.CandidateStatusRejected:
 		return canvas.Node{}, canvas.ErrCandidateResolved
 	}
+	if candidate.CandidateType == "version" {
+		return r.acceptVersionCandidate(ctx, transaction, input, candidate)
+	}
 
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
@@ -559,6 +613,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("create accepted canvas node: %w", err)
+	}
+	if _, err := createInitialNodeVersion(ctx, transaction, node); err != nil {
+		return canvas.Node{}, err
 	}
 	for _, sourceNodeID := range candidate.ContextNodeIDs {
 		_, err := transaction.ExecContext(ctx, `
@@ -593,6 +650,52 @@ WHERE work_id = ? AND id = ? AND status = ?`,
 		return canvas.Node{}, fmt.Errorf("commit accepted canvas candidate: %w", err)
 	}
 	return node, nil
+}
+
+func (r *CanvasRepository) acceptVersionCandidate(ctx context.Context, transaction *sql.Tx, input canvas.AcceptCandidateInput, candidate agent.Candidate) (canvas.Node, error) {
+	var node canvas.Node
+	var currentVersionID string
+	node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at FROM canvas_nodes WHERE work_id=? AND id=?`, candidate.WorkID, candidate.NodeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return canvas.Node{}, canvas.ErrNodeNotFound
+	}
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	if err := transaction.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, candidate.WorkID, candidate.NodeID).Scan(&currentVersionID); err != nil {
+		return canvas.Node{}, err
+	}
+	var next int64
+	if err := transaction.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_number),0)+1 FROM canvas_node_versions WHERE node_id=?`, candidate.NodeID).Scan(&next); err != nil {
+		return canvas.Node{}, err
+	}
+	versionID := uuid.NewString()
+	now := time.Now().UTC()
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = candidate.Title
+	}
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO canvas_node_versions (id,node_id,work_id,version_number,parent_version_id,title,content,source_run_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, versionID, candidate.NodeID, candidate.WorkID, next, currentVersionID, title, candidate.Content, candidate.RunID, now.Format(time.RFC3339Nano)); err != nil {
+		return canvas.Node{}, err
+	}
+	if _, err := transaction.ExecContext(ctx, `UPDATE canvas_nodes SET title=?,content=?,revision=revision+1,current_version_id=?,updated_at=? WHERE work_id=? AND id=?`, title, candidate.Content, versionID, now.Format(time.RFC3339Nano), candidate.WorkID, candidate.NodeID); err != nil {
+		return canvas.Node{}, err
+	}
+	if _, err := transaction.ExecContext(ctx, `UPDATE agent_candidates SET status=?,title=?,accepted_node_id=?,decided_at=? WHERE work_id=? AND id=? AND status=?`, agent.CandidateStatusAccepted, title, candidate.NodeID, now.Format(time.RFC3339Nano), input.WorkID, input.CandidateID, agent.CandidateStatusPending); err != nil {
+		return canvas.Node{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return canvas.Node{}, err
+	}
+	node.Title, node.Content, node.Revision, node.UpdatedAt, node.CurrentVersionID = title, candidate.Content, node.Revision+1, now, versionID
+	return node, nil
+}
+
+func valueOrDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func (r *CanvasRepository) RejectCandidate(ctx context.Context, workID, candidateID string) error {
@@ -641,6 +744,55 @@ func scanCanvasNode(scanner rowScanner) (canvas.Node, error) {
 	node.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
 	if err != nil {
 		return canvas.Node{}, fmt.Errorf("parse canvas node updated time: %w", err)
+	}
+	return node, nil
+}
+
+func (r *CanvasRepository) ListNodeVersions(ctx context.Context, workID, nodeID string) ([]canvas.NodeVersion, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT id,node_id,work_id,version_number,parent_version_id,title,content,source_run_id,created_at FROM canvas_node_versions WHERE work_id=? AND node_id=? ORDER BY version_number DESC`, workID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list node versions: %w", err)
+	}
+	defer rows.Close()
+	versions := make([]canvas.NodeVersion, 0)
+	for rows.Next() {
+		var v canvas.NodeVersion
+		var created string
+		if err := rows.Scan(&v.ID, &v.NodeID, &v.WorkID, &v.VersionNumber, &v.ParentVersionID, &v.Title, &v.Content, &v.SourceRunID, &created); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, v)
+	}
+	return versions, rows.Err()
+}
+
+func (r *CanvasRepository) SwitchNodeVersion(ctx context.Context, workID, nodeID, versionID string) (canvas.Node, error) {
+	tx, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	defer tx.Rollback()
+	var title, content string
+	if err := tx.QueryRowContext(ctx, `SELECT title,content FROM canvas_node_versions WHERE id=? AND work_id=? AND node_id=?`, versionID, workID, nodeID).Scan(&title, &content); errors.Is(err, sql.ErrNoRows) {
+		return canvas.Node{}, canvas.ErrNodeNotFound
+	} else if err != nil {
+		return canvas.Node{}, err
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE canvas_nodes SET title=?,content=?,current_version_id=?,revision=revision+1,updated_at=? WHERE work_id=? AND id=?`, title, content, versionID, now.Format(time.RFC3339Nano), workID, nodeID); err != nil {
+		return canvas.Node{}, err
+	}
+	node, err := scanCanvasNode(tx.QueryRowContext(ctx, `SELECT id,work_id,revision,kind,title,content,x,y,created_at,updated_at FROM canvas_nodes WHERE work_id=? AND id=?`, workID, nodeID))
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	node.CurrentVersionID = versionID
+	if err := tx.Commit(); err != nil {
+		return canvas.Node{}, err
 	}
 	return node, nil
 }

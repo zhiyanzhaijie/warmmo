@@ -216,6 +216,66 @@ func (c *CanvasController) GetNode(response http.ResponseWriter, request *http.R
 	}
 }
 
+func (c *CanvasController) ListNodeVersions(response http.ResponseWriter, request *http.Request) {
+	versions, err := c.service.ListNodeVersions(request.Context(), request.PathValue("workID"), request.PathValue("nodeID"))
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "节点版本请求无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "画布节点不存在"})
+	case err != nil:
+		c.internalError(response, "list canvas node versions", err)
+	default:
+		writeJSON(response, http.StatusOK, map[string]any{"versions": versions})
+	}
+}
+
+func (c *CanvasController) ListCurrentChapterArchives(response http.ResponseWriter, request *http.Request) {
+	archives, err := c.service.ListCurrentChapterArchives(request.Context(), request.PathValue("workID"))
+	if errors.Is(err, service.ErrInvalidCanvasRequest) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "章节归档请求无效"})
+		return
+	}
+	if err != nil {
+		c.internalError(response, "list current chapter archives", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"archives": archives})
+}
+
+func (c *CanvasController) ListChapterArchiveHistory(response http.ResponseWriter, request *http.Request) {
+	archives, err := c.service.ListChapterArchiveHistory(request.Context(), request.PathValue("workID"), request.PathValue("nodeID"))
+	if errors.Is(err, service.ErrInvalidCanvasRequest) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "章节归档请求无效"})
+		return
+	}
+	if err != nil {
+		c.internalError(response, "list chapter archive history", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"archives": archives})
+}
+
+func (c *CanvasController) SwitchNodeVersion(response http.ResponseWriter, request *http.Request) {
+	var input struct {
+		VersionID string `json:"versionId"`
+	}
+	if !decodeCanvasRequest(response, request, &input) {
+		return
+	}
+	node, err := c.service.SwitchNodeVersion(request.Context(), request.PathValue("workID"), request.PathValue("nodeID"), input.VersionID)
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "版本切换请求无效"})
+	case errors.Is(err, canvas.ErrNodeNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "节点或版本不存在"})
+	case err != nil:
+		c.internalError(response, "switch canvas node version", err)
+	default:
+		writeJSON(response, http.StatusOK, node)
+	}
+}
+
 func (c *CanvasController) UpdateNode(response http.ResponseWriter, request *http.Request) {
 	var input updateCanvasNodeRequest
 	if !decodeCanvasRequest(response, request, &input) {
