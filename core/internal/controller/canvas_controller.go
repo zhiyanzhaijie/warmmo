@@ -73,7 +73,7 @@ func (c *CanvasController) CreateNode(response http.ResponseWriter, request *htt
 		return
 	}
 	node, err := c.service.CreateNode(request.Context(), canvas.CreateNodeInput{
-		WorkID: request.PathValue("workID"), Kind: input.Kind, Title: input.Title, Content: input.Content,
+		WorkID: request.PathValue("workID"), Kind: canvas.NodeKind(input.Kind), Title: input.Title, Content: input.Content,
 		X: input.X, Y: input.Y, ContextNodeIDs: input.ContextNodeIDs,
 	})
 	if errors.Is(err, service.ErrInvalidCanvasRequest) {

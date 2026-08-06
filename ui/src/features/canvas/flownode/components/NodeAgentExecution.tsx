@@ -47,11 +47,12 @@ export const NodeAgentExecution = memo(function NodeAgentExecution({ nodeId }: {
   if (run === undefined || run.status === 'completed') return null
 
   if (run.status === 'failed') {
+    const label = run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
     return (
       <span
-        aria-label="节点更新失败"
+        aria-label={label}
         className="nodrag nopan absolute top-2 right-2 z-10 grid size-6 place-items-center rounded-sm bg-canvas-elevated text-error shadow-whisper"
-        title={run.error || '节点更新失败'}
+        title={run.error || label}
       >
         <CircleX aria-hidden="true" size={14} />
       </span>
@@ -99,7 +100,11 @@ export const NodeAgentCompactIndicator = memo(function NodeAgentCompactIndicator
 
   const isActive = run.status === 'submitting' || run.status === 'running'
   const Icon = run.status === 'waiting_input' ? MessageCircleQuestion : isActive ? LoaderCircle : CircleX
-  const label = run.status === 'failed' ? '节点更新失败' : run.status === 'waiting_input' ? '等待你的回答' : '节点更新中'
+  const label = run.status === 'failed'
+    ? run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
+    : run.status === 'waiting_input'
+      ? '等待你的回答'
+      : run.operation === 'derive' ? '正在派生节点' : '节点更新中'
 
   return (
     <span
@@ -117,7 +122,11 @@ export const NodeAgentMarkerIndicator = memo(function NodeAgentMarkerIndicator({
   if (run === undefined || run.status === 'completed') return null
 
   const isActive = run.status === 'submitting' || run.status === 'running'
-  const label = run.status === 'failed' ? '节点更新失败' : run.status === 'waiting_input' ? '等待你的回答' : '节点更新中'
+  const label = run.status === 'failed'
+    ? run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
+    : run.status === 'waiting_input'
+      ? '等待你的回答'
+      : run.operation === 'derive' ? '正在派生节点' : '节点更新中'
 
   return (
     <span
@@ -129,11 +138,14 @@ export const NodeAgentMarkerIndicator = memo(function NodeAgentMarkerIndicator({
 })
 
 function buildExecutionSteps(run: NodeAgentRunState): ExecutionStep[] {
+  const isDerivation = run.operation === 'derive'
   if (run.events.length === 0) {
     return [{
       id: 'submit',
       icon: CircleDashed,
-      label: run.status === 'failed' ? '提交更新失败' : '提交节点更新',
+      label: run.status === 'failed'
+        ? isDerivation ? '提交派生失败' : '提交更新失败'
+        : isDerivation ? '提交节点派生' : '提交节点更新',
       description: run.error || undefined,
       status: run.status === 'failed' ? 'error' : 'active',
     }]
@@ -160,7 +172,7 @@ function buildExecutionSteps(run: NodeAgentRunState): ExecutionStep[] {
     steps.push({
       id: 'skill',
       icon: Sparkles,
-      label: '选择节点更新能力',
+      label: isDerivation ? '选择节点派生能力' : '选择节点更新能力',
       description: skillId,
       status: skillLoaded === undefined ? 'active' : 'complete',
     })
@@ -186,7 +198,7 @@ function buildExecutionSteps(run: NodeAgentRunState): ExecutionStep[] {
     steps.push({
       id: 'generation',
       icon: PenLine,
-      label: '生成节点内容',
+      label: isDerivation ? '生成派生内容' : '生成节点内容',
       description: contentReady === undefined ? '等待模型返回结构化内容' : '内容生成完成',
       status: contentReady === undefined ? 'active' : 'complete',
     })
@@ -201,12 +213,13 @@ function buildExecutionSteps(run: NodeAgentRunState): ExecutionStep[] {
 
   const validationCompleted = lastEvent(run.events, 'validation.completed')
   const nodeUpdated = lastEvent(run.events, 'node.updated')
-  if (validationCompleted !== undefined || nodeUpdated !== undefined || run.status === 'completed') {
+  const nodesCreated = lastEvent(run.events, 'nodes.created')
+  if (validationCompleted !== undefined || nodeUpdated !== undefined || nodesCreated !== undefined || run.status === 'completed') {
     steps.push({
       id: 'apply',
       icon: FileCheck2,
-      label: '校验并更新节点',
-      status: nodeUpdated !== undefined || run.status === 'completed' ? 'complete' : 'active',
+      label: isDerivation ? '校验并创建节点' : '校验并更新节点',
+      status: nodeUpdated !== undefined || nodesCreated !== undefined || run.status === 'completed' ? 'complete' : 'active',
     })
   }
 
@@ -294,11 +307,11 @@ function findPendingToolStep(steps: Array<ExecutionStep | ToolExecutionStep>, na
 }
 
 function executionSummary(run: NodeAgentRunState, steps: ExecutionStep[]) {
-  if (run.status === 'failed') return '节点更新失败'
-  if (run.status === 'completed') return '节点更新完成'
+  if (run.status === 'failed') return run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
+  if (run.status === 'completed') return run.operation === 'derive' ? '节点派生完成' : '节点更新完成'
   if (run.status === 'waiting_input') return '等待你的回答'
   const activeStep = steps.findLast((step) => step.status === 'active')
-  return activeStep?.label ?? '正在更新节点'
+  return activeStep?.label ?? (run.operation === 'derive' ? '正在派生节点' : '正在更新节点')
 }
 
 function markLastActiveStepFailed(steps: ExecutionStep[], error: string) {
@@ -308,7 +321,7 @@ function markLastActiveStepFailed(steps: ExecutionStep[], error: string) {
     activeStep.description = error || activeStep.description
     return
   }
-  steps.push({ id: 'failed', icon: CircleX, label: '节点更新失败', description: error, status: 'error' })
+  steps.push({ id: 'failed', icon: CircleX, label: 'Agent 执行失败', description: error, status: 'error' })
 }
 
 function completeActiveSteps(steps: ExecutionStep[]) {

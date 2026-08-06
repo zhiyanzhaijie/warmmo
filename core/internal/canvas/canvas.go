@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,36 +19,60 @@ var (
 	ErrHistoryUnavailable = errors.New("canvas history action unavailable")
 	ErrCandidateNotFound  = errors.New("canvas candidate not found")
 	ErrCandidateResolved  = errors.New("canvas candidate is already resolved")
+	ErrDerivationExists   = errors.New("canvas node already has derived children")
 )
+
+type NodeKind string
 
 const (
-	NodeKindCharacter      = "character"
-	NodeKindItem           = "item"
-	NodeKindLocation       = "location"
-	NodeKindTime           = "time"
-	NodeKindWorld          = "world"
-	NodeKindMechanism      = "mechanism"
-	NodeKindEvent          = "event"
-	NodeKindChapterOutline = "chapter-outline"
-	NodeKindSectionDraft   = "section-draft"
-	NodeKindManuscript     = "manuscript"
+	NodeKindCharacter      NodeKind = "character"
+	NodeKindItem           NodeKind = "item"
+	NodeKindLocation       NodeKind = "location"
+	NodeKindTime           NodeKind = "time"
+	NodeKindWorld          NodeKind = "world"
+	NodeKindMechanism      NodeKind = "mechanism"
+	NodeKindEvent          NodeKind = "event"
+	NodeKindChapterOutline NodeKind = "chapter-outline"
+	NodeKindSectionOutline NodeKind = "section-outline"
+	NodeKindChapterSection NodeKind = "chapter-section"
+	NodeKindManuscript     NodeKind = "manuscript"
 )
 
-func IsValidNodeKind(kind string) bool {
+func ParseNodeKind(value string) (NodeKind, bool) {
+	kind := NodeKind(strings.TrimSpace(value))
+	return kind, IsValidNodeKind(kind)
+}
+
+func IsValidNodeKind(kind NodeKind) bool {
 	switch kind {
 	case NodeKindCharacter, NodeKindItem, NodeKindLocation, NodeKindTime, NodeKindWorld,
-		NodeKindMechanism, NodeKindEvent, NodeKindChapterOutline, NodeKindSectionDraft, NodeKindManuscript:
+		NodeKindMechanism, NodeKindEvent, NodeKindChapterOutline, NodeKindSectionOutline,
+		NodeKindChapterSection, NodeKindManuscript:
 		return true
 	default:
 		return false
 	}
 }
 
+func IsManuallyCreatableNodeKind(kind NodeKind) bool {
+	switch kind {
+	case NodeKindCharacter, NodeKindItem, NodeKindLocation, NodeKindTime, NodeKindWorld,
+		NodeKindMechanism, NodeKindEvent, NodeKindChapterOutline:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsDerivedNodeKind(kind NodeKind) bool {
+	return IsValidNodeKind(kind) && !IsManuallyCreatableNodeKind(kind)
+}
+
 type Node struct {
 	ID        string    `json:"id"`
 	WorkID    string    `json:"workId"`
 	Revision  int64     `json:"revision"`
-	Kind      string    `json:"kind"`
+	Kind      NodeKind  `json:"kind"`
 	Title     string    `json:"title"`
 	Content   string    `json:"content"`
 	X         float64   `json:"x"`
@@ -58,7 +83,7 @@ type Node struct {
 
 type CreateNodeInput struct {
 	WorkID         string
-	Kind           string
+	Kind           NodeKind
 	Title          string
 	Content        string
 	X              float64
@@ -153,7 +178,7 @@ func (r *ContextReader) BuildSnapshot(ctx context.Context, workID string, nodeID
 	snapshotNodes := make([]agent.NodeSnapshot, 0, len(nodes))
 	for _, node := range nodes {
 		snapshotNodes = append(snapshotNodes, agent.NodeSnapshot{
-			ID: node.ID, Revision: formatRevision(node.Revision), Type: node.Kind,
+			ID: node.ID, Revision: formatRevision(node.Revision), Type: string(node.Kind),
 			Title: node.Title, Content: node.Content,
 		})
 	}

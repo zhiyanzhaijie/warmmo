@@ -18,7 +18,7 @@ func TestParseDecision(t *testing.T) {
 		wantError string
 	}{
 		{name: "produce candidate", value: `{"kind":"produce_candidate"}`, wantKind: DecisionProduceCandidate},
-		{name: "fenced selection", value: "```json\n{\"kind\":\"select_skill\",\"skillId\":\"chapter-drafting\"}\n```", wantKind: DecisionSelectSkill},
+		{name: "fenced selection", value: "```json\n{\"kind\":\"select_skill\",\"skillId\":\"chapter-section-writing\"}\n```", wantKind: DecisionSelectSkill},
 		{name: "tool call", value: `{"kind":"call_tool","toolName":"canvas.get_nodes","toolArgs":{"nodeIds":["node-1"]}}`, wantKind: DecisionCallTool},
 		{name: "missing kind", value: `{"action":"produce_candidate"}`, wantError: "decision kind is required"},
 		{name: "unknown kind", value: `{"kind":"write_chapter"}`, wantError: `unsupported decision kind "write_chapter"`},

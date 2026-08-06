@@ -277,6 +277,30 @@ export function useCreateAgentRun(workId: string) {
   })
 }
 
+export type NodeDerivationTarget = 'section-outline-batch' | 'chapter-section'
+
+export function useCreateNodeDerivationRun(workId: string) {
+  return useMutation({
+    mutationFn: (input: {
+      prompt: string
+      target: NodeDerivationTarget
+      targetNodeId: string
+      contextNodeIds: string[]
+      model: ModelReference
+    }) => coreClient<AgentRun>(`/works/${workId}/agent-runs`, {
+      method: 'POST',
+      body: {
+        prompt: input.prompt,
+        contextNodeIds: input.contextNodeIds,
+        target: input.target,
+        targetNodeId: input.targetNodeId,
+        providerId: input.model.providerId,
+        modelId: input.model.modelId,
+      },
+    }),
+  })
+}
+
 export function useRespondToAgentRun() {
   return useMutation({
     mutationFn: (input: { runId: string; approvalEventId: string; answer: string }) =>

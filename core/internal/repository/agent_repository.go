@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,8 +25,8 @@ func NewAgentRepository(providerRepository *ProviderRepository) *AgentRepository
 	return &AgentRepository{database: providerRepository.database}
 }
 
-func (r *AgentRepository) GetCanvasNodeKind(workID, nodeID string) (string, error) {
-	var kind string
+func (r *AgentRepository) GetCanvasNodeKind(workID, nodeID string) (canvas.NodeKind, error) {
+	var kind canvas.NodeKind
 	err := r.database.QueryRow(`SELECT kind FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", canvas.ErrNodeNotFound
@@ -32,6 +35,64 @@ func (r *AgentRepository) GetCanvasNodeKind(workID, nodeID string) (string, erro
 		return "", fmt.Errorf("read target canvas node kind: %w", err)
 	}
 	return kind, nil
+}
+
+func (r *AgentRepository) GetChapterSectionContext(workID, sectionOutlineNodeID string) ([]string, error) {
+	contextNodeIDs := []string{sectionOutlineNodeID}
+	rows, err := r.database.Query(`
+SELECT e.source_node_id
+FROM canvas_edges e
+JOIN canvas_nodes source ON source.work_id = e.work_id AND source.id = e.source_node_id
+WHERE e.work_id = ? AND e.target_node_id = ? AND e.kind = 'generated_from'
+  AND source.kind = ?
+ORDER BY e.created_at`, workID, sectionOutlineNodeID, canvas.NodeKindChapterOutline)
+	if err != nil {
+		return nil, fmt.Errorf("read section outline chapter context: %w", err)
+	}
+	chapterOutlineNodeIDs := make([]string, 0, 1)
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan section outline chapter context: %w", err)
+		}
+		chapterOutlineNodeIDs = append(chapterOutlineNodeIDs, nodeID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close section outline chapter context: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate section outline chapter context: %w", err)
+	}
+	if len(chapterOutlineNodeIDs) == 0 {
+		return nil, fmt.Errorf("%w: section outline has no chapter outline parent", canvas.ErrInvalidNode)
+	}
+	contextNodeIDs = append(contextNodeIDs, chapterOutlineNodeIDs...)
+	for _, chapterOutlineNodeID := range chapterOutlineNodeIDs {
+		chapterContextRows, err := r.database.Query(`
+SELECT source_node_id
+FROM canvas_edges
+WHERE work_id = ? AND target_node_id = ? AND kind = 'generated_from'
+ORDER BY created_at`, workID, chapterOutlineNodeID)
+		if err != nil {
+			return nil, fmt.Errorf("read chapter outline inherited context: %w", err)
+		}
+		for chapterContextRows.Next() {
+			var nodeID string
+			if err := chapterContextRows.Scan(&nodeID); err != nil {
+				chapterContextRows.Close()
+				return nil, fmt.Errorf("scan chapter outline inherited context: %w", err)
+			}
+			contextNodeIDs = append(contextNodeIDs, nodeID)
+		}
+		if err := chapterContextRows.Close(); err != nil {
+			return nil, fmt.Errorf("close chapter outline inherited context: %w", err)
+		}
+		if err := chapterContextRows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate chapter outline inherited context: %w", err)
+		}
+	}
+	return uniqueStrings(contextNodeIDs), nil
 }
 
 func (r *AgentRepository) CreateRun(input warmagent.RunInput) (warmagent.Run, error) {
@@ -365,6 +426,199 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 		return fmt.Errorf("commit node update run: %w", err)
 	}
 	return nil
+}
+
+func (r *AgentRepository) CompleteDerivation(
+	ctx context.Context,
+	run warmagent.Run,
+	parentNodeID string,
+	result warmagent.RunResult,
+) error {
+	now := time.Now().UTC()
+	transaction, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin complete node derivation: %w", err)
+	}
+	defer transaction.Rollback()
+
+	parent, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
+SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
+FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, parentNodeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return canvas.ErrNodeNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read derivation parent node: %w", err)
+	}
+	if parent.Revision != result.ExpectedRevision {
+		return fmt.Errorf("%w: parent node %q changed before derivation", canvas.ErrRevisionConflict, parentNodeID)
+	}
+
+	derivedKind := canvas.NodeKindSectionOutline
+	if run.Target == warmagent.TargetChapterSection {
+		derivedKind = canvas.NodeKindChapterSection
+	}
+	var existingChildren int
+	if err := transaction.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM canvas_edges e
+JOIN canvas_nodes n ON n.work_id = e.work_id AND n.id = e.target_node_id
+WHERE e.work_id = ? AND e.source_node_id = ? AND e.kind = 'generated_from' AND n.kind = ?`,
+		run.WorkID, parentNodeID, derivedKind).Scan(&existingChildren); err != nil {
+		return fmt.Errorf("read existing derived nodes: %w", err)
+	}
+	if existingChildren > 0 {
+		return canvas.ErrDerivationExists
+	}
+
+	inputs, err := derivationNodeInputs(run, parent, result.Content)
+	if err != nil {
+		return err
+	}
+	nodes := make([]canvas.Node, 0, len(inputs))
+	edges := make([]canvas.Edge, 0, len(inputs)*2)
+	startY := parent.Y - float64(len(inputs)-1)*110
+	for index, input := range inputs {
+		node := canvas.Node{
+			ID: uuid.NewString(), WorkID: run.WorkID, Revision: 1, Kind: input.Kind,
+			Title: input.Title, Content: input.Content, X: parent.X + 360,
+			Y: startY + float64(index)*220, CreatedAt: now, UpdatedAt: now,
+		}
+		if _, err := transaction.ExecContext(ctx, `
+INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
+			node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("create derived canvas node: %w", err)
+		}
+		sourceNodeIDs := uniqueStrings(append([]string{parentNodeID}, input.ContextNodeIDs...))
+		for _, sourceNodeID := range sourceNodeIDs {
+			if !containsString(run.ContextNodeIDs, sourceNodeID) {
+				return fmt.Errorf("%w: derived context node %q was not supplied to the run", canvas.ErrInvalidSectionOutline, sourceNodeID)
+			}
+			var sourceExists int
+			if err := transaction.QueryRowContext(ctx, `
+SELECT 1 FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, sourceNodeID).Scan(&sourceExists); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return canvas.ErrNodeNotFound
+				}
+				return fmt.Errorf("read derived context node: %w", err)
+			}
+			edge := canvas.Edge{
+				ID: uuid.NewString(), WorkID: run.WorkID, SourceNodeID: sourceNodeID,
+				TargetNodeID: node.ID, Kind: "generated_from", CreatedAt: now,
+			}
+			if _, err := transaction.ExecContext(ctx, `
+INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
+VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
+				edge.Kind, now.Format(time.RFC3339Nano)); err != nil {
+				return fmt.Errorf("create derived canvas edge: %w", err)
+			}
+			edges = append(edges, edge)
+		}
+		nodes = append(nodes, node)
+	}
+	if err := appendCanvasAction(ctx, transaction, run.WorkID, actionCreateNodes, "Agent 派生节点", createNodesActionPayload{
+		Nodes: nodes, Edges: edges,
+	}); err != nil {
+		return err
+	}
+	statusResult, err := transaction.ExecContext(ctx, `
+UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		warmagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, warmagent.RunStatusRunning)
+	if err != nil {
+		return fmt.Errorf("complete node derivation run: %w", err)
+	}
+	changed, err := statusResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read completed node derivation run: %w", err)
+	}
+	if changed == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	nodeIDs := make([]string, len(nodes))
+	for index, node := range nodes {
+		nodeIDs[index] = node.ID
+	}
+	if _, err := appendEvent(transaction, run.ID, warmagent.EventNodesCreated, map[string]any{
+		"parentNodeId": parentNodeID, "nodeIds": nodeIDs, "kind": derivedKind,
+	}, now); err != nil {
+		return err
+	}
+	if _, err := appendEvent(transaction, run.ID, warmagent.EventRunCompleted, map[string]any{
+		"parentNodeId": parentNodeID, "nodeIds": nodeIDs,
+	}, now); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit node derivation: %w", err)
+	}
+	return nil
+}
+
+type derivationNodeInput struct {
+	Kind           canvas.NodeKind
+	Title          string
+	Content        string
+	ContextNodeIDs []string
+}
+
+func derivationNodeInputs(run warmagent.Run, parent canvas.Node, content string) ([]derivationNodeInput, error) {
+	if run.Target == warmagent.TargetSectionOutlineBatch {
+		if parent.Kind != canvas.NodeKindChapterOutline {
+			return nil, fmt.Errorf("%w: section outlines require a chapter outline", canvas.ErrInvalidNode)
+		}
+		batch, err := canvas.DecodeSectionOutlineBatch(content)
+		if err != nil {
+			return nil, err
+		}
+		if batch.ChapterOutlineNodeID != parent.ID {
+			return nil, fmt.Errorf("%w: chapterOutlineNodeId does not match target node", canvas.ErrInvalidSectionOutline)
+		}
+		sort.Slice(batch.Sections, func(left, right int) bool {
+			return batch.Sections[left].Outline.Ordinal < batch.Sections[right].Outline.Ordinal
+		})
+		inputs := make([]derivationNodeInput, 0, len(batch.Sections))
+		for _, section := range batch.Sections {
+			inputs = append(inputs, derivationNodeInput{
+				Kind: canvas.NodeKindSectionOutline, Title: strings.TrimSpace(section.Title),
+				Content: canvas.FormatSectionOutline(section.Outline),
+			})
+		}
+		return inputs, nil
+	}
+	if run.Target != warmagent.TargetChapterSection || parent.Kind != canvas.NodeKindSectionOutline {
+		return nil, fmt.Errorf("%w: unsupported derivation target", canvas.ErrInvalidNode)
+	}
+	var section struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&section); err != nil {
+		return nil, fmt.Errorf("%w: decode chapter section: %v", canvas.ErrInvalidNode, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: chapter section must contain one JSON object", canvas.ErrInvalidNode)
+	}
+	section.Title = strings.TrimSpace(section.Title)
+	section.Content = strings.TrimSpace(section.Content)
+	if section.Title == "" || section.Content == "" {
+		return nil, fmt.Errorf("%w: chapter section title and content are required", canvas.ErrInvalidNode)
+	}
+	return []derivationNodeInput{{
+		Kind: canvas.NodeKindChapterSection, Title: section.Title, Content: section.Content,
+		ContextNodeIDs: append([]string(nil), run.ContextNodeIDs...),
+	}}, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *AgentRepository) Fail(runID, message string) error {

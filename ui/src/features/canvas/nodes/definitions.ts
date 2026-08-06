@@ -5,6 +5,7 @@ import {
   Cog,
   FilePenLine,
   Gem,
+  ListOrdered,
   ListTree,
   MapPinned,
   Milestone,
@@ -23,7 +24,7 @@ export const nodeCategoryDefinitions = {
   },
   asset: {
     label: '写作资产',
-    description: '由故事实体和结构逐步生成的章节概览、草稿与完稿。',
+    description: '由故事实体和结构逐步生成的章节概览、子章节规划、正文与完稿。',
   },
 } as const
 
@@ -130,22 +131,31 @@ export const nodeDefinitions = defineCanvasNodes({
     creationMode: 'manual',
     shortcut: 8,
   },
-  'section-draft': {
+  'section-outline': {
     category: 'asset',
-    label: '小节草稿',
-    description: '由章节概览拆分并生成的可编辑正文草稿。',
-    icon: FilePenLine,
+    label: '子章节规划',
+    description: '从章节概览拆分出的写作规划，定义目标、节拍、边界状态和篇幅。',
+    icon: ListOrdered,
     accentClassName: 'bg-mute',
     accentColor: 'var(--color-mute)',
+    creationMode: 'derived',
+  },
+  'chapter-section': {
+    category: 'asset',
+    label: '章节小节',
+    description: '根据子章节规划生成并可持续修改的完整正文单元。',
+    icon: FilePenLine,
+    accentClassName: 'bg-primary',
+    accentColor: 'var(--color-primary)',
     creationMode: 'derived',
   },
   manuscript: {
     category: 'asset',
     label: '完稿',
-    description: '由小节草稿润色、校对并确认后的最终写作资产。',
+    description: '由章节小节组织、润色、校对并确认后的最终写作资产。',
     icon: BookOpenText,
-    accentClassName: 'bg-primary',
-    accentColor: 'var(--color-primary)',
+    accentClassName: 'bg-ink',
+    accentColor: 'var(--color-ink)',
     creationMode: 'derived',
   },
 })

@@ -21,8 +21,9 @@ type RunStatus string
 type CandidateStatus string
 
 const (
-	TargetNodeUpdate   = "node-update"
-	TargetSectionDraft = "section-draft"
+	TargetNodeUpdate          = "node-update"
+	TargetSectionOutlineBatch = "section-outline-batch"
+	TargetChapterSection      = "chapter-section"
 
 	RunStatusQueued       RunStatus = "queued"
 	RunStatusRunning      RunStatus = "running"
@@ -64,6 +65,7 @@ const (
 	EventValidationCompleted  EventType = "validation.completed"
 	EventCandidateCreated     EventType = "candidate.created"
 	EventNodeUpdated          EventType = "node.updated"
+	EventNodesCreated         EventType = "nodes.created"
 	EventRunCompleted         EventType = "run.completed"
 	EventRunFailed            EventType = "run.failed"
 	EventRunCancelled         EventType = "run.cancelled"

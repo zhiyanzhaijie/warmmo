@@ -7,7 +7,198 @@ import (
 	"time"
 
 	"warmnote/core/internal/agent"
+	"warmnote/core/internal/canvas"
 )
+
+func TestCompleteSectionOutlineBatchCreatesUndoableNodesAndEdges(t *testing.T) {
+	t.Parallel()
+
+	providerRepository, err := NewProviderRepository(t.TempDir())
+	if err != nil {
+		t.Fatalf("create provider repository: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := providerRepository.Close(); err != nil {
+			t.Errorf("close provider repository: %v", err)
+		}
+	})
+
+	const (
+		workID    = "work-derive"
+		runID     = "run-derive"
+		chapterID = "chapter-outline-1"
+		worldID   = "world-1"
+	)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, node := range []struct {
+		id, kind, title string
+	}{
+		{id: chapterID, kind: string(canvas.NodeKindChapterOutline), title: "第一章"},
+		{id: worldID, kind: string(canvas.NodeKindWorld), title: "世界观"},
+	} {
+		if _, err := providerRepository.database.Exec(`
+INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
+VALUES (?, ?, 1, ?, ?, '', 100, 200, ?, ?)`, node.id, workID, node.kind, node.title, now, now); err != nil {
+			t.Fatalf("insert canvas node: %v", err)
+		}
+	}
+	contextNodeIDs, err := json.Marshal([]string{chapterID, worldID})
+	if err != nil {
+		t.Fatalf("encode context node ids: %v", err)
+	}
+	if _, err := providerRepository.database.Exec(`
+INSERT INTO agent_runs (
+    id, work_id, status, prompt, target, target_node_id, provider_id, model_id,
+    context_node_ids_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, workID, agent.RunStatusRunning, "拆分章节", agent.TargetSectionOutlineBatch,
+		chapterID, "provider-1", "model-1", string(contextNodeIDs), now, now); err != nil {
+		t.Fatalf("insert agent run: %v", err)
+	}
+	batch := canvas.SectionOutlineBatch{
+		ChapterOutlineNodeID: chapterID,
+		Sections: []canvas.PlannedSection{
+			{Title: "抵达", Outline: testSectionOutline(1)},
+			{Title: "发现", Outline: testSectionOutline(2)},
+		},
+	}
+	content, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatalf("encode section outline batch: %v", err)
+	}
+	repository := NewAgentRepository(providerRepository)
+	if err := repository.CompleteDerivation(context.Background(), agent.Run{
+		ID: runID, WorkID: workID, Target: agent.TargetSectionOutlineBatch,
+		ContextNodeIDs: []string{chapterID, worldID},
+	}, chapterID, agent.RunResult{Content: string(content), ExpectedRevision: 1}); err != nil {
+		t.Fatalf("complete derivation: %v", err)
+	}
+
+	assertTableCount(t, providerRepository, `SELECT COUNT(*) FROM canvas_nodes WHERE work_id = ? AND kind = ?`, 2, workID, canvas.NodeKindSectionOutline)
+	assertTableCount(t, providerRepository, `SELECT COUNT(*) FROM canvas_edges WHERE work_id = ?`, 2, workID)
+	if _, err := NewCanvasRepository(providerRepository).Undo(context.Background(), workID); err != nil {
+		t.Fatalf("undo derivation: %v", err)
+	}
+	assertTableCount(t, providerRepository, `SELECT COUNT(*) FROM canvas_nodes WHERE work_id = ? AND kind = ?`, 0, workID, canvas.NodeKindSectionOutline)
+	assertTableCount(t, providerRepository, `SELECT COUNT(*) FROM canvas_edges WHERE work_id = ?`, 0, workID)
+}
+
+func TestCompleteChapterSectionConnectsInheritedWritingContext(t *testing.T) {
+	t.Parallel()
+
+	providerRepository, err := NewProviderRepository(t.TempDir())
+	if err != nil {
+		t.Fatalf("create provider repository: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := providerRepository.Close(); err != nil {
+			t.Errorf("close provider repository: %v", err)
+		}
+	})
+
+	const (
+		workID    = "work-writing"
+		runID     = "run-writing"
+		sectionID = "section-outline-1"
+		chapterID = "chapter-outline-1"
+		worldID   = "world-1"
+	)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, node := range []struct {
+		id, kind, title string
+	}{
+		{id: sectionID, kind: string(canvas.NodeKindSectionOutline), title: "宴会"},
+		{id: chapterID, kind: string(canvas.NodeKindChapterOutline), title: "第一章"},
+		{id: worldID, kind: string(canvas.NodeKindWorld), title: "世界观"},
+	} {
+		if _, err := providerRepository.database.Exec(`
+INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
+VALUES (?, ?, 1, ?, ?, '', 100, 200, ?, ?)`, node.id, workID, node.kind, node.title, now, now); err != nil {
+			t.Fatalf("insert canvas node: %v", err)
+		}
+	}
+	for _, edge := range []struct {
+		id, sourceNodeID, targetNodeID string
+	}{
+		{id: "edge-world-chapter", sourceNodeID: worldID, targetNodeID: chapterID},
+		{id: "edge-chapter-section", sourceNodeID: chapterID, targetNodeID: sectionID},
+	} {
+		if _, err := providerRepository.database.Exec(`
+INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
+VALUES (?, ?, ?, ?, 'generated_from', ?)`, edge.id, workID, edge.sourceNodeID, edge.targetNodeID, now); err != nil {
+			t.Fatalf("insert canvas edge: %v", err)
+		}
+	}
+	repository := NewAgentRepository(providerRepository)
+	contextNodeIDs, err := repository.GetChapterSectionContext(workID, sectionID)
+	if err != nil {
+		t.Fatalf("resolve chapter section context: %v", err)
+	}
+	wantContextNodeIDs := []string{sectionID, chapterID, worldID}
+	if len(contextNodeIDs) != len(wantContextNodeIDs) {
+		t.Fatalf("chapter section context = %v, want %v", contextNodeIDs, wantContextNodeIDs)
+	}
+	for index, nodeID := range wantContextNodeIDs {
+		if contextNodeIDs[index] != nodeID {
+			t.Fatalf("chapter section context = %v, want %v", contextNodeIDs, wantContextNodeIDs)
+		}
+	}
+	encodedContextNodeIDs, err := json.Marshal(contextNodeIDs)
+	if err != nil {
+		t.Fatalf("encode context node ids: %v", err)
+	}
+	if _, err := providerRepository.database.Exec(`
+INSERT INTO agent_runs (
+    id, work_id, status, prompt, target, target_node_id, provider_id, model_id,
+    context_node_ids_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, workID, agent.RunStatusRunning, "撰写正文", agent.TargetChapterSection,
+		sectionID, "provider-1", "model-1", string(encodedContextNodeIDs), now, now); err != nil {
+		t.Fatalf("insert agent run: %v", err)
+	}
+	content, err := json.Marshal(map[string]string{"title": "宴会失控", "content": "完整正文"})
+	if err != nil {
+		t.Fatalf("encode chapter section: %v", err)
+	}
+	if err := repository.CompleteDerivation(context.Background(), agent.Run{
+		ID: runID, WorkID: workID, Target: agent.TargetChapterSection, ContextNodeIDs: contextNodeIDs,
+	}, sectionID, agent.RunResult{Content: string(content), ExpectedRevision: 1}); err != nil {
+		t.Fatalf("complete chapter section: %v", err)
+	}
+
+	assertTableCount(t, providerRepository, `SELECT COUNT(*) FROM canvas_nodes WHERE work_id = ? AND kind = ?`, 1, workID, canvas.NodeKindChapterSection)
+	assertTableCount(t, providerRepository, `
+SELECT COUNT(*) FROM canvas_edges e
+JOIN canvas_nodes target ON target.work_id = e.work_id AND target.id = e.target_node_id
+WHERE e.work_id = ? AND target.kind = ?`, 3, workID, canvas.NodeKindChapterSection)
+	for _, sourceNodeID := range contextNodeIDs {
+		assertTableCount(t, providerRepository, `
+SELECT COUNT(*) FROM canvas_edges e
+JOIN canvas_nodes target ON target.work_id = e.work_id AND target.id = e.target_node_id
+WHERE e.work_id = ? AND e.source_node_id = ? AND target.kind = ?`,
+			1, workID, sourceNodeID, canvas.NodeKindChapterSection)
+	}
+}
+
+func testSectionOutline(ordinal int) canvas.SectionOutlineData {
+	return canvas.SectionOutlineData{
+		Ordinal: ordinal, Purpose: "推进章节", Viewpoint: "主角", TargetLength: 1200,
+		OpeningState: "局势尚未明朗", Beats: []string{"采取行动", "获得线索"},
+		Conflict: "行动受到阻碍", TurningPoint: "线索改变判断", EndingState: "局势发生变化",
+		Hook: "新的问题出现",
+	}
+}
+
+func assertTableCount(t *testing.T, repository *ProviderRepository, query string, want int, arguments ...any) {
+	t.Helper()
+	var got int
+	if err := repository.database.QueryRow(query, arguments...).Scan(&got); err != nil {
+		t.Fatalf("query table count: %v", err)
+	}
+	if got != want {
+		t.Fatalf("table count = %d, want %d", got, want)
+	}
+}
 
 func TestCompleteNodeUpdateRecordsUndoableCanvasHistory(t *testing.T) {
 	t.Parallel()

@@ -1,6 +1,11 @@
+import { useMemo } from 'react'
+
 import { nodeDefinitions } from '@/features/canvas/nodes/definitions'
 import { NodeMarkdown } from '@/features/canvas/node-detail/NodeMarkdown'
 import type { CanvasNode } from '@/types/canvas'
+
+const wordCountFormatter = new Intl.NumberFormat('zh-CN')
+const whitespaceCharacter = /\s/u
 
 interface NodeDocumentProps {
   node: CanvasNode
@@ -21,6 +26,10 @@ export function NodeDocument({
 }: NodeDocumentProps) {
   const definition = nodeDefinitions[node.kind]
   const Icon = definition.icon
+  const wordCount = useMemo(
+    () => node.kind === 'chapter-section' && mode === 'read' ? countNonWhitespaceCharacters(content) : null,
+    [content, mode, node.kind],
+  )
 
   return (
     <article className="mx-auto w-full max-w-3xl">
@@ -29,6 +38,12 @@ export function NodeDocument({
         <span>{definition.label}</span>
         <span aria-hidden="true">·</span>
         <span>REV {node.revision}</span>
+        {wordCount !== null ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{wordCountFormatter.format(wordCount)} 字</span>
+          </>
+        ) : null}
       </div>
 
       {mode === 'edit' ? (
@@ -58,4 +73,12 @@ export function NodeDocument({
       </div>
     </article>
   )
+}
+
+function countNonWhitespaceCharacters(content: string) {
+  let count = 0
+  for (const character of content) {
+    if (!whitespaceCharacter.test(character)) count += 1
+  }
+  return count
 }

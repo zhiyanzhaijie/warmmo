@@ -7,10 +7,12 @@ import type { FlowNodeData, FlowNodeDetailLevel, StoryFlowNode } from '@/feature
 import type { AgentEvent } from '@/types/canvas'
 
 export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed' | 'failed'
+export type NodeAgentOperation = 'update' | 'derive'
 
 export interface NodeAgentRunState {
   runId: string | null
   nodeId: string
+  operation: NodeAgentOperation
   status: NodeAgentRunStatus
   events: AgentEvent[]
   error: string
@@ -27,7 +29,7 @@ interface FlowNodeStoreActions {
   openPreview: (nodeId: string) => void
   closePreview: () => void
   focusSourceNode: (nodeId: string) => void
-  beginNodeAgentRun: (nodeId: string) => void
+  beginNodeAgentRun: (nodeId: string, operation?: NodeAgentOperation) => void
   attachNodeAgentRun: (nodeId: string, runId: string) => void
   appendNodeAgentEvent: (nodeId: string, event: AgentEvent) => void
   failNodeAgentRun: (nodeId: string, message: string) => void
@@ -101,9 +103,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
         set((state) => state.detailLevel === detailLevel ? state : { detailLevel })
       },
       showNodeToolbar: (nodeId) => {
-        set((state) => state.selectedSourceNodeIds.length === 1 && state.selectedSourceNodeIds[0] === nodeId
-          ? { toolbarSourceNodeId: nodeId }
-          : state)
+        set((state) => state.toolbarSourceNodeId === nodeId ? state : { toolbarSourceNodeId: nodeId })
       },
       hideNodeToolbar: () => {
         set((state) => state.toolbarSourceNodeId === null ? state : { toolbarSourceNodeId: null })
@@ -128,11 +128,11 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
           }
         })
       },
-      beginNodeAgentRun: (nodeId) => {
+      beginNodeAgentRun: (nodeId, operation = 'update') => {
         set((state) => ({
           nodeAgentRuns: {
             ...state.nodeAgentRuns,
-            [nodeId]: { runId: null, nodeId, status: 'submitting', events: [], error: '' },
+            [nodeId]: { runId: null, nodeId, operation, status: 'submitting', events: [], error: '' },
           },
         }))
       },
@@ -143,7 +143,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
             nodeAgentRuns: {
               ...state.nodeAgentRuns,
               [nodeId]: current === undefined
-                ? { runId, nodeId, status: 'running', events: [], error: '' }
+                ? { runId, nodeId, operation: 'update', status: 'running', events: [], error: '' }
                 : { ...current, runId, status: 'running', error: '' },
             },
           }
@@ -184,7 +184,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
             nodeAgentRuns: {
               ...state.nodeAgentRuns,
               [nodeId]: current === undefined
-                ? { runId: null, nodeId, status: 'failed', events: [], error: message }
+                ? { runId: null, nodeId, operation: 'update', status: 'failed', events: [], error: message }
                 : { ...current, status: 'failed', error: message },
             },
           }

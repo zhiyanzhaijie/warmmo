@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 9
+	currentSchemaVersion = 10
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -90,8 +90,8 @@ ALTER TABLE canvas_nodes ADD COLUMN x REAL NOT NULL DEFAULT 0;
 ALTER TABLE canvas_nodes ADD COLUMN y REAL NOT NULL DEFAULT 0;`
 	candidateLifecycleSchemaSQL = `
 ALTER TABLE agent_candidates ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
-ALTER TABLE agent_candidates ADD COLUMN kind TEXT NOT NULL DEFAULT 'section-draft';
-ALTER TABLE agent_candidates ADD COLUMN title TEXT NOT NULL DEFAULT '小节草稿候选';
+ALTER TABLE agent_candidates ADD COLUMN kind TEXT NOT NULL DEFAULT 'chapter-section';
+ALTER TABLE agent_candidates ADD COLUMN title TEXT NOT NULL DEFAULT '章节小节候选';
 ALTER TABLE agent_candidates ADD COLUMN x REAL NOT NULL DEFAULT 520;
 ALTER TABLE agent_candidates ADD COLUMN y REAL NOT NULL DEFAULT 80;
 ALTER TABLE agent_candidates ADD COLUMN accepted_node_id TEXT NOT NULL DEFAULT '';
@@ -170,6 +170,10 @@ CREATE INDEX IF NOT EXISTS idx_works_status_folder_updated
     ON works(status, folder_id, updated_at DESC);`
 	agentRunResumeSchemaSQL = `
 ALTER TABLE agent_runs ADD COLUMN target_node_id TEXT NOT NULL DEFAULT '';`
+	chapterSectionNodeKindsSchemaSQL = `
+UPDATE canvas_nodes SET kind = 'chapter-section' WHERE kind = 'section-draft';
+UPDATE agent_candidates SET kind = 'chapter-section' WHERE kind = 'section-draft';
+UPDATE agent_runs SET target = 'chapter-section' WHERE target = 'section-draft';`
 )
 
 var (
@@ -457,7 +461,12 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add resumable agent run input: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 9"); err != nil {
+	if schemaVersion >= 5 && schemaVersion < 10 {
+		if _, err := transaction.Exec(chapterSectionNodeKindsSchemaSQL); err != nil {
+			return fmt.Errorf("rename chapter section node kinds: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 10"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

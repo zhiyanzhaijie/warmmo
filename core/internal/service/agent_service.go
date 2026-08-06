@@ -40,11 +40,13 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	if input.WorkID == "" || input.Prompt == "" || input.Target == "" || input.ProviderID == "" || input.ModelID == "" {
 		return agent.Run{}, fmt.Errorf("%w: workId, prompt, target, providerId and modelId are required", ErrInvalidAgentRun)
 	}
-	if input.Target != agent.TargetNodeUpdate && input.Target != agent.TargetSectionDraft {
+	if input.Target != agent.TargetNodeUpdate &&
+		input.Target != agent.TargetSectionOutlineBatch &&
+		input.Target != agent.TargetChapterSection {
 		return agent.Run{}, fmt.Errorf("%w: target %q is not supported", ErrInvalidAgentRun, input.Target)
 	}
-	if input.Target == agent.TargetNodeUpdate && input.TargetNodeID == "" {
-		return agent.Run{}, fmt.Errorf("%w: targetNodeId is required for node-update", ErrInvalidAgentRun)
+	if input.TargetNodeID == "" {
+		return agent.Run{}, fmt.Errorf("%w: targetNodeId is required", ErrInvalidAgentRun)
 	}
 	if input.Target == agent.TargetNodeUpdate && !containsNodeID(input.ContextNodeIDs, input.TargetNodeID) {
 		return agent.Run{}, fmt.Errorf("%w: targetNodeId must be included in contextNodeIds", ErrInvalidAgentRun)
@@ -57,7 +59,28 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 		if !canvas.IsValidNodeKind(nodeKind) {
 			return agent.Run{}, fmt.Errorf("%w: target node kind %q is not supported", ErrInvalidAgentRun, nodeKind)
 		}
-		input.Target = agent.NodeUpdateTarget(nodeKind)
+		input.Target = agent.NodeUpdateTarget(string(nodeKind))
+	} else {
+		nodeKind, err := s.repository.GetCanvasNodeKind(input.WorkID, input.TargetNodeID)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		expectedKind := canvas.NodeKindChapterOutline
+		if input.Target == agent.TargetChapterSection {
+			expectedKind = canvas.NodeKindSectionOutline
+		}
+		if nodeKind != expectedKind {
+			return agent.Run{}, fmt.Errorf("%w: target %q requires a %q node", ErrInvalidAgentRun, input.Target, expectedKind)
+		}
+		if input.Target == agent.TargetSectionOutlineBatch {
+			input.ContextNodeIDs = []string{input.TargetNodeID}
+		} else {
+			contextNodeIDs, err := s.repository.GetChapterSectionContext(input.WorkID, input.TargetNodeID)
+			if err != nil {
+				return agent.Run{}, fmt.Errorf("%w: resolve chapter section context: %v", ErrInvalidAgentRun, err)
+			}
+			input.ContextNodeIDs = contextNodeIDs
+		}
 	}
 	input.RunID = uuid.NewString()
 	run, err := s.repository.CreateRun(input)
@@ -165,6 +188,8 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 	var completeErr error
 	if agent.IsNodeUpdateTarget(input.Target) {
 		completeErr = s.repository.CompleteNodeUpdate(runCtx, run, input.TargetNodeID, result)
+	} else if input.Target == agent.TargetSectionOutlineBatch || input.Target == agent.TargetChapterSection {
+		completeErr = s.repository.CompleteDerivation(runCtx, run, input.TargetNodeID, result)
 	} else {
 		_, completeErr = s.repository.Complete(run, result)
 	}
@@ -195,6 +220,12 @@ func publicAgentError(err error) string {
 	}
 	if errors.Is(err, canvas.ErrRevisionConflict) {
 		return "节点在生成期间已被修改，本次 Agent 结果未覆盖现有内容"
+	}
+	if errors.Is(err, canvas.ErrDerivationExists) {
+		return "当前节点已经生成过下一层节点，请先检查或删除已有结果"
+	}
+	if errors.Is(err, canvas.ErrInvalidSectionOutline) || errors.Is(err, canvas.ErrInvalidNode) {
+		return "模型返回的派生内容不符合节点结构，请重试或切换模型"
 	}
 	return "Agent 执行失败，请检查模型配置后重试"
 }

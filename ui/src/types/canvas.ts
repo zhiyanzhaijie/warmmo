@@ -29,6 +29,29 @@ export interface CanvasNodePosition {
   y: number
 }
 
+export interface SectionOutlineData {
+  ordinal: number
+  purpose: string
+  viewpoint: string
+  targetLength: number
+  openingState: string
+  beats: string[]
+  conflict: string
+  turningPoint: string
+  endingState: string
+  hook: string
+}
+
+export interface PlannedSection {
+  title: string
+  outline: SectionOutlineData
+}
+
+export interface SectionOutlineBatch {
+  chapterOutlineNodeId: string
+  sections: PlannedSection[]
+}
+
 export interface CanvasHistoryState {
   canUndo: boolean
   canRedo: boolean

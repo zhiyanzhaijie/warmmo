@@ -26,10 +26,10 @@ func NewCanvasRepository(providerRepository *ProviderRepository) *CanvasReposito
 
 func (r *CanvasRepository) CreateNode(ctx context.Context, input canvas.CreateNodeInput) (canvas.Node, error) {
 	input.WorkID = strings.TrimSpace(input.WorkID)
-	input.Kind = strings.TrimSpace(input.Kind)
+	input.Kind = canvas.NodeKind(strings.TrimSpace(string(input.Kind)))
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = strings.TrimSpace(input.Content)
-	if input.WorkID == "" || input.Kind == "" || input.Title == "" {
+	if input.WorkID == "" || !canvas.IsValidNodeKind(input.Kind) || input.Title == "" {
 		return canvas.Node{}, canvas.ErrInvalidNode
 	}
 	now := time.Now().UTC()
@@ -199,8 +199,8 @@ func candidateTitle(content, kind string) string {
 		}
 		return title
 	}
-	if kind == canvas.NodeKindSectionDraft {
-		return "小节草稿候选"
+	if kind == string(canvas.NodeKindChapterSection) {
+		return "章节小节候选"
 	}
 	return "内容候选"
 }
@@ -548,7 +548,7 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, candidate.Accepte
 	}
 	now := time.Now().UTC()
 	node := canvas.Node{
-		ID: uuid.NewString(), WorkID: candidate.WorkID, Revision: 1, Kind: candidate.Kind,
+		ID: uuid.NewString(), WorkID: candidate.WorkID, Revision: 1, Kind: canvas.NodeKind(candidate.Kind),
 		Title: title, Content: candidate.Content, X: candidate.X, Y: candidate.Y,
 		CreatedAt: now, UpdatedAt: now,
 	}

@@ -21,10 +21,10 @@ func NewCanvasService(store canvas.Store) *CanvasService {
 
 func (s *CanvasService) CreateNode(ctx context.Context, input canvas.CreateNodeInput) (canvas.Node, error) {
 	input.WorkID = strings.TrimSpace(input.WorkID)
-	input.Kind = strings.TrimSpace(input.Kind)
+	input.Kind = canvas.NodeKind(strings.TrimSpace(string(input.Kind)))
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = strings.TrimSpace(input.Content)
-	if input.WorkID == "" || input.Title == "" || !canvas.IsValidNodeKind(input.Kind) {
+	if input.WorkID == "" || input.Title == "" || !canvas.IsManuallyCreatableNodeKind(input.Kind) {
 		return canvas.Node{}, ErrInvalidCanvasRequest
 	}
 	if len(input.ContextNodeIDs) > 100 {

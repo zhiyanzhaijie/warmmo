@@ -7,7 +7,17 @@ import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
 import { type NodeAgentRunState, useFlowNodeStore } from '@/features/canvas/flownode/store'
 import type { EnabledModel } from '@/types/provider'
 
-export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({ workId }: { workId: string }) {
+interface CanvasAgentWorkspaceProps {
+  workId: string
+  model: EnabledModel | null
+  onModelChange: (model: EnabledModel | null) => void
+}
+
+export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
+  workId,
+  model,
+  onModelChange,
+}: CanvasAgentWorkspaceProps) {
   const createRun = useCreateAgentRun(workId)
   const respondToRun = useRespondToAgentRun()
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
@@ -24,23 +34,22 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({ workId 
     node.data.sourceType === 'node' ? [[node.data.sourceId, node] as const] : [])), [flowNodes])
   const targetNode = targetNodeId === null ? undefined : sourceNodeById.get(targetNodeId)
   const targetAgentRun = useFlowNodeStore((state) => targetNodeId === null ? undefined : state.nodeAgentRuns[targetNodeId])
-  const hasBlockingAgentRun = useFlowNodeStore((state) => Object.values(state.nodeAgentRuns).some(
-    (run) => run.status === 'submitting' || run.status === 'running' || run.status === 'waiting_input',
-  ))
+  const hasBlockingAgentRun = targetAgentRun?.status === 'submitting' ||
+    targetAgentRun?.status === 'running' || targetAgentRun?.status === 'waiting_input'
   const pendingInput = useMemo(() => getPendingAgentInput(targetAgentRun), [targetAgentRun])
   const contextNodes = useMemo(() => contextNodeIds.flatMap((nodeId) => {
     const node = sourceNodeById.get(nodeId)
     return node === undefined ? [] : [node]
   }), [contextNodeIds, sourceNodeById])
   const isNodeDragging = useStore((state) => state.nodes.some((node) => node.dragging))
-  const [model, setModel] = useState<EnabledModel | null>(null)
   const [prompt, setPrompt] = useState('让主角在宴会上第一次发现记忆能力的代价。')
   const beginNodeAgentRun = useFlowNodeStore((state) => state.actions.beginNodeAgentRun)
   const failNodeAgentRun = useFlowNodeStore((state) => state.actions.failNodeAgentRun)
-  const { activeRunId, streamError, streamRun } = useAgentRunStream(workId)
-  const canRun = model !== null && prompt.trim() !== '' && targetNodeId !== null && activeRunId === null && !hasBlockingAgentRun
+  const { streamRun } = useAgentRunStream(workId)
+  const isCreatingTargetRun = createRun.isPending && createRun.variables?.targetNodeId === targetNodeId
+  const canRun = model !== null && prompt.trim() !== '' && targetNodeId !== null && !hasBlockingAgentRun
   const runAgent = useCallback((nextPrompt: string) => {
-    if (model === null || targetNodeId === null || !canRun || createRun.isPending) return
+    if (model === null || targetNodeId === null || !canRun || isCreatingTargetRun) return
     const runContextNodeIds = [...new Set([...contextNodeIds, targetNodeId])]
     beginNodeAgentRun(targetNodeId)
     createRun.mutate({ prompt: nextPrompt, targetNodeId, contextNodeIds: runContextNodeIds, model }, {
@@ -50,7 +59,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({ workId 
         error instanceof Error ? error.message : '无法创建 Agent Run',
       ),
     })
-  }, [beginNodeAgentRun, canRun, contextNodeIds, createRun, failNodeAgentRun, model, streamRun, targetNodeId])
+  }, [beginNodeAgentRun, canRun, contextNodeIds, createRun, failNodeAgentRun, isCreatingTargetRun, model, streamRun, targetNodeId])
   const respond = useCallback((answer: string) => {
     if (pendingInput === null || targetNodeId === null || respondToRun.isPending) return
     respondToRun.mutate({
@@ -74,17 +83,17 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({ workId 
         className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-hidden rounded-sm bg-canvas-elevated shadow-floating"
       >
         <CanvasAgentPromptInput
-          canSubmit={canRun && !createRun.isPending}
+          canSubmit={canRun && !isCreatingTargetRun}
           contextNodes={contextNodes}
-          hasError={streamError !== '' || respondToRun.isError}
-          isStreaming={activeRunId !== null}
-          isSubmitting={createRun.isPending}
+          hasError={targetAgentRun?.status === 'failed' || respondToRun.isError}
+          isStreaming={targetAgentRun?.status === 'running'}
+          isSubmitting={isCreatingTargetRun || targetAgentRun?.status === 'submitting'}
           isResponding={respondToRun.isPending}
           model={model}
           nodeKind={targetNode.data.kind}
           pendingInput={pendingInput}
           prompt={prompt}
-          onModelChange={setModel}
+          onModelChange={onModelChange}
           onPromptChange={setPrompt}
           onRespond={respond}
           onSubmit={runAgent}

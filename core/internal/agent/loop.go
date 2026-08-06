@@ -44,7 +44,7 @@ Required fields by kind:
 - finish: content
 - fail: reason
 Examples:
-{"kind":"select_skill","skillId":"chapter-drafting"}
+{"kind":"select_skill","skillId":"chapter-section-writing"}
 {"kind":"produce_candidate"}
 Do not nest the decision under "decision", "action", or any other field.
 Use produce_candidate when enough context and planning exist to write the requested output.
@@ -311,6 +311,9 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 	if IsNodeUpdateTarget(state.input.Target) {
 		return l.produceNodeUpdate(ctx, state, model, emit)
 	}
+	if state.input.Target == TargetSectionOutlineBatch || state.input.Target == TargetChapterSection {
+		return l.produceDerivation(ctx, state, model, emit)
+	}
 	var content strings.Builder
 	_, err := model.Stream(ctx, ModelRequest{
 		ModelID: state.input.ModelID,
@@ -331,6 +334,36 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 		return RunResult{}, errors.New("model returned an empty candidate")
 	}
 	return l.completeContent(ctx, state, result, emit)
+}
+
+func (l *Loop) produceDerivation(ctx context.Context, state loopState, model TextModel, emit Emitter) (RunResult, error) {
+	if err := emit(EventGenerationStarted, map[string]any{
+		"nodeId": state.input.TargetNodeID,
+		"mode":   "derive",
+		"target": state.input.Target,
+	}); err != nil {
+		return RunResult{}, err
+	}
+	response, _, err := model.Complete(ctx, ModelRequest{
+		ModelID:        state.input.ModelID,
+		System:         state.activeSkill.Instructions,
+		Prompt:         state.candidatePrompt(),
+		ResponseFormat: ModelResponseFormatJSONObject,
+	})
+	if err != nil {
+		return RunResult{}, fmt.Errorf("produce node derivation: %w", err)
+	}
+	response = strings.TrimSpace(response)
+	if response == "" {
+		return RunResult{}, errors.New("model returned an empty derivation")
+	}
+	if !json.Valid([]byte(response)) {
+		return RunResult{}, errors.New("model returned an invalid derivation JSON object")
+	}
+	if err := emit(EventMessageDelta, map[string]string{"delta": response}); err != nil {
+		return RunResult{}, err
+	}
+	return l.completeContent(ctx, state, response, emit)
 }
 
 func (l *Loop) produceNodeUpdate(ctx context.Context, state loopState, model TextModel, emit Emitter) (RunResult, error) {
@@ -377,6 +410,16 @@ func (l *Loop) completeContent(ctx context.Context, state loopState, content str
 			Title: update.Title, Content: update.Content,
 			SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version,
 			ExpectedRevision: revision,
+		}, nil
+	}
+	if state.input.Target == TargetSectionOutlineBatch || state.input.Target == TargetChapterSection {
+		revision, err := targetNodeRevision(state)
+		if err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{
+			Content: content, SkillID: state.activeSkill.ID,
+			SkillVersion: state.activeSkill.Version, ExpectedRevision: revision,
 		}, nil
 	}
 	toolArgs, err := json.Marshal(map[string]string{"content": content})
@@ -491,13 +534,24 @@ func (s loopState) promptPayload() map[string]any {
 	if len(s.input.UserResponses) > 0 {
 		payload["userResponses"] = s.input.UserResponses
 	}
-	if !IsNodeUpdateTarget(s.input.Target) {
+	if !IsNodeUpdateTarget(s.input.Target) &&
+		s.input.Target != TargetSectionOutlineBatch &&
+		s.input.Target != TargetChapterSection {
 		payload["context"] = s.snapshot
 		return payload
 	}
 
 	targetNode, referenceNodes := s.nodeUpdateContext()
 	mode := nodeUpdateMode(s.input)
+	if s.input.Target == TargetSectionOutlineBatch || s.input.Target == TargetChapterSection {
+		payload["operation"] = "derive_child_nodes"
+		payload["targetNodeId"] = s.input.TargetNodeID
+		payload["targetNode"] = targetNode
+		payload["referenceContext"] = ContextSnapshot{
+			ID: s.snapshot.ID, WorkID: s.snapshot.WorkID, Nodes: referenceNodes,
+		}
+		return payload
+	}
 	payload["operation"] = "update_existing_node"
 	payload["mutationMode"] = mode
 	payload["targetNodeId"] = s.input.TargetNodeID
