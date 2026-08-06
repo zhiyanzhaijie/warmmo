@@ -5,29 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	maxDecisionAttempts        = 2
-	maxDecisionDiagnosticRunes = 512
-	maxDecisionRepairRunes     = 4 * 1024
-	nodeUpdateMergeContract    = `# Existing Node Merge Contract
+	maxDecisionAttempts         = 2
+	maxDecisionDiagnosticRunes  = 512
+	maxDecisionRepairRunes      = 4 * 1024
+	canvasContextAccessContract = `# On-Demand Canvas Context
 
-The targetNode object is the existing node being updated and is the authoritative baseline.
+- targetNode and availableContextNodes contain only node IDs and types. No canvas title or content is preloaded.
+- priorityContextNodeIds is the user-selected subset of availableContextNodes. Treat it as higher priority, not as mandatory context.
+- Use canvas.get_nodes only for targetNode.id or IDs listed in availableContextNodes when their content is relevant to the request.
+- Read the smallest useful set of nodes. Never infer a node's content from its ID or type alone.`
+	nodeUpdateMergeContract = `# Existing Node Merge Contract
+
+The targetNode object only identifies the existing node being updated.
+- Before generating a merge, read targetNode.id with canvas.get_nodes and treat the returned node as the authoritative baseline.
 - Preserve its existing title, content, identity, and established facts unless the user's request explicitly changes them.
-- Apply the requested changes to the targetNode instead of generating a replacement concept from the reference nodes.
-- Treat referenceContext as supporting constraints and related facts; none of its nodes is the update target.
+- Apply the requested changes to the target node instead of generating a replacement concept from related nodes.
 - Return the complete merged title and content because the result replaces the stored node fields in full.
 - Never silently omit established targetNode details that are unrelated to the requested change.`
 	nodeUpdateReplaceContract = `# Existing Node Replacement Contract
 
-The selected target is a storage slot whose previous semantic content must be replaced.
+The selected target is a storage slot whose previous semantic content may be replaced.
 - Create a completely new node concept that follows the user's request and userResponses.
 - Do not preserve, continue, paraphrase, or reuse the previous node's title, identity, or content.
-- Treat referenceContext as supporting world constraints and related facts; none of its nodes is the new target identity.
+- Read related nodes only when their actual content is needed to satisfy the request.
 - Return a complete new title and content because the result replaces the stored node fields in full.`
 	decisionInstruction = `You are the decision maker inside Warmnote's explicit novel-writing agent loop.
 Choose exactly one next action and return exactly one JSON object without markdown or commentary.
@@ -141,18 +146,17 @@ func DefaultBudget() Budget {
 }
 
 type Loop struct {
-	contextReader ContextReader
-	skills        SkillCatalog
-	tools         *ToolRegistry
-	budget        Budget
+	skills SkillCatalog
+	tools  *ToolRegistry
+	budget Budget
 }
 
-func NewLoop(contextReader ContextReader, skills SkillCatalog, tools *ToolRegistry, budget Budget) *Loop {
-	return &Loop{contextReader: contextReader, skills: skills, tools: tools, budget: budget}
+func NewLoop(skills SkillCatalog, tools *ToolRegistry, budget Budget) *Loop {
+	return &Loop{skills: skills, tools: tools, budget: budget}
 }
 
 func (l *Loop) Run(ctx context.Context, input RunInput, model TextModel, emit Emitter) (RunResult, error) {
-	if model == nil || emit == nil || l.contextReader == nil || l.skills == nil || l.tools == nil {
+	if model == nil || emit == nil || l.skills == nil || l.tools == nil {
 		return RunResult{}, errors.New("agent loop dependencies are not configured")
 	}
 	if l.budget.MaxSteps <= 0 || l.budget.MaxModelCalls <= 0 || l.budget.MaxDuration <= 0 {
@@ -161,14 +165,11 @@ func (l *Loop) Run(ctx context.Context, input RunInput, model TextModel, emit Em
 	runCtx, cancel := context.WithTimeout(ctx, l.budget.MaxDuration)
 	defer cancel()
 
-	if err := emit(EventContextPreparing, map[string]any{"nodeCount": len(input.ContextNodeIDs)}); err != nil {
+	nodeCount := len(input.ContextNodes) + 1
+	if err := emit(EventContextPreparing, map[string]any{"nodeCount": nodeCount, "mode": "on-demand"}); err != nil {
 		return RunResult{}, err
 	}
-	snapshot, err := l.contextReader.BuildSnapshot(runCtx, input.WorkID, input.ContextNodeIDs)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("build canvas context: %w", err)
-	}
-	if err := emit(EventContextReady, map[string]any{"snapshotId": snapshot.ID, "nodeCount": len(snapshot.Nodes)}); err != nil {
+	if err := emit(EventContextReady, map[string]any{"nodeCount": nodeCount, "mode": "on-demand"}); err != nil {
 		return RunResult{}, err
 	}
 
@@ -186,7 +187,7 @@ func (l *Loop) Run(ctx context.Context, input RunInput, model TextModel, emit Em
 		return RunResult{}, err
 	}
 
-	state := loopState{input: input, snapshot: snapshot, matches: matches}
+	state := loopState{input: input, matches: matches}
 	if len(matches) == 1 {
 		if err := l.selectSkill(runCtx, &state, matches[0].ID, emit); err != nil {
 			return RunResult{}, err
@@ -317,7 +318,7 @@ func (l *Loop) produceCandidate(ctx context.Context, state loopState, model Text
 	var content strings.Builder
 	_, err := model.Stream(ctx, ModelRequest{
 		ModelID: state.input.ModelID,
-		System:  state.activeSkill.Instructions,
+		System:  canvasContextSystemPrompt(state.activeSkill.Instructions),
 		Prompt:  state.candidatePrompt(),
 	}, func(delta string) error {
 		if delta == "" {
@@ -346,7 +347,7 @@ func (l *Loop) produceDerivation(ctx context.Context, state loopState, model Tex
 	}
 	response, _, err := model.Complete(ctx, ModelRequest{
 		ModelID:        state.input.ModelID,
-		System:         state.activeSkill.Instructions,
+		System:         canvasContextSystemPrompt(state.activeSkill.Instructions),
 		Prompt:         state.candidatePrompt(),
 		ResponseFormat: ModelResponseFormatJSONObject,
 	})
@@ -484,22 +485,14 @@ func parseNodeUpdate(value string) (nodeUpdate, error) {
 }
 
 func targetNodeRevision(state loopState) (int64, error) {
-	for _, node := range state.snapshot.Nodes {
-		if node.ID != state.input.TargetNodeID {
-			continue
-		}
-		revision, err := strconv.ParseInt(node.Revision, 10, 64)
-		if err != nil || revision < 1 {
-			return 0, errors.New("target node revision is invalid")
-		}
-		return revision, nil
+	if state.input.TargetNodeRevision < 1 {
+		return 0, errors.New("target node revision is invalid")
 	}
-	return 0, fmt.Errorf("target node %q is not in context", state.input.TargetNodeID)
+	return state.input.TargetNodeRevision, nil
 }
 
 type loopState struct {
 	input        RunInput
-	snapshot     ContextSnapshot
 	matches      []SkillMatch
 	activeSkill  Skill
 	plan         string
@@ -538,34 +531,36 @@ func (s loopState) promptPayload() map[string]any {
 		s.input.Target != TargetSectionOutlineBatch &&
 		s.input.Target != TargetChapterSection &&
 		s.input.Target != TargetChapterArchive {
-		payload["context"] = s.snapshot
 		return payload
 	}
 
-	targetNode, referenceNodes := s.nodeUpdateContext()
-	mode := nodeUpdateMode(s.input)
+	payload["targetNodeId"] = s.input.TargetNodeID
+	payload["targetNode"] = NodeReference{ID: s.input.TargetNodeID, Type: s.input.TargetNodeType}
+	availableContextNodes := s.input.ContextNodes
+	if availableContextNodes == nil {
+		availableContextNodes = []NodeReference{}
+	}
+	payload["availableContextNodes"] = availableContextNodes
+	payload["contextAccessPolicy"] = []string{
+		"Node titles and content are not preloaded into this request.",
+		"targetNode and availableContextNodes contain only ID and type metadata.",
+		"Use canvas.get_nodes on demand for only the nodes whose content is relevant.",
+	}
 	if s.input.Target == TargetSectionOutlineBatch || s.input.Target == TargetChapterSection || s.input.Target == TargetChapterArchive {
 		payload["operation"] = "derive_child_nodes"
 		if s.input.Target == TargetChapterArchive {
 			payload["operation"] = "archive_chapter_and_propose_entity_versions"
 		}
-		payload["targetNodeId"] = s.input.TargetNodeID
-		payload["targetNode"] = targetNode
-		payload["referenceContext"] = ContextSnapshot{
-			ID: s.snapshot.ID, WorkID: s.snapshot.WorkID, Nodes: referenceNodes,
-		}
 		return payload
 	}
+
+	mode := nodeUpdateMode(s.input)
 	payload["operation"] = "update_existing_node"
 	payload["mutationMode"] = mode
-	payload["targetNodeId"] = s.input.TargetNodeID
-	payload["referenceContext"] = ContextSnapshot{
-		ID: s.snapshot.ID, WorkID: s.snapshot.WorkID, Nodes: referenceNodes,
+	if priorityContextNodeIDs := s.priorityContextNodeIDs(); len(priorityContextNodeIDs) > 0 {
+		payload["priorityContextNodeIds"] = priorityContextNodeIDs
 	}
 	if mode == "replace" {
-		payload["targetNode"] = map[string]string{
-			"id": targetNode.ID, "revision": targetNode.Revision, "type": targetNode.Type,
-		}
 		payload["updatePolicy"] = []string{
 			"Replace the target node's previous semantic content with a completely new concept.",
 			"Do not reuse the previous title, identity, or content.",
@@ -573,26 +568,38 @@ func (s loopState) promptPayload() map[string]any {
 		}
 		return payload
 	}
-	payload["targetNode"] = targetNode
 	payload["updatePolicy"] = []string{
-		"Use targetNode as the authoritative existing baseline.",
+		"Read targetNode before using it as the authoritative existing baseline.",
 		"Preserve details not explicitly changed by the request.",
 		"Return the complete merged title and content for full-field replacement.",
 	}
 	return payload
 }
 
-func (s loopState) nodeUpdateContext() (NodeSnapshot, []NodeSnapshot) {
-	var targetNode NodeSnapshot
-	referenceNodes := make([]NodeSnapshot, 0, len(s.snapshot.Nodes))
-	for _, node := range s.snapshot.Nodes {
-		if node.ID == s.input.TargetNodeID {
-			targetNode = node
+func (s loopState) priorityContextNodeIDs() []string {
+	if !IsNodeUpdateTarget(s.input.Target) {
+		return nil
+	}
+	availableNodeIDs := make(map[string]struct{}, len(s.input.ContextNodes))
+	for _, node := range s.input.ContextNodes {
+		availableNodeIDs[node.ID] = struct{}{}
+	}
+	priorityNodeIDs := make([]string, 0, len(s.input.ContextNodeIDs))
+	seenNodeIDs := make(map[string]struct{}, len(s.input.ContextNodeIDs))
+	for _, nodeID := range s.input.ContextNodeIDs {
+		if nodeID == s.input.TargetNodeID {
 			continue
 		}
-		referenceNodes = append(referenceNodes, node)
+		if _, available := availableNodeIDs[nodeID]; !available {
+			continue
+		}
+		if _, seen := seenNodeIDs[nodeID]; seen {
+			continue
+		}
+		seenNodeIDs[nodeID] = struct{}{}
+		priorityNodeIDs = append(priorityNodeIDs, nodeID)
 	}
-	return targetNode, referenceNodes
+	return priorityNodeIDs
 }
 
 func nodeUpdateSystemPrompt(skillInstructions, mode string) string {
@@ -600,7 +607,11 @@ func nodeUpdateSystemPrompt(skillInstructions, mode string) string {
 	if mode == "replace" {
 		contract = nodeUpdateReplaceContract
 	}
-	return strings.TrimSpace(skillInstructions) + "\n\n" + contract
+	return canvasContextSystemPrompt(skillInstructions) + "\n\n" + contract
+}
+
+func canvasContextSystemPrompt(skillInstructions string) string {
+	return strings.TrimSpace(skillInstructions) + "\n\n" + canvasContextAccessContract
 }
 
 func nodeUpdateMode(input RunInput) string {
@@ -683,13 +694,4 @@ func summarize(value any) string {
 		return string(encoded[:maxSummaryBytes]) + "..."
 	}
 	return string(encoded)
-}
-
-type PromptOnlyContextReader struct{}
-
-func (PromptOnlyContextReader) BuildSnapshot(_ context.Context, workID string, nodeIDs []string) (ContextSnapshot, error) {
-	if len(nodeIDs) > 0 {
-		return ContextSnapshot{}, ErrCanvasUnavailable
-	}
-	return ContextSnapshot{ID: "prompt-only", WorkID: workID}, nil
 }

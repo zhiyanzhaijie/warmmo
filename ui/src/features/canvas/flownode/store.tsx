@@ -8,6 +8,15 @@ import type { AgentEvent, CanvasNodePosition } from '@/types/canvas'
 
 export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed' | 'failed'
 export type NodeAgentOperation = 'update' | 'derive'
+export type CanvasInteractionMode =
+  | { kind: 'editing' }
+  | { kind: 'context-node-picker'; targetNodeId: string }
+
+const editingCanvasInteractionMode: CanvasInteractionMode = { kind: 'editing' }
+
+export function getContextNodePickerTargetNodeId(mode: CanvasInteractionMode) {
+  return mode.kind === 'context-node-picker' ? mode.targetNodeId : null
+}
 
 export interface NodeAgentRunState {
   runId: string | null
@@ -34,6 +43,8 @@ interface FlowNodeStoreActions {
   attachNodeAgentRun: (nodeId: string, runId: string) => void
   appendNodeAgentEvent: (nodeId: string, event: AgentEvent) => void
   failNodeAgentRun: (nodeId: string, message: string) => void
+  startContextNodePicker: (targetNodeId: string) => void
+  cancelContextNodePicker: () => void
 }
 
 export interface FlowNodeStore {
@@ -45,6 +56,7 @@ export interface FlowNodeStore {
   previewNodeId: string | null
   detailLevel: FlowNodeDetailLevel
   pendingFocusSourceNodeId: string | null
+  canvasInteractionMode: CanvasInteractionMode
   nodeAgentRuns: Record<string, NodeAgentRunState>
   actions: FlowNodeStoreActions
 }
@@ -54,6 +66,17 @@ export type FlowNodeStoreApi = StoreApi<FlowNodeStore>
 export function createFlowNodeStore(): FlowNodeStoreApi {
   return createStore<FlowNodeStore>()((set) => {
     const actions: FlowNodeStoreActions = {
+      startContextNodePicker: (targetNodeId) => {
+        set((state) => state.canvasInteractionMode.kind === 'context-node-picker' &&
+          state.canvasInteractionMode.targetNodeId === targetNodeId
+          ? state
+          : { canvasInteractionMode: { kind: 'context-node-picker', targetNodeId } })
+      },
+      cancelContextNodePicker: () => {
+        set((state) => state.canvasInteractionMode.kind === 'editing'
+          ? state
+          : { canvasInteractionMode: editingCanvasInteractionMode })
+      },
       syncNodes: (incomingNodes) => {
         set((state) => {
           let nodes = mergeRemoteNodes(state.nodes, incomingNodes)
@@ -213,6 +236,7 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       previewNodeId: null,
       detailLevel: 'full',
       pendingFocusSourceNodeId: null,
+      canvasInteractionMode: editingCanvasInteractionMode,
       nodeAgentRuns: {},
       actions,
     }

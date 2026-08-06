@@ -37,6 +37,7 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	input.TargetNodeID = strings.TrimSpace(input.TargetNodeID)
 	input.ProviderID = strings.TrimSpace(input.ProviderID)
 	input.ModelID = strings.TrimSpace(input.ModelID)
+	input.ContextNodeIDs = uniqueNodeIDs(input.ContextNodeIDs)
 	if input.WorkID == "" || input.Prompt == "" || input.Target == "" || input.ProviderID == "" || input.ModelID == "" {
 		return agent.Run{}, fmt.Errorf("%w: workId, prompt, target, providerId and modelId are required", ErrInvalidAgentRun)
 	}
@@ -52,20 +53,26 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	if input.Target == agent.TargetNodeUpdate && !containsNodeID(input.ContextNodeIDs, input.TargetNodeID) {
 		return agent.Run{}, fmt.Errorf("%w: targetNodeId must be included in contextNodeIds", ErrInvalidAgentRun)
 	}
+	nodeKind, targetNodeRevision, err := s.repository.GetCanvasNodeMetadata(input.WorkID, input.TargetNodeID)
+	if err != nil {
+		return agent.Run{}, err
+	}
+	input.TargetNodeType = string(nodeKind)
+	input.TargetNodeRevision = targetNodeRevision
 	if input.Target == agent.TargetNodeUpdate {
-		nodeKind, err := s.repository.GetCanvasNodeKind(input.WorkID, input.TargetNodeID)
-		if err != nil {
-			return agent.Run{}, err
-		}
 		if !canvas.IsValidNodeKind(nodeKind) {
 			return agent.Run{}, fmt.Errorf("%w: target node kind %q is not supported", ErrInvalidAgentRun, nodeKind)
 		}
-		input.Target = agent.NodeUpdateTarget(string(nodeKind))
-	} else {
-		nodeKind, err := s.repository.GetCanvasNodeKind(input.WorkID, input.TargetNodeID)
+		attachmentNodes, err := s.repository.GetNodeAttachments(input.WorkID, input.TargetNodeID)
 		if err != nil {
 			return agent.Run{}, err
 		}
+		if !hasOnlyAttachmentPriorityNodes(input.ContextNodeIDs, input.TargetNodeID, attachmentNodes) {
+			return agent.Run{}, fmt.Errorf("%w: contextNodeIds must be attachments of targetNodeId", ErrInvalidAgentRun)
+		}
+		input.ContextNodes = attachmentNodes
+		input.Target = agent.NodeUpdateTarget(string(nodeKind))
+	} else {
 		expectedKind := canvas.NodeKindChapterOutline
 		if input.Target == agent.TargetChapterSection {
 			expectedKind = canvas.NodeKindSectionOutline
@@ -91,6 +98,14 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 			}
 			input.ContextNodeIDs = contextNodeIDs
 		}
+		contextNodes, err := s.repository.GetNodeReferences(
+			input.WorkID,
+			withoutNodeID(input.ContextNodeIDs, input.TargetNodeID),
+		)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		input.ContextNodes = contextNodes
 	}
 	input.RunID = uuid.NewString()
 	run, err := s.repository.CreateRun(input)
@@ -133,12 +148,12 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 	if runID == "" || approvalEventID == "" || answer == "" {
 		return agent.Run{}, fmt.Errorf("%w: approvalEventId and answer are required", ErrInvalidAgentRun)
 	}
-	if err := s.repository.QueueResponse(runID, approvalEventID, answer); err != nil {
-		return agent.Run{}, err
-	}
 	run, err := s.repository.GetRun(runID)
 	if err != nil {
 		return agent.Run{}, err
+	}
+	if run.Status != agent.RunStatusWaitingInput {
+		return agent.Run{}, agent.ErrRunNotWaitingInput
 	}
 	responses, err := s.repository.ListUserResponses(runID)
 	if err != nil {
@@ -147,8 +162,39 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 	input := agent.RunInput{
 		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
 		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
-		ContextNodeIDs: append([]string(nil), run.ContextNodeIDs...), UserResponses: responses,
+		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs),
 	}
+	nodeKind, targetNodeRevision, err := s.repository.GetCanvasNodeMetadata(run.WorkID, run.TargetNodeID)
+	if err != nil {
+		return agent.Run{}, err
+	}
+	input.TargetNodeType = string(nodeKind)
+	input.TargetNodeRevision = targetNodeRevision
+	if agent.IsNodeUpdateTarget(run.Target) || run.Target == agent.TargetNodeUpdate {
+		input.Target = agent.NodeUpdateTarget(string(nodeKind))
+		attachmentNodes, err := s.repository.GetNodeAttachments(run.WorkID, run.TargetNodeID)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		input.ContextNodes = attachmentNodes
+		input.ContextNodeIDs = attachmentPriorityContextNodeIDs(input.ContextNodeIDs, run.TargetNodeID, attachmentNodes)
+	} else {
+		contextNodes, err := s.repository.GetNodeReferences(
+			run.WorkID,
+			withoutNodeID(run.ContextNodeIDs, run.TargetNodeID),
+		)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		input.ContextNodes = contextNodes
+	}
+	queuedResponse, err := s.repository.QueueResponse(runID, approvalEventID, answer)
+	if err != nil {
+		return agent.Run{}, err
+	}
+	input.UserResponses = append(responses, queuedResponse)
+	run.Status = agent.RunStatusQueued
+	run.ErrorMessage = ""
 	go s.execute(run, input, true)
 	return run, nil
 }
@@ -221,6 +267,77 @@ func containsNodeID(nodeIDs []string, targetNodeID string) bool {
 		}
 	}
 	return false
+}
+
+func uniqueNodeIDs(nodeIDs []string) []string {
+	seen := make(map[string]struct{}, len(nodeIDs))
+	result := make([]string, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID == "" {
+			continue
+		}
+		if _, exists := seen[nodeID]; exists {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		result = append(result, nodeID)
+	}
+	return result
+}
+
+func hasOnlyAttachmentPriorityNodes(
+	contextNodeIDs []string,
+	targetNodeID string,
+	attachments []agent.NodeReference,
+) bool {
+	attachmentNodeIDs := make(map[string]struct{}, len(attachments))
+	for _, attachment := range attachments {
+		attachmentNodeIDs[attachment.ID] = struct{}{}
+	}
+	for _, nodeID := range contextNodeIDs {
+		if nodeID == targetNodeID {
+			continue
+		}
+		if _, exists := attachmentNodeIDs[nodeID]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func attachmentPriorityContextNodeIDs(
+	contextNodeIDs []string,
+	targetNodeID string,
+	attachments []agent.NodeReference,
+) []string {
+	attachmentNodeIDs := make(map[string]struct{}, len(attachments))
+	for _, attachment := range attachments {
+		attachmentNodeIDs[attachment.ID] = struct{}{}
+	}
+	priorityNodeIDs := make([]string, 0, len(contextNodeIDs)+1)
+	if targetNodeID != "" {
+		priorityNodeIDs = append(priorityNodeIDs, targetNodeID)
+	}
+	for _, nodeID := range uniqueNodeIDs(contextNodeIDs) {
+		if nodeID == targetNodeID {
+			continue
+		}
+		if _, isAttachment := attachmentNodeIDs[nodeID]; isAttachment {
+			priorityNodeIDs = append(priorityNodeIDs, nodeID)
+		}
+	}
+	return priorityNodeIDs
+}
+
+func withoutNodeID(nodeIDs []string, excludedNodeID string) []string {
+	result := make([]string, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if nodeID != excludedNodeID {
+			result = append(result, nodeID)
+		}
+	}
+	return result
 }
 
 func publicAgentError(err error) string {

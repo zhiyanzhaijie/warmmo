@@ -83,6 +83,67 @@ INSERT INTO agent_runs (
 	assertTableCount(t, providerRepository, `SELECT COUNT(*) FROM canvas_edges WHERE work_id = ?`, 0, workID)
 }
 
+func TestGetNodeAttachmentsReturnsDirectIncomingNodes(t *testing.T) {
+	t.Parallel()
+
+	providerRepository, err := NewProviderRepository(t.TempDir())
+	if err != nil {
+		t.Fatalf("create provider repository: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := providerRepository.Close(); err != nil {
+			t.Errorf("close provider repository: %v", err)
+		}
+	})
+
+	const workID = "work-attachments"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, node := range []struct {
+		id, kind, title string
+	}{
+		{id: "target", kind: string(canvas.NodeKindCharacter), title: "目标角色"},
+		{id: "world", kind: string(canvas.NodeKindWorld), title: "世界观"},
+		{id: "location", kind: string(canvas.NodeKindLocation), title: "宴会厅"},
+		{id: "child", kind: string(canvas.NodeKindEvent), title: "后续事件"},
+	} {
+		if _, err := providerRepository.database.Exec(`
+INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
+VALUES (?, ?, 1, ?, ?, '', 0, 0, ?, ?)`, node.id, workID, node.kind, node.title, now, now); err != nil {
+			t.Fatalf("insert canvas node: %v", err)
+		}
+	}
+	for _, edge := range []struct {
+		id, sourceNodeID, targetNodeID string
+	}{
+		{id: "edge-world", sourceNodeID: "world", targetNodeID: "target"},
+		{id: "edge-location", sourceNodeID: "location", targetNodeID: "target"},
+		{id: "edge-child", sourceNodeID: "target", targetNodeID: "child"},
+	} {
+		if _, err := providerRepository.database.Exec(`
+INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
+VALUES (?, ?, ?, ?, 'generated_from', ?)`, edge.id, workID, edge.sourceNodeID, edge.targetNodeID, now); err != nil {
+			t.Fatalf("insert canvas edge: %v", err)
+		}
+	}
+
+	attachments, err := NewAgentRepository(providerRepository).GetNodeAttachments(workID, "target")
+	if err != nil {
+		t.Fatalf("get node attachments: %v", err)
+	}
+	want := []agent.NodeReference{
+		{ID: "location", Type: string(canvas.NodeKindLocation)},
+		{ID: "world", Type: string(canvas.NodeKindWorld)},
+	}
+	if len(attachments) != len(want) {
+		t.Fatalf("attachments = %+v, want %+v", attachments, want)
+	}
+	for index := range want {
+		if attachments[index] != want[index] {
+			t.Fatalf("attachments = %+v, want %+v", attachments, want)
+		}
+	}
+}
+
 func TestCompleteChapterSectionConnectsInheritedWritingContext(t *testing.T) {
 	t.Parallel()
 
@@ -317,8 +378,12 @@ func TestAgentRunWaitsForResponseAndResumes(t *testing.T) {
 	if waitingRun.Status != agent.RunStatusWaitingInput || waitingRun.TargetNodeID != "character-1" {
 		t.Fatalf("unexpected waiting run: %+v", waitingRun)
 	}
-	if err := repository.QueueResponse(run.ID, approval.ID, "亦敌亦友"); err != nil {
+	queuedResponse, err := repository.QueueResponse(run.ID, approval.ID, "亦敌亦友")
+	if err != nil {
 		t.Fatalf("queue agent response: %v", err)
+	}
+	if queuedResponse.Question != "新角色与男主是什么关系？" || queuedResponse.Answer != "亦敌亦友" {
+		t.Fatalf("unexpected queued response: %+v", queuedResponse)
 	}
 	responses, err := repository.ListUserResponses(run.ID)
 	if err != nil {

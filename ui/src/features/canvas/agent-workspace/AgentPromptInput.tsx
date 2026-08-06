@@ -1,6 +1,6 @@
 import type { ChatStatus } from 'ai'
 import { Paperclip } from 'lucide-react'
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react'
 
 import {
   Confirmation,
@@ -16,15 +16,19 @@ import {
   PromptInputButton,
   PromptInputFooter,
   PromptInputHeader,
-  type PromptInputMessage,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
 } from '@/components/ai-elements/prompt-input'
 import { ModelSelector } from '@/components/models/ModelSelector'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import {
+  CanvasPromptEditor,
+  type CanvasPromptEditorHandle,
+  type CanvasPromptValue,
+} from '@/features/canvas/agent-workspace/CanvasPromptEditor'
 import { CanvasContextNodes } from '@/features/canvas/agent-workspace/ContextNodes'
-import type { StoryFlowNode } from '@/features/canvas/flownode/types'
+import type { CanvasContextNode } from '@/features/canvas/agent-workspace/types'
 import type { EnabledModel } from '@/types/provider'
 
 const preserveTextOnlyPaste = () => undefined
@@ -37,47 +41,75 @@ export interface PendingAgentInput {
   lastSequence: number
 }
 
+export interface CanvasAgentPromptSubmission {
+  contextNodeIds: string[]
+  prompt: string
+}
+
 interface CanvasAgentPromptInputProps {
+  attachmentNodeIds: ReadonlySet<string>
+  attachmentNodes: CanvasContextNode[]
+  availableContextNodes: CanvasContextNode[]
   canSubmit: boolean
-  contextNodes: StoryFlowNode[]
   hasError: boolean
+  isContextPicking: boolean
   isStreaming: boolean
   isSubmitting: boolean
   model: EnabledModel | null
   nodeKind: string
+  pendingAttachmentNodeIds: ReadonlySet<string>
   pendingInput: PendingAgentInput | null
   prompt: string
   isResponding: boolean
+  onContextNodeRemove: (nodeId: string) => void
+  onContextPickerToggle: () => void
   onModelChange: (model: EnabledModel | null) => void
   onPromptChange: (prompt: string) => void
+  onPriorityContextNodeAdd: (nodeId: string) => void
   onRespond: (answer: string) => void
-  onSubmit: (prompt: string) => void
+  onSubmit: (input: CanvasAgentPromptSubmission) => void
 }
 
 export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
+  attachmentNodeIds,
+  attachmentNodes,
+  availableContextNodes,
   canSubmit,
-  contextNodes,
   hasError,
+  isContextPicking,
   isStreaming,
   isSubmitting,
   model,
   nodeKind,
+  pendingAttachmentNodeIds,
   pendingInput,
   prompt,
   isResponding,
+  onContextNodeRemove,
+  onContextPickerToggle,
   onModelChange,
   onPromptChange,
+  onPriorityContextNodeAdd,
   onRespond,
   onSubmit,
 }: CanvasAgentPromptInputProps) {
   const [answer, setAnswer] = useState('')
   const [selectedOption, setSelectedOption] = useState('')
+  const promptDraftRef = useRef<CanvasPromptValue>({ contextNodeIds: [], displayText: prompt, requestText: prompt })
+  const promptEditorRef = useRef<CanvasPromptEditorHandle>(null)
   useEffect(() => {
     setAnswer('')
     setSelectedOption('')
   }, [pendingInput?.approvalEventId])
 
   const isAnswerMode = pendingInput !== null
+  useEffect(() => {
+    for (const nodeId of promptDraftRef.current.contextNodeIds) {
+      if (attachmentNodeIds.has(nodeId) || pendingAttachmentNodeIds.has(nodeId)) continue
+      promptEditorRef.current?.removeContextNode(nodeId)
+    }
+  }, [attachmentNodeIds, pendingAttachmentNodeIds])
+
   const responseText = [selectedOption, answer.trim()].filter(Boolean).join('\n')
   const status: ChatStatus = isSubmitting || isResponding
     ? 'submitted'
@@ -86,27 +118,48 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
       : hasError
         ? 'error'
         : 'ready'
-  const submitPrompt = (message: PromptInputMessage) => {
+  const submitPrompt = () => {
     if (pendingInput !== null) {
       if (responseText === '' || isResponding) return
       onRespond(responseText)
       return
     }
-    const nextPrompt = message.text.trim()
+    const nextPrompt = promptDraftRef.current.requestText.trim()
     if (!canSubmit || nextPrompt === '') return
-    onSubmit(nextPrompt)
+    onSubmit({
+      contextNodeIds: promptDraftRef.current.contextNodeIds.filter((nodeId) => attachmentNodeIds.has(nodeId)),
+      prompt: nextPrompt,
+    })
+  }
+
+  const handlePromptChange = (value: CanvasPromptValue) => {
+    const previousContextNodeIds = new Set(promptDraftRef.current.contextNodeIds)
+    promptDraftRef.current = value
+    for (const nodeId of value.contextNodeIds) {
+      if (!previousContextNodeIds.has(nodeId)) onPriorityContextNodeAdd(nodeId)
+    }
+    onPromptChange(value.displayText)
   }
 
   return (
     <TooltipProvider>
       <PromptInput
-        className="[&_[data-slot=input-group]]:overflow-hidden [&_[data-slot=input-group]]:rounded-sm [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none"
+        className="[&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-sm [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none"
         data-node-kind={nodeKind}
         onSubmit={submitPrompt}
       >
         <PromptInputHeader className={isAnswerMode ? 'p-space-sm pb-0' : 'p-0'}>
           {pendingInput === null ? (
-            <CanvasContextNodes nodes={contextNodes} />
+            <CanvasContextNodes
+              disabled={isSubmitting || isStreaming}
+              isPicking={isContextPicking}
+              nodes={attachmentNodes}
+              onPickerToggle={onContextPickerToggle}
+              onRemove={(nodeId) => {
+                promptEditorRef.current?.removeContextNode(nodeId)
+                onContextNodeRemove(nodeId)
+              }}
+            />
           ) : (
             <Confirmation
               approval={{ id: pendingInput.approvalEventId }}
@@ -138,15 +191,24 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
         </PromptInputHeader>
 
         <PromptInputBody>
-          <PromptInputTextarea
-            className="min-h-28 max-h-48 px-space-md py-space-sm text-body-md leading-6 text-ink placeholder:text-faint"
-            onChange={(event) => isAnswerMode
-              ? setAnswer(event.currentTarget.value)
-              : onPromptChange(event.currentTarget.value)}
-            onPaste={preserveTextOnlyPaste}
-            placeholder={isAnswerMode ? '补充你的回答（可选）' : '告诉这个节点接下来要做什么'}
-            value={isAnswerMode ? answer : prompt}
-          />
+          {isAnswerMode ? (
+            <PromptInputTextarea
+              className="min-h-28 max-h-48 px-space-md py-space-sm text-body-md leading-6 text-ink placeholder:text-faint"
+              onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setAnswer(event.currentTarget.value)}
+              onPaste={preserveTextOnlyPaste}
+              placeholder="补充你的回答（可选）"
+              value={answer}
+            />
+          ) : (
+            <CanvasPromptEditor
+              ref={promptEditorRef}
+              availableContextNodes={availableContextNodes}
+              disabled={isSubmitting || isStreaming}
+              initialText={prompt}
+              placeholder="告诉这个节点接下来要做什么"
+              onChange={handlePromptChange}
+            />
+          )}
         </PromptInputBody>
 
         <PromptInputFooter className="min-h-11 flex-wrap gap-space-xs px-space-sm pb-space-sm">

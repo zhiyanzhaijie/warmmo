@@ -69,7 +69,7 @@ func run(logger *slog.Logger) error {
 		canvas.NewGetNodesTool(canvasRepository),
 		canvas.NewCreateCandidateTool(canvasRepository),
 	)
-	agentLoop := agent.NewLoop(canvas.NewContextReader(canvasRepository), skillCatalog, toolRegistry, agent.DefaultBudget())
+	agentLoop := agent.NewLoop(skillCatalog, toolRegistry, agent.DefaultBudget())
 	agentEngine := adkadapter.NewEngine(agentLoop, func(_ context.Context, providerID, modelID string) (adkadapter.ModelConfig, error) {
 		baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
 		if err != nil {

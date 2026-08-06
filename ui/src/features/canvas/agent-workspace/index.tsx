@@ -1,19 +1,39 @@
 import { NodeToolbar, Position, useStore } from '@xyflow/react'
-import { memo, useCallback, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { useCreateAgentRun, useRespondToAgentRun } from '@/apis/canvas-apis'
-import { CanvasAgentPromptInput, type PendingAgentInput } from '@/features/canvas/agent-workspace/AgentPromptInput'
+import {
+  useCreateAgentRun,
+  useCreateCanvasEdge,
+  useDeleteCanvasEdges,
+  useRespondToAgentRun,
+} from '@/apis/canvas-apis'
+import {
+  CanvasAgentPromptInput,
+  type CanvasAgentPromptSubmission,
+  type PendingAgentInput,
+} from '@/features/canvas/agent-workspace/AgentPromptInput'
 import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
-import { type NodeAgentRunState, useFlowNodeStore } from '@/features/canvas/flownode/store'
+import {
+  getContextNodePickerTargetNodeId,
+  type NodeAgentRunState,
+  useFlowNodeStore,
+} from '@/features/canvas/flownode/store'
+import type { CanvasEdge, CanvasNode } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
+const emptyContextNodeIdSet: ReadonlySet<string> = new Set()
+
 interface CanvasAgentWorkspaceProps {
+  canvasEdges: CanvasEdge[]
+  canvasNodes: CanvasNode[]
   workId: string
   model: EnabledModel | null
   onModelChange: (model: EnabledModel | null) => void
 }
 
 export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
+  canvasEdges,
+  canvasNodes,
   workId,
   model,
   onModelChange,
@@ -23,13 +43,9 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
   const toolbarSourceNodeId = useFlowNodeStore((state) => state.toolbarSourceNodeId)
   const flowNodes = useFlowNodeStore((state) => state.nodes)
-  const flowEdges = useFlowNodeStore((state) => state.edges)
+  const canvasInteractionMode = useFlowNodeStore((state) => state.canvasInteractionMode)
+  const contextNodePickerTargetNodeId = getContextNodePickerTargetNodeId(canvasInteractionMode)
   const targetNodeId = selectedNodeIds[0] ?? null
-  const contextNodeIds = useMemo(() => targetNodeId === null
-    ? []
-    : [...new Set(flowEdges.flatMap((edge) =>
-        edge.target === targetNodeId && edge.data?.kind === 'generated_from' ? [edge.source] : []))],
-  [flowEdges, targetNodeId])
   const sourceNodeById = useMemo(() => new Map(flowNodes.flatMap((node) =>
     node.data.sourceType === 'node' ? [[node.data.sourceId, node] as const] : [])), [flowNodes])
   const targetNode = targetNodeId === null ? undefined : sourceNodeById.get(targetNodeId)
@@ -37,29 +53,124 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
   const hasBlockingAgentRun = targetAgentRun?.status === 'submitting' ||
     targetAgentRun?.status === 'running' || targetAgentRun?.status === 'waiting_input'
   const pendingInput = useMemo(() => getPendingAgentInput(targetAgentRun), [targetAgentRun])
-  const contextNodes = useMemo(() => contextNodeIds.flatMap((nodeId) => {
-    const node = sourceNodeById.get(nodeId)
+  const canvasNodeById = useMemo(() => new Map(canvasNodes.map((node) => [node.id, node])), [canvasNodes])
+  const attachmentNodeIds = useMemo(() => {
+    if (targetNodeId === null) return []
+    const nodeIds = new Set<string>()
+    for (const edge of canvasEdges) {
+      if (edge.kind === 'generated_from' && edge.targetNodeId === targetNodeId) nodeIds.add(edge.sourceNodeId)
+    }
+    return [...nodeIds]
+  }, [canvasEdges, targetNodeId])
+  const attachmentNodeIdSet = useMemo(() => new Set(attachmentNodeIds), [attachmentNodeIds])
+  const attachmentNodes = useMemo(() => attachmentNodeIds.flatMap((nodeId) => {
+    const node = canvasNodeById.get(nodeId)
     return node === undefined ? [] : [node]
-  }), [contextNodeIds, sourceNodeById])
+  }), [attachmentNodeIds, canvasNodeById])
+  const availableContextNodes = useMemo(() =>
+    canvasNodes.filter((node) => node.id !== targetNodeId),
+  [canvasNodes, targetNodeId])
   const isNodeDragging = useStore((state) => state.nodes.some((node) => node.dragging))
   const [prompt, setPrompt] = useState('让主角在宴会上第一次发现记忆能力的代价。')
+  const [pendingAttachmentEdgeKeys, setPendingAttachmentEdgeKeys] = useState<ReadonlySet<string>>(() => new Set())
+  const pendingAttachmentEdgeKeysRef = useRef<ReadonlySet<string>>(new Set())
   const beginNodeAgentRun = useFlowNodeStore((state) => state.actions.beginNodeAgentRun)
+  const cancelContextNodePicker = useFlowNodeStore((state) => state.actions.cancelContextNodePicker)
   const failNodeAgentRun = useFlowNodeStore((state) => state.actions.failNodeAgentRun)
+  const startContextNodePicker = useFlowNodeStore((state) => state.actions.startContextNodePicker)
   const { streamRun } = useAgentRunStream(workId)
+  const { mutate: deleteEdges } = useDeleteCanvasEdges(workId)
+  const { mutate: createContextEdge } = useCreateCanvasEdge(workId)
   const isCreatingTargetRun = createRun.isPending && createRun.variables?.targetNodeId === targetNodeId
-  const canRun = model !== null && prompt.trim() !== '' && targetNodeId !== null && !hasBlockingAgentRun
-  const runAgent = useCallback((nextPrompt: string) => {
+  const isContextPicking = canvasInteractionMode.kind === 'context-node-picker' &&
+    canvasInteractionMode.targetNodeId === targetNodeId
+  const pendingAttachmentNodeIds = useMemo(() => {
+    if (targetNodeId === null) return emptyContextNodeIdSet
+    const prefix = `${targetNodeId}\u0000`
+    const nodeIds = new Set<string>()
+    for (const key of pendingAttachmentEdgeKeys) {
+      if (key.startsWith(prefix)) nodeIds.add(key.slice(prefix.length))
+    }
+    return nodeIds
+  }, [pendingAttachmentEdgeKeys, targetNodeId])
+  const hasPendingAttachment = pendingAttachmentNodeIds.size > 0
+  const canRun = model !== null && prompt.trim() !== '' && targetNodeId !== null && !hasBlockingAgentRun && !hasPendingAttachment
+
+  useEffect(() => {
+    if (targetNodeId === null || attachmentNodeIds.length === 0) return
+    setPendingAttachmentEdgeKeys((current) => {
+      let next: Set<string> | null = null
+      for (const nodeId of attachmentNodeIds) {
+        const key = getAttachmentEdgeKey(targetNodeId, nodeId)
+        if (!current.has(key)) continue
+        if (next === null) next = new Set(current)
+        next.delete(key)
+      }
+      if (next === null) return current
+      pendingAttachmentEdgeKeysRef.current = next
+      return next
+    })
+  }, [attachmentNodeIds, targetNodeId])
+
+  useEffect(() => {
+    if (contextNodePickerTargetNodeId !== null && (
+      contextNodePickerTargetNodeId !== targetNodeId || hasBlockingAgentRun
+    )) cancelContextNodePicker()
+  }, [cancelContextNodePicker, contextNodePickerTargetNodeId, hasBlockingAgentRun, targetNodeId])
+
+  const toggleContextNodePicker = useCallback(() => {
+    if (targetNodeId === null) return
+    if (contextNodePickerTargetNodeId === targetNodeId) {
+      cancelContextNodePicker()
+      return
+    }
+    startContextNodePicker(targetNodeId)
+  }, [cancelContextNodePicker, contextNodePickerTargetNodeId, startContextNodePicker, targetNodeId])
+
+  const removeContextNode = useCallback((nodeId: string) => {
+    if (targetNodeId === null) return
+    const edgeIds = canvasEdges.flatMap((edge) =>
+      edge.sourceNodeId === nodeId && edge.targetNodeId === targetNodeId && edge.kind === 'generated_from'
+        ? [edge.id]
+        : [])
+    if (edgeIds.length > 0) deleteEdges(edgeIds)
+  }, [canvasEdges, deleteEdges, targetNodeId])
+
+  const addPriorityContextNode = useCallback((nodeId: string) => {
+    if (targetNodeId === null || nodeId === targetNodeId || attachmentNodeIdSet.has(nodeId)) return
+    const key = getAttachmentEdgeKey(targetNodeId, nodeId)
+    if (pendingAttachmentEdgeKeysRef.current.has(key)) return
+
+    const nextPendingAttachmentEdgeKeys = new Set(pendingAttachmentEdgeKeysRef.current)
+    nextPendingAttachmentEdgeKeys.add(key)
+    pendingAttachmentEdgeKeysRef.current = nextPendingAttachmentEdgeKeys
+    setPendingAttachmentEdgeKeys(nextPendingAttachmentEdgeKeys)
+    createContextEdge({ sourceNodeId: nodeId, targetNodeId }, {
+      onError: () => {
+        if (!pendingAttachmentEdgeKeysRef.current.has(key)) return
+        const next = new Set(pendingAttachmentEdgeKeysRef.current)
+        next.delete(key)
+        pendingAttachmentEdgeKeysRef.current = next
+        setPendingAttachmentEdgeKeys(next)
+      },
+    })
+  }, [attachmentNodeIdSet, createContextEdge, targetNodeId])
+
+  const runAgent = useCallback((input: CanvasAgentPromptSubmission) => {
     if (model === null || targetNodeId === null || !canRun || isCreatingTargetRun) return
-    const runContextNodeIds = [...new Set([...contextNodeIds, targetNodeId])]
+    const runContextNodeIds = [...new Set([
+      targetNodeId,
+      ...input.contextNodeIds.filter((nodeId) => attachmentNodeIdSet.has(nodeId)),
+    ])]
     beginNodeAgentRun(targetNodeId)
-    createRun.mutate({ prompt: nextPrompt, targetNodeId, contextNodeIds: runContextNodeIds, model }, {
+    createRun.mutate({ prompt: input.prompt, targetNodeId, contextNodeIds: runContextNodeIds, model }, {
       onSuccess: (run) => streamRun(run.id, targetNodeId),
       onError: (error) => failNodeAgentRun(
         targetNodeId,
         error instanceof Error ? error.message : '无法创建 Agent Run',
       ),
     })
-  }, [beginNodeAgentRun, canRun, contextNodeIds, createRun, failNodeAgentRun, isCreatingTargetRun, model, streamRun, targetNodeId])
+  }, [attachmentNodeIdSet, beginNodeAgentRun, canRun, createRun, failNodeAgentRun, isCreatingTargetRun, model, streamRun, targetNodeId])
   const respond = useCallback((answer: string) => {
     if (pendingInput === null || targetNodeId === null || respondToRun.isPending) return
     respondToRun.mutate({
@@ -81,21 +192,29 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     >
       <section
         data-node-kind={targetNode.data.kind}
-        className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-hidden rounded-sm bg-canvas-elevated shadow-floating"
+        className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-visible rounded-sm bg-canvas-elevated shadow-floating"
       >
         <CanvasAgentPromptInput
+          key={targetNodeId}
+          attachmentNodeIds={attachmentNodeIdSet}
+          attachmentNodes={attachmentNodes}
+          availableContextNodes={availableContextNodes}
           canSubmit={canRun && !isCreatingTargetRun}
-          contextNodes={contextNodes}
           hasError={targetAgentRun?.status === 'failed' || respondToRun.isError}
+          isContextPicking={isContextPicking}
           isStreaming={targetAgentRun?.status === 'running'}
           isSubmitting={isCreatingTargetRun || targetAgentRun?.status === 'submitting'}
           isResponding={respondToRun.isPending}
           model={model}
           nodeKind={targetNode.data.kind}
+          pendingAttachmentNodeIds={pendingAttachmentNodeIds}
           pendingInput={pendingInput}
           prompt={prompt}
+          onContextNodeRemove={removeContextNode}
+          onContextPickerToggle={toggleContextNodePicker}
           onModelChange={onModelChange}
           onPromptChange={setPrompt}
+          onPriorityContextNodeAdd={addPriorityContextNode}
           onRespond={respond}
           onSubmit={runAgent}
         />
@@ -103,6 +222,10 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     </NodeToolbar>
   ) : null
 })
+
+function getAttachmentEdgeKey(targetNodeId: string, nodeId: string) {
+  return `${targetNodeId}\u0000${nodeId}`
+}
 
 function getPendingAgentInput(run: NodeAgentRunState | undefined): PendingAgentInput | null {
   if (run?.status !== 'waiting_input' || run.runId === null) return null

@@ -135,15 +135,18 @@ type Candidate struct {
 }
 
 type RunInput struct {
-	RunID          string
-	WorkID         string
-	Prompt         string
-	Target         string
-	TargetNodeID   string
-	ProviderID     string
-	ModelID        string
-	ContextNodeIDs []string
-	UserResponses  []UserResponse
+	RunID              string
+	WorkID             string
+	Prompt             string
+	Target             string
+	TargetNodeID       string
+	TargetNodeType     string
+	TargetNodeRevision int64
+	ProviderID         string
+	ModelID            string
+	ContextNodeIDs     []string
+	ContextNodes       []NodeReference
+	UserResponses      []UserResponse
 }
 
 type UserResponse struct {
@@ -161,18 +164,11 @@ type RunResult struct {
 	ExpectedRevision int64
 }
 
-type NodeSnapshot struct {
-	ID       string `json:"id"`
-	Revision string `json:"revision"`
-	Type     string `json:"type"`
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-}
-
-type ContextSnapshot struct {
-	ID     string         `json:"id"`
-	WorkID string         `json:"workId"`
-	Nodes  []NodeSnapshot `json:"nodes"`
+// NodeReference is intentionally limited to routing metadata. Canvas content
+// is read on demand through canvas.get_nodes.
+type NodeReference struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
 }
 
 type ModelRequest struct {
@@ -190,10 +186,6 @@ type ModelUsage struct {
 type TextModel interface {
 	Complete(context.Context, ModelRequest) (string, ModelUsage, error)
 	Stream(context.Context, ModelRequest, func(string) error) (ModelUsage, error)
-}
-
-type ContextReader interface {
-	BuildSnapshot(context.Context, string, []string) (ContextSnapshot, error)
 }
 
 type Emitter func(EventType, any) error

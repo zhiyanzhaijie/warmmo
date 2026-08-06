@@ -116,7 +116,13 @@ function CanvasWorkspace({ workId }: { workId: string }) {
       />
       <CanvasHeader workId={workId} />
       <CanvasNodeCreator workId={workId} />
-      <CanvasAgentWorkspace workId={workId} model={model} onModelChange={setModel} />
+      <CanvasAgentWorkspace
+        canvasEdges={edgesQuery.data ?? []}
+        canvasNodes={nodesQuery.data ?? []}
+        workId={workId}
+        model={model}
+        onModelChange={setModel}
+      />
       <NodeDerivationToolbar workId={workId} model={model} />
       <NodeDetailSheet workId={workId} />
     </main>

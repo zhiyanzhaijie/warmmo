@@ -32,16 +32,85 @@ func NewAgentRepository(providerRepository *ProviderRepository) *AgentRepository
 	}
 }
 
-func (r *AgentRepository) GetCanvasNodeKind(workID, nodeID string) (canvas.NodeKind, error) {
+func (r *AgentRepository) GetCanvasNodeMetadata(workID, nodeID string) (canvas.NodeKind, int64, error) {
 	var kind canvas.NodeKind
-	err := r.database.QueryRow(`SELECT kind FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).Scan(&kind)
+	var revision int64
+	err := r.database.QueryRow(`SELECT kind, revision FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).Scan(&kind, &revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", canvas.ErrNodeNotFound
+		return "", 0, canvas.ErrNodeNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("read target canvas node kind: %w", err)
+		return "", 0, fmt.Errorf("read target canvas node metadata: %w", err)
 	}
-	return kind, nil
+	return kind, revision, nil
+}
+
+func (r *AgentRepository) GetNodeAttachments(workID, targetNodeID string) ([]warmagent.NodeReference, error) {
+	rows, err := r.database.Query(`
+SELECT source.id, source.kind
+FROM canvas_edges edge
+JOIN canvas_nodes source ON source.work_id = edge.work_id AND source.id = edge.source_node_id
+WHERE edge.work_id = ? AND edge.target_node_id = ? AND edge.kind = 'generated_from'
+ORDER BY edge.created_at, edge.source_node_id`, workID, targetNodeID)
+	if err != nil {
+		return nil, fmt.Errorf("read node attachments: %w", err)
+	}
+	defer rows.Close()
+
+	attachments := make([]warmagent.NodeReference, 0)
+	for rows.Next() {
+		var attachment warmagent.NodeReference
+		if err := rows.Scan(&attachment.ID, &attachment.Type); err != nil {
+			return nil, fmt.Errorf("scan node attachment: %w", err)
+		}
+		attachments = append(attachments, attachment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate node attachments: %w", err)
+	}
+	return attachments, nil
+}
+
+func (r *AgentRepository) GetNodeReferences(workID string, nodeIDs []string) ([]warmagent.NodeReference, error) {
+	nodeIDs = uniqueStrings(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return []warmagent.NodeReference{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(nodeIDs)), ",")
+	arguments := make([]any, 0, len(nodeIDs)+1)
+	arguments = append(arguments, workID)
+	for _, nodeID := range nodeIDs {
+		arguments = append(arguments, nodeID)
+	}
+	rows, err := r.database.Query(`
+SELECT id, kind
+FROM canvas_nodes
+WHERE work_id = ? AND id IN (`+placeholders+`)`, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("read canvas node references: %w", err)
+	}
+	defer rows.Close()
+
+	referencesByID := make(map[string]warmagent.NodeReference, len(nodeIDs))
+	for rows.Next() {
+		var reference warmagent.NodeReference
+		if err := rows.Scan(&reference.ID, &reference.Type); err != nil {
+			return nil, fmt.Errorf("scan canvas node reference: %w", err)
+		}
+		referencesByID[reference.ID] = reference
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate canvas node references: %w", err)
+	}
+	references := make([]warmagent.NodeReference, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		reference, exists := referencesByID[nodeID]
+		if !exists {
+			return nil, fmt.Errorf("%w: %s", canvas.ErrNodeNotFound, nodeID)
+		}
+		references = append(references, reference)
+	}
+	return references, nil
 }
 
 func (r *AgentRepository) GetChapterSectionContext(workID, sectionOutlineNodeID string) ([]string, error) {
@@ -315,58 +384,64 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 	return transaction.Commit()
 }
 
-func (r *AgentRepository) QueueResponse(runID, approvalEventID, answer string) error {
+func (r *AgentRepository) QueueResponse(runID, approvalEventID, answer string) (warmagent.UserResponse, error) {
 	transaction, err := r.database.Begin()
 	if err != nil {
-		return fmt.Errorf("begin queue agent response: %w", err)
+		return warmagent.UserResponse{}, fmt.Errorf("begin queue agent response: %w", err)
 	}
 	defer transaction.Rollback()
 	var status warmagent.RunStatus
 	if err := transaction.QueryRow(`SELECT status FROM agent_runs WHERE id = ?`, runID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
-		return warmagent.ErrRunNotFound
+		return warmagent.UserResponse{}, warmagent.ErrRunNotFound
 	} else if err != nil {
-		return fmt.Errorf("read agent response status: %w", err)
+		return warmagent.UserResponse{}, fmt.Errorf("read agent response status: %w", err)
 	}
 	if status != warmagent.RunStatusWaitingInput {
-		return warmagent.ErrRunNotWaitingInput
+		return warmagent.UserResponse{}, warmagent.ErrRunNotWaitingInput
 	}
 	var latestID, dataJSON string
 	if err := transaction.QueryRow(`
 SELECT id, data_json FROM agent_run_events
-WHERE run_id = ? AND type = ? ORDER BY sequence DESC LIMIT 1`, runID, warmagent.EventApprovalRequired).Scan(&latestID, &dataJSON); errors.Is(err, sql.ErrNoRows) {
-		return warmagent.ErrInvalidUserResponse
+	WHERE run_id = ? AND type = ? ORDER BY sequence DESC LIMIT 1`, runID, warmagent.EventApprovalRequired).Scan(&latestID, &dataJSON); errors.Is(err, sql.ErrNoRows) {
+		return warmagent.UserResponse{}, warmagent.ErrInvalidUserResponse
 	} else if err != nil {
-		return fmt.Errorf("read pending agent question: %w", err)
+		return warmagent.UserResponse{}, fmt.Errorf("read pending agent question: %w", err)
 	}
 	if latestID != approvalEventID {
-		return warmagent.ErrInvalidUserResponse
+		return warmagent.UserResponse{}, warmagent.ErrInvalidUserResponse
 	}
 	var approval struct {
 		Question string `json:"question"`
 	}
 	if err := json.Unmarshal([]byte(dataJSON), &approval); err != nil {
-		return fmt.Errorf("decode pending agent question: %w", err)
+		return warmagent.UserResponse{}, fmt.Errorf("decode pending agent question: %w", err)
+	}
+	queuedResponse := warmagent.UserResponse{
+		ApprovalEventID: approvalEventID,
+		Question:        approval.Question,
+		Answer:          answer,
 	}
 	now := time.Now().UTC()
-	if _, err := appendEvent(transaction, runID, warmagent.EventUserResponseReceived, map[string]string{
-		"approvalEventId": approvalEventID, "question": approval.Question, "answer": answer,
-	}, now); err != nil {
-		return err
+	if _, err := appendEvent(transaction, runID, warmagent.EventUserResponseReceived, queuedResponse, now); err != nil {
+		return warmagent.UserResponse{}, err
 	}
 	result, err := transaction.Exec(`
 UPDATE agent_runs SET status = ?, error_message = '', updated_at = ?
-WHERE id = ? AND status = ?`, warmagent.RunStatusQueued, now.Format(time.RFC3339Nano), runID, warmagent.RunStatusWaitingInput)
+	WHERE id = ? AND status = ?`, warmagent.RunStatusQueued, now.Format(time.RFC3339Nano), runID, warmagent.RunStatusWaitingInput)
 	if err != nil {
-		return fmt.Errorf("queue agent response: %w", err)
+		return warmagent.UserResponse{}, fmt.Errorf("queue agent response: %w", err)
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read queued agent response: %w", err)
+		return warmagent.UserResponse{}, fmt.Errorf("read queued agent response: %w", err)
 	}
 	if changed == 0 {
-		return warmagent.ErrRunNotWaitingInput
+		return warmagent.UserResponse{}, warmagent.ErrRunNotWaitingInput
 	}
-	return transaction.Commit()
+	if err := transaction.Commit(); err != nil {
+		return warmagent.UserResponse{}, err
+	}
+	return queuedResponse, nil
 }
 
 func (r *AgentRepository) MarkResumed(runID string) error {

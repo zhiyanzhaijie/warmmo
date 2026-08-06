@@ -3,11 +3,8 @@ package canvas
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"warmnote/core/internal/agent"
 )
@@ -212,31 +209,4 @@ type NodeReader interface {
 
 type CandidateCreator interface {
 	CreateCandidate(context.Context, agent.Candidate) (agent.Candidate, error)
-}
-
-type ContextReader struct {
-	store NodeReader
-}
-
-func NewContextReader(store NodeReader) *ContextReader {
-	return &ContextReader{store: store}
-}
-
-func (r *ContextReader) BuildSnapshot(ctx context.Context, workID string, nodeIDs []string) (agent.ContextSnapshot, error) {
-	nodes, err := r.store.GetNodes(ctx, workID, nodeIDs)
-	if err != nil {
-		return agent.ContextSnapshot{}, err
-	}
-	snapshotNodes := make([]agent.NodeSnapshot, 0, len(nodes))
-	for _, node := range nodes {
-		snapshotNodes = append(snapshotNodes, agent.NodeSnapshot{
-			ID: node.ID, Revision: formatRevision(node.Revision), Type: string(node.Kind),
-			Title: node.Title, Content: node.Content,
-		})
-	}
-	return agent.ContextSnapshot{ID: uuid.NewString(), WorkID: workID, Nodes: snapshotNodes}, nil
-}
-
-func formatRevision(revision int64) string {
-	return strconv.FormatInt(revision, 10)
 }
