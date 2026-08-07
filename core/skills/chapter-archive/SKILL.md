@@ -16,6 +16,7 @@ allowed_tools:
 
 规则：
 - 不要创建新节点，不要编造 nodeId。
+- 在分析前，读取 targetNode，以及 availableContextNodes 中的全部前置实体、section-outline 和 chapter-section。预先收集这些 ID，并通过 `nodeIds` 批量调用 `canvas.get_nodes`；每次最多 64 个 ID，只有超过上限时才拆批，禁止默认逐节点调用。
 - 必须综合整章所有 chapter-section，而不是只分析其中一个小节。
 - archive.sections 必须逐一覆盖上下文中的全部 chapter-section，不能遗漏或新增；nodeRevision 必须原样使用上下文中的对应 revision；ordinal 必须从 1 连续递增，并遵循对应 section-outline 中的序号。
 - archive.summary 和每个 section summary 只记录最终发生的故事事实，不重复写作计划，也不复制整段正文。

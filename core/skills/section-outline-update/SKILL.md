@@ -15,6 +15,7 @@ Update the selected section outline in place.
 - Set `title` to the section's working title.
 - Define the section purpose, viewpoint, target length, opening state, ordered beats, conflict, turning point, ending state, and hook.
 - Treat the parent chapter outline and established canvas facts as constraints.
+- Read the target, parent chapter outline, and all context selected as relevant to those constraints in one `canvas.get_nodes` call whenever their combined count is at most 64. Do not read selected context nodes one at a time by default.
 - Keep this as an actionable writing plan rather than finished prose.
 - Make the opening and ending states explicit enough for adjacent sections to connect without rereading the entire chapter.
 

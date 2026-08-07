@@ -14,7 +14,7 @@ Create one complete, editable chapter section node. The selected section outline
 
 ## Workflow
 
-1. Read the author request, the section outline, its parent chapter outline, and every continuity node inherited from that chapter outline.
+1. Read the author request, the section outline, its parent chapter outline, and every continuity node inherited from that chapter outline. Collect the target and all available context IDs first, then pass them together to `canvas.get_nodes` in batches of at most 64. Split only above that limit; do not read them one at a time by default.
 2. Identify viewpoint, section purpose, opening state, active conflict, ordered beats, turning point, ending state, and hook.
 3. Infer routine creative details from the request and context; do not ask for optional choices such as names or scene styling.
 4. Treat the section outline as the authoritative writing contract for this section.

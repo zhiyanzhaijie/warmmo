@@ -21,7 +21,7 @@ func NewGetNodesTool(store NodeReader) *GetNodesTool {
 
 func (t *GetNodesTool) Spec() agent.ToolSpec {
 	return agent.ToolSpec{
-		Name: "canvas.get_nodes", Description: `Read canvas nodes from the current work. Arguments: {"nodeIds":["node-id"]}.`, ModelCallable: true,
+		Name: "canvas.get_nodes", Description: `Read up to 64 canvas nodes from the current work. Batch all currently required IDs into one call instead of calling once per node. Arguments: {"nodeIds":["node-id-1","node-id-2"]}.`, ModelCallable: true,
 	}
 }
 

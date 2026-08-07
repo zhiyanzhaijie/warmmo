@@ -18,7 +18,11 @@ const (
 - targetNode and availableContextNodes contain only node IDs and types. No canvas title or content is preloaded.
 - priorityContextNodeIds is the user-selected subset of availableContextNodes. Treat it as higher priority, not as mandatory context.
 - Use canvas.get_nodes only for targetNode.id or IDs listed in availableContextNodes when their content is relevant to the request.
-- Read the smallest useful set of nodes. Never infer a node's content from its ID or type alone.`
+- Before calling canvas.get_nodes, select the smallest complete set of nodes required for the current task.
+- Read that set in as few calls as possible by passing multiple IDs in nodeIds (up to 64 IDs per call). Do not read nodes one at a time by default.
+- Split reads only when more than 64 nodes are required. Make another call later only when the previous result reveals a concrete need for additional context.
+- If a tool result reports that it was truncated, retry only that batch as smaller non-overlapping batches.
+- Never infer a node's content from its ID or type alone.`
 	nodeUpdateMergeContract = `# Existing Node Merge Contract
 
 The targetNode object only identifies the existing node being updated.
@@ -551,7 +555,10 @@ func (s loopState) promptPayload() map[string]any {
 	payload["contextAccessPolicy"] = []string{
 		"Node titles and content are not preloaded into this request.",
 		"targetNode and availableContextNodes contain only ID and type metadata.",
-		"Use canvas.get_nodes on demand for only the nodes whose content is relevant.",
+		"Select the smallest complete set of relevant nodes before reading their content.",
+		"Pass all selected IDs to canvas.get_nodes together, with at most 64 IDs per call; do not read nodes one at a time by default.",
+		"Split reads only above the per-call limit, or when a completed read reveals a concrete need for additional context.",
+		"If a tool result is marked truncated, retry only that batch as smaller non-overlapping batches.",
 	}
 	if s.input.Target == TargetSectionOutlineBatch || s.input.Target == TargetChapterSection || s.input.Target == TargetChapterArchive {
 		payload["operation"] = "derive_child_nodes"
@@ -699,9 +706,13 @@ func summarize(value any) string {
 	if err != nil {
 		return fmt.Sprint(value)
 	}
-	const maxSummaryBytes = 8 * 1024
+	// One batched read replaces up to 16 former 8 KiB observations while keeping
+	// the decision prompt bounded. An explicit marker lets the model split only
+	// an oversized batch instead of silently reasoning from incomplete context.
+	const maxSummaryBytes = 128 * 1024
 	if len(encoded) > maxSummaryBytes {
-		return string(encoded[:maxSummaryBytes]) + "..."
+		return strings.ToValidUTF8(string(encoded[:maxSummaryBytes]), "") +
+			"\n[tool result truncated; retry this batch as smaller non-overlapping batches]"
 	}
 	return string(encoded)
 }
