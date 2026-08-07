@@ -12,6 +12,10 @@ import {
   type CanvasAgentPromptSubmission,
   type PendingAgentInput,
 } from '@/features/canvas/agent-workspace/AgentPromptInput'
+import {
+  createCanvasPromptValueFromText,
+  type CanvasPromptValue,
+} from '@/features/canvas/agent-workspace/CanvasPromptEditor'
 import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
 import {
   getContextNodePickerTargetNodeId,
@@ -22,6 +26,7 @@ import type { CanvasEdge, CanvasNode } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
 const emptyContextNodeIdSet: ReadonlySet<string> = new Set()
+const defaultPrompt = createCanvasPromptValueFromText('让主角在宴会上第一次发现记忆能力的代价。')
 
 interface CanvasAgentWorkspaceProps {
   canvasEdges: CanvasEdge[]
@@ -71,7 +76,8 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     canvasNodes.filter((node) => node.id !== targetNodeId),
   [canvasNodes, targetNodeId])
   const isNodeDragging = useStore((state) => state.nodes.some((node) => node.dragging))
-  const [prompt, setPrompt] = useState('让主角在宴会上第一次发现记忆能力的代价。')
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, CanvasPromptValue>>({})
+  const prompt = targetNodeId === null ? defaultPrompt : promptDrafts[targetNodeId] ?? defaultPrompt
   const [pendingAttachmentEdgeKeys, setPendingAttachmentEdgeKeys] = useState<ReadonlySet<string>>(() => new Set())
   const pendingAttachmentEdgeKeysRef = useRef<ReadonlySet<string>>(new Set())
   const beginNodeAgentRun = useFlowNodeStore((state) => state.actions.beginNodeAgentRun)
@@ -94,7 +100,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     return nodeIds
   }, [pendingAttachmentEdgeKeys, targetNodeId])
   const hasPendingAttachment = pendingAttachmentNodeIds.size > 0
-  const canRun = model !== null && prompt.trim() !== '' && targetNodeId !== null && !hasBlockingAgentRun && !hasPendingAttachment
+  const canRun = model !== null && prompt.requestText.trim() !== '' && targetNodeId !== null && !hasBlockingAgentRun && !hasPendingAttachment
 
   useEffect(() => {
     if (targetNodeId === null || attachmentNodeIds.length === 0) return
@@ -156,6 +162,13 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     })
   }, [attachmentNodeIdSet, createContextEdge, targetNodeId])
 
+  const updatePromptDraft = useCallback((value: CanvasPromptValue) => {
+    if (targetNodeId === null) return
+    setPromptDrafts((current) => current[targetNodeId] === value
+      ? current
+      : { ...current, [targetNodeId]: value })
+  }, [targetNodeId])
+
   const runAgent = useCallback((input: CanvasAgentPromptSubmission) => {
     if (model === null || targetNodeId === null || !canRun || isCreatingTargetRun) return
     const runContextNodeIds = [...new Set([
@@ -192,7 +205,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     >
       <section
         data-node-kind={targetNode.data.kind}
-        className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-visible rounded-sm bg-canvas-elevated shadow-floating"
+        className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-visible rounded-[calc(var(--radius-md)+var(--spacing-space-sm))] bg-canvas-elevated shadow-floating"
       >
         <CanvasAgentPromptInput
           key={targetNodeId}
@@ -213,7 +226,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
           onContextNodeRemove={removeContextNode}
           onContextPickerToggle={toggleContextNodePicker}
           onModelChange={onModelChange}
-          onPromptChange={setPrompt}
+          onPromptChange={updatePromptDraft}
           onPriorityContextNodeAdd={addPriorityContextNode}
           onRespond={respond}
           onSubmit={runAgent}

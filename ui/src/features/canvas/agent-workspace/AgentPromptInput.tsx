@@ -59,12 +59,12 @@ interface CanvasAgentPromptInputProps {
   nodeKind: string
   pendingAttachmentNodeIds: ReadonlySet<string>
   pendingInput: PendingAgentInput | null
-  prompt: string
+  prompt: CanvasPromptValue
   isResponding: boolean
   onContextNodeRemove: (nodeId: string) => void
   onContextPickerToggle: () => void
   onModelChange: (model: EnabledModel | null) => void
-  onPromptChange: (prompt: string) => void
+  onPromptChange: (prompt: CanvasPromptValue) => void
   onPriorityContextNodeAdd: (nodeId: string) => void
   onRespond: (answer: string) => void
   onSubmit: (input: CanvasAgentPromptSubmission) => void
@@ -95,7 +95,7 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
 }: CanvasAgentPromptInputProps) {
   const [answer, setAnswer] = useState('')
   const [selectedOption, setSelectedOption] = useState('')
-  const promptDraftRef = useRef<CanvasPromptValue>({ contextNodeIds: [], displayText: prompt, requestText: prompt })
+  const promptDraftRef = useRef(prompt)
   const promptEditorRef = useRef<CanvasPromptEditorHandle>(null)
   useEffect(() => {
     setAnswer('')
@@ -138,13 +138,13 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
     for (const nodeId of value.contextNodeIds) {
       if (!previousContextNodeIds.has(nodeId)) onPriorityContextNodeAdd(nodeId)
     }
-    onPromptChange(value.displayText)
+    onPromptChange(value)
   }
 
   return (
     <TooltipProvider>
       <PromptInput
-        className="[&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-sm [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none"
+        className="[&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-[calc(var(--radius-md)+var(--spacing-space-sm))] [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none"
         data-node-kind={nodeKind}
         onSubmit={submitPrompt}
       >
@@ -204,7 +204,7 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
               ref={promptEditorRef}
               availableContextNodes={availableContextNodes}
               disabled={isSubmitting || isStreaming}
-              initialText={prompt}
+              initialValue={prompt}
               placeholder="告诉这个节点接下来要做什么"
               onChange={handlePromptChange}
             />

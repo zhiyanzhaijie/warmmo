@@ -1,4 +1,4 @@
-import type { Editor, Range } from '@tiptap/core'
+import type { Editor, JSONContent, Range } from '@tiptap/core'
 import { Document } from '@tiptap/extension-document'
 import { HardBreak } from '@tiptap/extension-hard-break'
 import { History } from '@tiptap/extension-history'
@@ -22,7 +22,23 @@ import { nodeDefinitions } from '@/features/canvas/nodes/definitions'
 export interface CanvasPromptValue {
   contextNodeIds: string[]
   displayText: string
+  document: JSONContent
   requestText: string
+}
+
+export function createCanvasPromptValueFromText(text: string): CanvasPromptValue {
+  return {
+    contextNodeIds: [],
+    displayText: text,
+    document: {
+      type: 'doc',
+      content: text.split('\n').map((line) => ({
+        type: 'paragraph',
+        ...(line === '' ? {} : { content: [{ type: 'text', text: line }] }),
+      })),
+    },
+    requestText: text,
+  }
 }
 
 export interface CanvasPromptEditorHandle {
@@ -32,7 +48,7 @@ export interface CanvasPromptEditorHandle {
 interface CanvasPromptEditorProps {
   availableContextNodes: CanvasContextNode[]
   disabled: boolean
-  initialText: string
+  initialValue: CanvasPromptValue
   placeholder: string
   onChange: (value: CanvasPromptValue) => void
 }
@@ -55,7 +71,7 @@ interface CanvasPromptMentionMenuProps {
 export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPromptEditorProps>(function CanvasPromptEditor({
   availableContextNodes,
   disabled,
-  initialText,
+  initialValue,
   placeholder,
   onChange,
 }, ref) {
@@ -63,12 +79,8 @@ export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPro
   const mentionMenuOpenRef = useRef(false)
   const mentionMenuRef = useRef<CanvasPromptMentionMenuHandle>(null)
   const onChangeRef = useRef(onChange)
-  const promptValueRef = useRef<CanvasPromptValue>({
-    contextNodeIds: [],
-    displayText: initialText,
-    requestText: initialText,
-  })
-  const [isEmpty, setIsEmpty] = useState(initialText.trim() === '')
+  const promptValueRef = useRef(initialValue)
+  const [isEmpty, setIsEmpty] = useState(initialValue.displayText.trim() === '')
   const [suggestion, setSuggestion] = useState<MentionSuggestionState | null>(null)
 
   availableContextNodesRef.current = availableContextNodes
@@ -84,7 +96,7 @@ export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPro
   const editor = useEditor({
     immediatelyRender: true,
     shouldRerenderOnTransaction: false,
-    content: initialText,
+    content: initialValue.document,
     extensions: [
       Document,
       Paragraph,
@@ -149,7 +161,7 @@ export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPro
         'aria-multiline': 'true',
         'data-slot': 'input-group-control',
         role: 'textbox',
-        class: 'min-h-28 max-h-48 w-full overflow-y-auto whitespace-pre-wrap bg-transparent px-space-md py-space-sm text-body-md leading-6 text-ink outline-none focus-visible:outline-none',
+        class: 'min-h-28 max-h-48 w-full overflow-y-auto whitespace-pre-wrap bg-transparent px-space-md pt-space-xxs pb-space-sm text-body-md leading-6 text-ink outline-none focus-visible:outline-none',
       },
       handleDOMEvents: {
         blur: (view) => {
@@ -203,7 +215,7 @@ export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPro
     <div className="min-w-0 flex-1 self-stretch">
       <textarea aria-hidden="true" className="sr-only" name="message" readOnly tabIndex={-1} value={promptValueRef.current.displayText} />
       <div className="relative">
-        {isEmpty ? <span aria-hidden="true" className="pointer-events-none absolute top-space-sm left-space-md text-body-md leading-6 text-faint">{placeholder}</span> : null}
+        {isEmpty ? <span aria-hidden="true" className="pointer-events-none absolute top-space-xxs left-space-md text-body-md leading-6 text-faint">{placeholder}</span> : null}
         <EditorContent
           editor={editor}
           className="min-w-0 [&_.ProseMirror[contenteditable=false]]:cursor-not-allowed [&_.ProseMirror[contenteditable=false]]:text-faint [&_.ProseMirror>p]:m-0 [&_.ProseMirror>p+p]:mt-space-xs [&_.canvas-prompt-mention]:mx-0.5 [&_.canvas-prompt-mention]:inline-flex [&_.canvas-prompt-mention]:cursor-default [&_.canvas-prompt-mention]:items-center [&_.canvas-prompt-mention]:rounded-sm [&_.canvas-prompt-mention]:border [&_.canvas-prompt-mention]:border-hairline [&_.canvas-prompt-mention]:bg-hairline-soft [&_.canvas-prompt-mention]:px-1.5 [&_.canvas-prompt-mention]:py-0.5 [&_.canvas-prompt-mention]:text-body-sm [&_.canvas-prompt-mention]:font-medium [&_.canvas-prompt-mention]:text-ink [&_.ProseMirror-selectednode.canvas-prompt-mention]:ring-1 [&_.ProseMirror-selectednode.canvas-prompt-mention]:ring-link"
@@ -288,7 +300,7 @@ function getCanvasPromptValue(editor: Editor): CanvasPromptValue {
     })
   })
 
-  return { contextNodeIds, displayText, requestText }
+  return { contextNodeIds, displayText, document: editor.getJSON(), requestText }
 }
 
 function serializePromptNode(node: ProseMirrorNode) {

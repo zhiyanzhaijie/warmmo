@@ -32,7 +32,7 @@ export function CanvasContextNodes({
   onRemove,
 }: CanvasContextNodesProps) {
   return (
-    <div className="flex min-h-10 min-w-0 items-center gap-space-xs px-space-sm py-space-xs">
+    <div className="flex min-h-0 min-w-0 items-center gap-space-xs px-space-sm pt-space-sm">
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -53,7 +53,7 @@ export function CanvasContextNodes({
       </Tooltip>
       <Attachments
         variant="inline"
-        className="min-w-0 flex-1 flex-nowrap gap-space-xxs overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="min-h-8 min-w-0 flex-1 flex-nowrap items-center gap-space-xxs overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {nodes.map((node) => {
           const definition = nodeDefinitions[node.kind]
