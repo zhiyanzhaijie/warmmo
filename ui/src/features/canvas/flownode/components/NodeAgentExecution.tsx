@@ -1,7 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   CircleDashed,
-  CircleX,
   Database,
   FileCheck2,
   ListChecks,
@@ -54,19 +53,6 @@ export const NodeAgentExecution = memo(function NodeAgentExecution({ nodeId }: {
 
   if (run === undefined || run.status === 'completed') return null
 
-  if (run.status === 'failed') {
-    const label = run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
-    return (
-      <span
-        aria-label={label}
-        className="nodrag nopan absolute top-2 right-2 z-10 grid size-6 place-items-center rounded-sm bg-canvas-elevated text-error shadow-whisper"
-        title={run.error || label}
-      >
-        <CircleX aria-hidden="true" size={14} />
-      </span>
-    )
-  }
-
   const summary = executionSummary(run, steps)
   const isWaiting = run.status === 'waiting_input'
 
@@ -112,17 +98,15 @@ export const NodeAgentCompactIndicator = memo(function NodeAgentCompactIndicator
   if (run === undefined || run.status === 'completed') return null
 
   const isActive = run.status === 'submitting' || run.status === 'running'
-  const Icon = run.status === 'waiting_input' ? MessageCircleQuestion : isActive ? LoaderCircle : CircleX
-  const label = run.status === 'failed'
-    ? run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
-    : run.status === 'waiting_input'
+  const Icon = run.status === 'waiting_input' ? MessageCircleQuestion : LoaderCircle
+  const label = run.status === 'waiting_input'
       ? '等待你的回答'
       : run.operation === 'derive' ? '正在派生节点' : '节点更新中'
 
   return (
     <span
       aria-label={label}
-      className={`absolute top-1 right-1 grid size-6 place-items-center rounded-sm bg-canvas-elevated shadow-whisper ${run.status === 'failed' ? 'text-error' : 'text-link'}`}
+      className="absolute top-1 right-1 grid size-6 place-items-center rounded-sm bg-canvas-elevated text-link shadow-whisper"
       title={label}
     >
       <Icon aria-hidden="true" className={isActive ? 'animate-spin' : undefined} size={13} />
@@ -135,16 +119,14 @@ export const NodeAgentMarkerIndicator = memo(function NodeAgentMarkerIndicator({
   if (run === undefined || run.status === 'completed') return null
 
   const isActive = run.status === 'submitting' || run.status === 'running'
-  const label = run.status === 'failed'
-    ? run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
-    : run.status === 'waiting_input'
+  const label = run.status === 'waiting_input'
       ? '等待你的回答'
       : run.operation === 'derive' ? '正在派生节点' : '节点更新中'
 
   return (
     <span
       aria-label={label}
-      className={`pointer-events-none absolute -inset-1 rounded-full border-2 ${isActive ? 'animate-pulse border-link' : run.status === 'waiting_input' ? 'border-link' : 'border-error'}`}
+      className={`pointer-events-none absolute -inset-1 rounded-full border-2 border-link ${isActive ? 'animate-pulse' : ''}`}
       title={label}
     />
   )
@@ -156,11 +138,8 @@ function buildExecutionSteps(run: NodeAgentRunState): ExecutionStep[] {
     return [{
       id: 'submit',
       icon: CircleDashed,
-      label: run.status === 'failed'
-        ? isDerivation ? '提交派生失败' : '提交更新失败'
-        : isDerivation ? '提交节点派生' : '提交节点更新',
-      description: run.error || undefined,
-      status: run.status === 'failed' ? 'error' : 'active',
+      label: isDerivation ? '提交节点派生' : '提交节点更新',
+      status: 'active',
     }]
   }
 
@@ -236,7 +215,6 @@ function buildExecutionSteps(run: NodeAgentRunState): ExecutionStep[] {
     })
   }
 
-  if (run.status === 'failed') markLastActiveStepFailed(steps, run.error)
   if (run.status === 'completed') completeActiveSteps(steps)
   return steps
 }
@@ -320,21 +298,10 @@ function findPendingToolStep(steps: Array<ExecutionStep | ToolExecutionStep>, na
 }
 
 function executionSummary(run: NodeAgentRunState, steps: ExecutionStep[]) {
-  if (run.status === 'failed') return run.operation === 'derive' ? '节点派生失败' : '节点更新失败'
   if (run.status === 'completed') return run.operation === 'derive' ? '节点派生完成' : '节点更新完成'
   if (run.status === 'waiting_input') return '等待你的回答'
   const activeStep = steps.findLast((step) => step.status === 'active')
   return activeStep?.label ?? (run.operation === 'derive' ? '正在派生节点' : '正在更新节点')
-}
-
-function markLastActiveStepFailed(steps: ExecutionStep[], error: string) {
-  const activeStep = steps.findLast((step) => step.status === 'active')
-  if (activeStep !== undefined) {
-    activeStep.status = 'error'
-    activeStep.description = error || activeStep.description
-    return
-  }
-  steps.push({ id: 'failed', icon: CircleX, label: 'Agent 执行失败', description: error, status: 'error' })
 }
 
 function completeActiveSteps(steps: ExecutionStep[]) {

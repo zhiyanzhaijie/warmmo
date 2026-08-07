@@ -52,7 +52,7 @@ function FlowNodeShell({
             ) : null}
           </div>
         ) : null}
-        <div className="min-h-20 max-h-44 overflow-hidden px-space-sm py-space-sm text-body-sm leading-5 text-body">
+        <div className="relative min-h-20 max-h-44 overflow-hidden px-space-sm py-space-sm text-body-sm leading-5 text-body">
           {children}
         </div>
         {data.sourceType === 'candidate' && data.candidateType === 'version' && data.candidateReason ? (

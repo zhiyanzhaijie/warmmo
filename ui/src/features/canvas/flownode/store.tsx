@@ -6,7 +6,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 import type { FlowNodeData, FlowNodeDetailLevel, StoryFlowNode } from '@/features/canvas/flownode/types'
 import type { AgentEvent, CanvasNodePosition } from '@/types/canvas'
 
-export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed' | 'failed'
+export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed'
 export type NodeAgentOperation = 'update' | 'derive'
 export type CanvasInteractionMode =
   | { kind: 'editing' }
@@ -24,7 +24,6 @@ export interface NodeAgentRunState {
   operation: NodeAgentOperation
   status: NodeAgentRunStatus
   events: AgentEvent[]
-  error: string
 }
 
 interface FlowNodeStoreActions {
@@ -40,9 +39,9 @@ interface FlowNodeStoreActions {
   closePreview: () => void
   focusSourceNode: (nodeId: string) => void
   beginNodeAgentRun: (nodeId: string, operation?: NodeAgentOperation) => void
-  attachNodeAgentRun: (nodeId: string, runId: string) => void
+  attachNodeAgentRun: (nodeId: string, runId: string, operation?: NodeAgentOperation) => void
   appendNodeAgentEvent: (nodeId: string, event: AgentEvent) => void
-  failNodeAgentRun: (nodeId: string, message: string) => void
+  dismissNodeAgentRun: (nodeId: string) => void
   startContextNodePicker: (targetNodeId: string) => void
   cancelContextNodePicker: () => void
 }
@@ -167,19 +166,19 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
         set((state) => ({
           nodeAgentRuns: {
             ...state.nodeAgentRuns,
-            [nodeId]: { runId: null, nodeId, operation, status: 'submitting', events: [], error: '' },
+            [nodeId]: { runId: null, nodeId, operation, status: 'submitting', events: [] },
           },
         }))
       },
-      attachNodeAgentRun: (nodeId, runId) => {
+      attachNodeAgentRun: (nodeId, runId, operation = 'update') => {
         set((state) => {
           const current = state.nodeAgentRuns[nodeId]
           return {
             nodeAgentRuns: {
               ...state.nodeAgentRuns,
               [nodeId]: current === undefined
-                ? { runId, nodeId, operation: 'update', status: 'running', events: [], error: '' }
-                : { ...current, runId, status: 'running', error: '' },
+                ? { runId, nodeId, operation, status: 'running', events: [] }
+                : { ...current, runId, status: 'running' },
             },
           }
         })
@@ -189,16 +188,12 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
           const current = state.nodeAgentRuns[nodeId]
           if (current === undefined) return state
           if (current.events.some((existing) => existing.id === event.id || existing.sequence === event.sequence)) return state
-          if (event.type === 'run.completed') {
+          if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') {
             const nodeAgentRuns = { ...state.nodeAgentRuns }
             delete nodeAgentRuns[nodeId]
             return { nodeAgentRuns }
           }
-          const status = event.type === 'run.failed' || event.type === 'run.cancelled'
-            ? 'failed'
-            : event.type === 'approval.required'
-              ? 'waiting_input'
-              : 'running'
+          const status = event.type === 'approval.required' ? 'waiting_input' : 'running'
           return {
             nodeAgentRuns: {
               ...state.nodeAgentRuns,
@@ -206,23 +201,17 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
                 ...current,
                 status,
                 events: [...current.events, event],
-                error: status === 'failed' ? agentEventMessage(event) : current.error,
               },
             },
           }
         })
       },
-      failNodeAgentRun: (nodeId, message) => {
+      dismissNodeAgentRun: (nodeId) => {
         set((state) => {
-          const current = state.nodeAgentRuns[nodeId]
-          return {
-            nodeAgentRuns: {
-              ...state.nodeAgentRuns,
-              [nodeId]: current === undefined
-                ? { runId: null, nodeId, operation: 'update', status: 'failed', events: [], error: message }
-                : { ...current, status: 'failed', error: message },
-            },
-          }
+          if (state.nodeAgentRuns[nodeId] === undefined) return state
+          const nodeAgentRuns = { ...state.nodeAgentRuns }
+          delete nodeAgentRuns[nodeId]
+          return { nodeAgentRuns }
         })
       },
     }
@@ -241,11 +230,6 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       actions,
     }
   })
-}
-
-function agentEventMessage(event: AgentEvent) {
-  const message = event.data?.message
-  return typeof message === 'string' ? message : 'Agent 执行失败'
 }
 
 export const FlowNodeStoreContext = createContext<FlowNodeStoreApi | null>(null)

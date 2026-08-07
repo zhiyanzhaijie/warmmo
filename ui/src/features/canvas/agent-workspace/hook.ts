@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef } from 'react'
+import { toast } from 'sonner'
 
 import { canvasKeys } from '@/apis/canvas-apis'
 import { chapterArchiveKeys } from '@/apis/chapter-archive-apis'
@@ -11,7 +12,7 @@ export function useAgentRunStream(workId: string) {
   const queryClient = useQueryClient()
   const attachNodeAgentRun = useFlowNodeStore((state) => state.actions.attachNodeAgentRun)
   const appendNodeAgentEvent = useFlowNodeStore((state) => state.actions.appendNodeAgentEvent)
-  const failNodeAgentRun = useFlowNodeStore((state) => state.actions.failNodeAgentRun)
+  const dismissNodeAgentRun = useFlowNodeStore((state) => state.actions.dismissNodeAgentRun)
   const eventSourcesRef = useRef(new Map<string, EventSource>())
 
   useEffect(() => () => {
@@ -37,10 +38,14 @@ export function useAgentRunStream(workId: string) {
       } catch {
         closeSource()
         const message = '过程流返回了无法解析的数据'
-        failNodeAgentRun(nodeId, message)
+        toast.error(message)
+        dismissNodeAgentRun(nodeId)
         return
       }
 
+      if (event.type === 'run.failed') {
+        toast.error(agentRunErrorMessage(event))
+      }
       appendNodeAgentEvent(nodeId, event)
 
       if (event.type === 'approval.required') {
@@ -70,9 +75,19 @@ export function useAgentRunStream(workId: string) {
       if (source.readyState === EventSource.CLOSED) return
       closeSource()
       const message = '过程流连接已断开'
-      failNodeAgentRun(nodeId, message)
+      toast.error(message)
+      dismissNodeAgentRun(nodeId)
     }
-  }, [appendNodeAgentEvent, attachNodeAgentRun, failNodeAgentRun, queryClient, workId])
+  }, [appendNodeAgentEvent, attachNodeAgentRun, dismissNodeAgentRun, queryClient, workId])
 
   return { streamRun }
+}
+
+function agentRunErrorMessage(event: AgentEvent) {
+  const rawMessage = typeof event.data?.message === 'string' ? event.data.message : 'Agent 执行失败'
+  const incompleteArchive = rawMessage.match(/chapter archive is incomplete: all (\d+) section outlines must have completed chapter sections/i)
+  if (incompleteArchive !== null) {
+    return `章节归档失败：共规划了 ${incompleteArchive[1]} 个章节小节，请完成全部小节正文后再归档。`
+  }
+  return rawMessage
 }

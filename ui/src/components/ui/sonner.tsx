@@ -3,9 +3,12 @@ import { Toaster as Sonner, type ToasterProps } from 'sonner'
 export function Toaster(props: ToasterProps) {
   return (
     <Sonner
-      position="top-right"
+      position="top-center"
+      offset={{ top: '4.5rem' }}
+      mobileOffset={{ top: '7.75rem' }}
       closeButton
       expand={false}
+      duration={8_000}
       toastOptions={{
         unstyled: true,
         classNames: {

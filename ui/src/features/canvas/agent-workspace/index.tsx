@@ -1,5 +1,6 @@
 import { NodeToolbar, Position, useStore } from '@xyflow/react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 
 import {
   useCreateAgentRun,
@@ -82,7 +83,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
   const pendingAttachmentEdgeKeysRef = useRef<ReadonlySet<string>>(new Set())
   const beginNodeAgentRun = useFlowNodeStore((state) => state.actions.beginNodeAgentRun)
   const cancelContextNodePicker = useFlowNodeStore((state) => state.actions.cancelContextNodePicker)
-  const failNodeAgentRun = useFlowNodeStore((state) => state.actions.failNodeAgentRun)
+  const dismissNodeAgentRun = useFlowNodeStore((state) => state.actions.dismissNodeAgentRun)
   const startContextNodePicker = useFlowNodeStore((state) => state.actions.startContextNodePicker)
   const { streamRun } = useAgentRunStream(workId)
   const { mutate: deleteEdges } = useDeleteCanvasEdges(workId)
@@ -178,12 +179,12 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     beginNodeAgentRun(targetNodeId)
     createRun.mutate({ prompt: input.prompt, targetNodeId, contextNodeIds: runContextNodeIds, model }, {
       onSuccess: (run) => streamRun(run.id, targetNodeId),
-      onError: (error) => failNodeAgentRun(
-        targetNodeId,
-        error instanceof Error ? error.message : '无法创建 Agent Run',
-      ),
+      onError: (error) => {
+        toast.error(error instanceof Error ? error.message : '无法创建 Agent Run')
+        dismissNodeAgentRun(targetNodeId)
+      },
     })
-  }, [attachmentNodeIdSet, beginNodeAgentRun, canRun, createRun, failNodeAgentRun, isCreatingTargetRun, model, streamRun, targetNodeId])
+  }, [attachmentNodeIdSet, beginNodeAgentRun, canRun, createRun, dismissNodeAgentRun, isCreatingTargetRun, model, streamRun, targetNodeId])
   const respond = useCallback((answer: string) => {
     if (pendingInput === null || targetNodeId === null || respondToRun.isPending) return
     respondToRun.mutate({
@@ -192,6 +193,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
       answer,
     }, {
       onSuccess: () => streamRun(pendingInput.runId, targetNodeId, pendingInput.lastSequence),
+      onError: (error) => toast.error(error instanceof Error ? error.message : '提交回答失败'),
     })
   }, [pendingInput, respondToRun, streamRun, targetNodeId])
   return targetNodeId !== null && targetNode !== undefined && targetNode.data.archiveStateResolved &&
@@ -213,7 +215,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
           attachmentNodes={attachmentNodes}
           availableContextNodes={availableContextNodes}
           canSubmit={canRun && !isCreatingTargetRun}
-          hasError={targetAgentRun?.status === 'failed' || respondToRun.isError}
+          hasError={respondToRun.isError}
           isContextPicking={isContextPicking}
           isStreaming={targetAgentRun?.status === 'running'}
           isSubmitting={isCreatingTargetRun || targetAgentRun?.status === 'submitting'}

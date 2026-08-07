@@ -1,6 +1,7 @@
 import { NodeToolbar, Position, useStore } from '@xyflow/react'
 import { Archive, Bomb, LoaderCircle } from 'lucide-react'
 import { memo, useCallback, useMemo } from 'react'
+import { toast } from 'sonner'
 
 import {
   type NodeDerivationTarget,
@@ -59,7 +60,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
   const nodes = useFlowNodeStore((state) => state.nodes)
   const edges = useFlowNodeStore((state) => state.edges)
   const beginNodeAgentRun = useFlowNodeStore((state) => state.actions.beginNodeAgentRun)
-  const failNodeAgentRun = useFlowNodeStore((state) => state.actions.failNodeAgentRun)
+  const dismissNodeAgentRun = useFlowNodeStore((state) => state.actions.dismissNodeAgentRun)
   const isNodeDragging = useStore((state) => state.nodes.some((node) => node.dragging))
   const { streamRun } = useAgentRunStream(workId)
   const targetNodeId = selectedNodeIds[0] ?? null
@@ -131,12 +132,12 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
       model,
     }, {
       onSuccess: (run) => streamRun(run.id, targetNodeId),
-      onError: (error) => failNodeAgentRun(
-        targetNodeId,
-        error instanceof Error ? error.message : '无法创建节点派生任务',
-      ),
+      onError: (error) => {
+        toast.error(error instanceof Error ? error.message : '无法创建节点派生任务')
+        dismissNodeAgentRun(targetNodeId)
+      },
     })
-  }, [archiveLocks.isResolved, beginNodeAgentRun, contextNodeIds, createRun, failNodeAgentRun, hasBlockingRun, hasChildOfKind, hasRequiredChildren, isPending, isTargetArchiveLocked, model, streamRun, targetNodeId, targetNode])
+  }, [archiveLocks.isResolved, beginNodeAgentRun, contextNodeIds, createRun, dismissNodeAgentRun, hasBlockingRun, hasChildOfKind, hasRequiredChildren, isPending, isTargetArchiveLocked, model, streamRun, targetNodeId, targetNode])
 
   if (!archiveLocks.isResolved || isTargetArchiveLocked || targetNodeId === null || targetNode === undefined || definitions.length === 0 ||
     toolbarSourceNodeId !== targetNodeId || isNodeDragging) return null
