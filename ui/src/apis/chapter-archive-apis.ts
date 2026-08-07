@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { coreClient } from '@/lib/api/core-client'
 import type { ChapterArchive, ChapterArchiveTimeline, ChapterArchiveVisibility } from '@/types/chapter-archive'
@@ -54,6 +54,23 @@ export function useChapterArchiveHistory(workId: string, chapterOutlineNodeId: s
         { signal },
       )
       return response.archives
+    },
+  })
+}
+
+export function useRetractChapterArchive(workId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (archiveId: string) => {
+      const encodedWorkId = encodeURIComponent(workId)
+      const encodedArchiveId = encodeURIComponent(archiveId)
+      await coreClient(`/works/${encodedWorkId}/chapter-archives/${encodedArchiveId}/retract`, {
+        method: 'POST',
+        responseType: 'text',
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.work(workId) })
     },
   })
 }

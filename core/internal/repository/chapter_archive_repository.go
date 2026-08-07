@@ -23,7 +23,7 @@ func isNodeArchiveLocked(ctx context.Context, querier archiveLockQuerier, workID
 SELECT EXISTS (
     SELECT 1
     FROM chapter_archives archive
-    WHERE archive.work_id=? AND archive.is_current=1
+    WHERE archive.work_id=? AND archive.is_current=1 AND archive.retracted_at=''
       AND (
           archive.chapter_outline_node_id=?
           OR EXISTS (
@@ -45,7 +45,7 @@ func (r *CanvasRepository) ListCurrentChapterArchives(ctx context.Context, workI
 }
 
 func (r *CanvasRepository) ListChapterArchiveVisibility(ctx context.Context, workID string) ([]canvas.ChapterArchiveVisibility, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id,chapter_outline_node_id FROM chapter_archives WHERE work_id=? AND is_current=1 ORDER BY created_at, revision, id`, workID)
+	rows, err := r.database.QueryContext(ctx, `SELECT id,chapter_outline_node_id FROM chapter_archives WHERE work_id=? AND is_current=1 AND retracted_at='' ORDER BY created_at, revision, id`, workID)
 	if err != nil {
 		return nil, fmt.Errorf("list chapter archive visibility: %w", err)
 	}
@@ -79,12 +79,16 @@ func (r *CanvasRepository) ListChapterArchiveVisibility(ctx context.Context, wor
 
 func (r *CanvasRepository) listChapterArchiveVisibilitySections(ctx context.Context, archiveID string) ([]canvas.ChapterArchiveVisibilitySection, error) {
 	rows, err := r.database.QueryContext(ctx, `SELECT section_outline_node_id,chapter_section_node_id FROM chapter_archive_sections WHERE archive_id=? ORDER BY ordinal`, archiveID)
-	if err != nil { return nil, fmt.Errorf("list chapter archive visibility sections: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("list chapter archive visibility sections: %w", err)
+	}
 	defer rows.Close()
 	sections := make([]canvas.ChapterArchiveVisibilitySection, 0)
 	for rows.Next() {
 		var section canvas.ChapterArchiveVisibilitySection
-		if err := rows.Scan(&section.SectionOutlineNodeID, &section.ChapterSectionNodeID); err != nil { return nil, err }
+		if err := rows.Scan(&section.SectionOutlineNodeID, &section.ChapterSectionNodeID); err != nil {
+			return nil, err
+		}
 		sections = append(sections, section)
 	}
 	return sections, rows.Err()
@@ -105,7 +109,7 @@ func (r *CanvasRepository) ListCurrentChapterArchivesPage(
 	if err != nil {
 		return pagination.Page[canvas.ChapterArchive]{}, err
 	}
-	archives, err := r.listChapterArchives(ctx, workID, "", true, &window)
+	archives, err := r.listChapterArchives(ctx, workID, "", false, &window)
 	if err != nil {
 		return pagination.Page[canvas.ChapterArchive]{}, err
 	}
@@ -121,11 +125,11 @@ func (r *CanvasRepository) ListChapterArchiveTimelinePage(ctx context.Context, w
 	if err != nil {
 		return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
 	}
-	total, err := r.countChapterArchives(ctx, workID, "", true)
+	total, err := r.countChapterArchives(ctx, workID, "", false)
 	if err != nil {
 		return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
 	}
-	rows, err := r.database.QueryContext(ctx, `SELECT id,chapter_outline_node_id,revision,outline_title,summary,projection_status FROM chapter_archives WHERE work_id=? ORDER BY created_at, revision, id LIMIT ? OFFSET ?`, workID, window.Limit, window.Offset)
+	rows, err := r.database.QueryContext(ctx, `SELECT id,chapter_outline_node_id,revision,outline_title,summary,projection_status FROM chapter_archives WHERE work_id=? AND retracted_at='' ORDER BY created_at, revision, id LIMIT ? OFFSET ?`, workID, window.Limit, window.Offset)
 	if err != nil {
 		return pagination.Page[canvas.ChapterArchiveTimeline]{}, fmt.Errorf("list chapter archive timeline: %w", err)
 	}
@@ -155,12 +159,16 @@ func (r *CanvasRepository) ListChapterArchiveTimelinePage(ctx context.Context, w
 
 func (r *CanvasRepository) listChapterArchiveTimelineSections(ctx context.Context, archiveID string) ([]canvas.ChapterArchiveTimelineSection, error) {
 	rows, err := r.database.QueryContext(ctx, `SELECT archive_id,ordinal,section_outline_node_id,chapter_section_node_id,node_revision,title,summary FROM chapter_archive_sections WHERE archive_id=? ORDER BY ordinal`, archiveID)
-	if err != nil { return nil, fmt.Errorf("list chapter archive timeline sections: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("list chapter archive timeline sections: %w", err)
+	}
 	defer rows.Close()
 	sections := make([]canvas.ChapterArchiveTimelineSection, 0)
 	for rows.Next() {
 		var section canvas.ChapterArchiveTimelineSection
-		if err := rows.Scan(&section.ArchiveID, &section.Ordinal, &section.SectionOutlineNodeID, &section.ChapterSectionNodeID, &section.NodeRevision, &section.Title, &section.Summary); err != nil { return nil, err }
+		if err := rows.Scan(&section.ArchiveID, &section.Ordinal, &section.SectionOutlineNodeID, &section.ChapterSectionNodeID, &section.NodeRevision, &section.Title, &section.Summary); err != nil {
+			return nil, err
+		}
 		sections = append(sections, section)
 	}
 	return sections, rows.Err()
@@ -177,14 +185,16 @@ func (r *CanvasRepository) listChapterArchives(
 	currentOnly bool,
 	window *pagination.Window,
 ) ([]canvas.ChapterArchive, error) {
-	query := `SELECT id,work_id,chapter_outline_node_id,revision,run_id,outline_version_id,outline_revision,outline_title,outline_content,summary,source_digest,is_current,projection_status,created_at,superseded_at FROM chapter_archives WHERE work_id=?`
+	query := `SELECT id,work_id,chapter_outline_node_id,revision,run_id,outline_version_id,outline_revision,outline_title,outline_content,summary,source_digest,is_current,projection_status,created_at,superseded_at,retracted_at FROM chapter_archives WHERE work_id=?`
 	arguments := []any{workID}
 	if chapterOutlineNodeID != "" {
 		query += " AND chapter_outline_node_id=?"
 		arguments = append(arguments, chapterOutlineNodeID)
 	}
 	if currentOnly {
-		query += " AND is_current=1"
+		query += " AND is_current=1 AND retracted_at=''"
+	} else if chapterOutlineNodeID == "" {
+		query += " AND retracted_at=''"
 	}
 	query += " ORDER BY created_at, revision, id"
 	if window != nil {
@@ -236,7 +246,9 @@ func (r *CanvasRepository) countChapterArchives(
 		arguments = append(arguments, chapterOutlineNodeID)
 	}
 	if currentOnly {
-		query += " AND is_current=1"
+		query += " AND is_current=1 AND retracted_at=''"
+	} else if chapterOutlineNodeID == "" {
+		query += " AND retracted_at=''"
 	}
 	var total int64
 	if err := r.database.QueryRowContext(ctx, query, arguments...).Scan(&total); err != nil {
@@ -287,8 +299,8 @@ func (r *CanvasRepository) listChapterArchiveSections(ctx context.Context, archi
 func scanChapterArchive(scanner rowScanner) (canvas.ChapterArchive, error) {
 	var archive canvas.ChapterArchive
 	var isCurrent int
-	var createdAt, supersededAt string
-	if err := scanner.Scan(&archive.ID, &archive.WorkID, &archive.ChapterOutlineNodeID, &archive.Revision, &archive.RunID, &archive.OutlineVersionID, &archive.OutlineRevision, &archive.OutlineTitle, &archive.OutlineContent, &archive.Summary, &archive.SourceDigest, &isCurrent, &archive.ProjectionStatus, &createdAt, &supersededAt); err != nil {
+	var createdAt, supersededAt, retractedAt string
+	if err := scanner.Scan(&archive.ID, &archive.WorkID, &archive.ChapterOutlineNodeID, &archive.Revision, &archive.RunID, &archive.OutlineVersionID, &archive.OutlineRevision, &archive.OutlineTitle, &archive.OutlineContent, &archive.Summary, &archive.SourceDigest, &isCurrent, &archive.ProjectionStatus, &createdAt, &supersededAt, &retractedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return canvas.ChapterArchive{}, canvas.ErrNodeNotFound
 		}
@@ -307,5 +319,69 @@ func scanChapterArchive(scanner rowScanner) (canvas.ChapterArchive, error) {
 		}
 		archive.SupersededAt = &parsed
 	}
+	if retractedAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, retractedAt)
+		if err != nil {
+			return canvas.ChapterArchive{}, fmt.Errorf("parse chapter archive retracted time: %w", err)
+		}
+		archive.RetractedAt = &parsed
+	}
 	return archive, nil
+}
+
+func (r *CanvasRepository) RetractChapterArchive(ctx context.Context, workID, archiveID string) error {
+	transaction, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin retract chapter archive: %w", err)
+	}
+	defer transaction.Rollback()
+
+	var chapterOutlineNodeID, runID, retractedAt string
+	var isCurrent int
+	err = transaction.QueryRowContext(ctx, `
+SELECT chapter_outline_node_id,run_id,is_current,retracted_at
+FROM chapter_archives
+WHERE work_id=? AND id=?`, workID, archiveID).Scan(&chapterOutlineNodeID, &runID, &isCurrent, &retractedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return canvas.ErrChapterArchiveNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read chapter archive for retraction: %w", err)
+	}
+	if isCurrent == 0 || retractedAt != "" {
+		return canvas.ErrChapterArchiveNotCurrent
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := transaction.ExecContext(ctx, `
+UPDATE agent_candidates
+SET status='rejected',decided_at=?
+WHERE work_id=? AND run_id=? AND status='pending'`, now, workID, runID); err != nil {
+		return fmt.Errorf("reject pending archive candidates: %w", err)
+	}
+	result, err := transaction.ExecContext(ctx, `
+UPDATE chapter_archives
+SET is_current=0,retracted_at=?
+WHERE work_id=? AND id=? AND is_current=1 AND retracted_at=''`, now, workID, archiveID)
+	if err != nil {
+		return fmt.Errorf("retract chapter archive: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read retracted chapter archive count: %w", err)
+	}
+	if updated != 1 {
+		return canvas.ErrChapterArchiveNotCurrent
+	}
+
+	projectionPath := chapterArchiveProjectionPath(r.dataDirectory, canvas.ChapterArchive{
+		WorkID: workID, ChapterOutlineNodeID: chapterOutlineNodeID,
+	})
+	if err := os.Remove(projectionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove chapter archive projection: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit chapter archive retraction: %w", err)
+	}
+	return nil
 }

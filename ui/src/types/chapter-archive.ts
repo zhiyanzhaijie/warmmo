@@ -30,6 +30,7 @@ export interface ChapterArchive {
   sections: ChapterArchiveSection[]
   createdAt: string
   supersededAt?: string
+  retractedAt?: string
 }
 
 export interface ChapterArchiveVisibilitySection {

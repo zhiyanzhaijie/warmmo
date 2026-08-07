@@ -11,15 +11,18 @@ import (
 )
 
 var (
-	ErrNodeNotFound          = errors.New("canvas node not found")
-	ErrInvalidNode           = errors.New("invalid canvas node")
-	ErrRevisionConflict      = errors.New("canvas node revision conflict")
-	ErrHistoryUnavailable    = errors.New("canvas history action unavailable")
-	ErrCandidateNotFound     = errors.New("canvas candidate not found")
-	ErrCandidateResolved     = errors.New("canvas candidate is already resolved")
-	ErrDerivationExists      = errors.New("canvas node already has derived children")
-	ErrInvalidChapterArchive = errors.New("invalid chapter archive")
-	ErrArchivedNodeLocked    = errors.New("archived canvas node is locked")
+	ErrNodeNotFound             = errors.New("canvas node not found")
+	ErrInvalidNode              = errors.New("invalid canvas node")
+	ErrRevisionConflict         = errors.New("canvas node revision conflict")
+	ErrHistoryUnavailable       = errors.New("canvas history action unavailable")
+	ErrCandidateNotFound        = errors.New("canvas candidate not found")
+	ErrCandidateResolved        = errors.New("canvas candidate is already resolved")
+	ErrDerivationExists         = errors.New("canvas node already has derived children")
+	ErrInvalidChapterArchive    = errors.New("invalid chapter archive")
+	ErrChapterArchiveIncomplete = errors.New("chapter archive is incomplete")
+	ErrChapterArchiveNotFound   = errors.New("chapter archive not found")
+	ErrChapterArchiveNotCurrent = errors.New("chapter archive is not current")
+	ErrArchivedNodeLocked       = errors.New("archived canvas node is locked")
 )
 
 type NodeKind string
@@ -111,6 +114,7 @@ type ChapterArchive struct {
 	Sections             []ChapterArchiveSection `json:"sections"`
 	CreatedAt            time.Time               `json:"createdAt"`
 	SupersededAt         *time.Time              `json:"supersededAt,omitempty"`
+	RetractedAt          *time.Time              `json:"retractedAt,omitempty"`
 }
 
 type ChapterArchiveSection struct {
@@ -129,8 +133,8 @@ type ChapterArchiveSection struct {
 // ChapterArchiveVisibility contains only node relationships required to lock
 // archived nodes and render collapsed chapter proxies on the canvas.
 type ChapterArchiveVisibility struct {
-	ChapterOutlineNodeID string                              `json:"chapterOutlineNodeId"`
-	Sections             []ChapterArchiveVisibilitySection  `json:"sections"`
+	ChapterOutlineNodeID string                            `json:"chapterOutlineNodeId"`
+	Sections             []ChapterArchiveVisibilitySection `json:"sections"`
 }
 
 type ChapterArchiveVisibilitySection struct {
@@ -140,13 +144,13 @@ type ChapterArchiveVisibilitySection struct {
 
 // ChapterArchiveTimeline is the compact read model used by the story spine.
 type ChapterArchiveTimeline struct {
-	ID                   string                               `json:"id"`
-	ChapterOutlineNodeID string                               `json:"chapterOutlineNodeId"`
-	Revision             int64                                `json:"revision"`
-	OutlineTitle         string                               `json:"outlineTitle"`
-	Summary              string                               `json:"summary"`
-	ProjectionStatus     string                               `json:"projectionStatus"`
-	Sections             []ChapterArchiveTimelineSection     `json:"sections"`
+	ID                   string                          `json:"id"`
+	ChapterOutlineNodeID string                          `json:"chapterOutlineNodeId"`
+	Revision             int64                           `json:"revision"`
+	OutlineTitle         string                          `json:"outlineTitle"`
+	Summary              string                          `json:"summary"`
+	ProjectionStatus     string                          `json:"projectionStatus"`
+	Sections             []ChapterArchiveTimelineSection `json:"sections"`
 }
 
 type ChapterArchiveTimelineSection struct {
@@ -238,6 +242,7 @@ type Store interface {
 	ListChapterArchiveVisibility(context.Context, string) ([]ChapterArchiveVisibility, error)
 	ListChapterArchiveTimelinePage(context.Context, string, pagination.Pageable) (pagination.Page[ChapterArchiveTimeline], error)
 	ListChapterArchiveHistory(context.Context, string, string) ([]ChapterArchive, error)
+	RetractChapterArchive(context.Context, string, string) error
 }
 
 type NodeReader interface {

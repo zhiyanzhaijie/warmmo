@@ -72,7 +72,9 @@ func (s *CanvasService) ListCurrentChapterArchives(ctx context.Context, workID s
 
 func (s *CanvasService) ListChapterArchiveVisibility(ctx context.Context, workID string) ([]canvas.ChapterArchiveVisibility, error) {
 	workID = strings.TrimSpace(workID)
-	if workID == "" { return nil, ErrInvalidCanvasRequest }
+	if workID == "" {
+		return nil, ErrInvalidCanvasRequest
+	}
 	return s.store.ListChapterArchiveVisibility(ctx, workID)
 }
 
@@ -93,8 +95,12 @@ func (s *CanvasService) ListCurrentChapterArchivesPage(
 
 func (s *CanvasService) ListChapterArchiveTimelinePage(ctx context.Context, workID string, pageable pagination.Pageable) (pagination.Page[canvas.ChapterArchiveTimeline], error) {
 	workID = strings.TrimSpace(workID)
-	if workID == "" { return pagination.Page[canvas.ChapterArchiveTimeline]{}, ErrInvalidCanvasRequest }
-	if err := pagination.Validate(pageable); err != nil { return pagination.Page[canvas.ChapterArchiveTimeline]{}, ErrInvalidCanvasRequest }
+	if workID == "" {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, ErrInvalidCanvasRequest
+	}
+	if err := pagination.Validate(pageable); err != nil {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, ErrInvalidCanvasRequest
+	}
 	return s.store.ListChapterArchiveTimelinePage(ctx, workID, pageable)
 }
 
@@ -105,6 +111,15 @@ func (s *CanvasService) ListChapterArchiveHistory(ctx context.Context, workID, c
 		return nil, ErrInvalidCanvasRequest
 	}
 	return s.store.ListChapterArchiveHistory(ctx, workID, chapterOutlineNodeID)
+}
+
+func (s *CanvasService) RetractChapterArchive(ctx context.Context, workID, archiveID string) error {
+	workID = strings.TrimSpace(workID)
+	archiveID = strings.TrimSpace(archiveID)
+	if workID == "" || archiveID == "" {
+		return ErrInvalidCanvasRequest
+	}
+	return s.store.RetractChapterArchive(ctx, workID, archiveID)
 }
 
 func (s *CanvasService) SwitchNodeVersion(ctx context.Context, workID, nodeID, versionID string) (canvas.Node, error) {

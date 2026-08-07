@@ -21,7 +21,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 12
+	currentSchemaVersion = 13
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -259,6 +259,10 @@ CREATE TABLE IF NOT EXISTS chapter_archive_sections (
 );
 CREATE INDEX IF NOT EXISTS idx_chapter_archive_sections_work_node
     ON chapter_archive_sections(work_id, chapter_section_node_id);`
+	chapterArchiveRetractionSchemaSQL = `
+ALTER TABLE chapter_archives ADD COLUMN retracted_at TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_chapter_archives_work_retracted_created
+    ON chapter_archives(work_id, retracted_at, created_at);`
 )
 
 var (
@@ -579,7 +583,12 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add chapter archives: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 12"); err != nil {
+	if schemaVersion < 13 {
+		if _, err := transaction.Exec(chapterArchiveRetractionSchemaSQL); err != nil {
+			return fmt.Errorf("add chapter archive retraction: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 13"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

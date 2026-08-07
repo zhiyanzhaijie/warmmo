@@ -1,7 +1,8 @@
-import { Archive, ChevronRight, CircleDashed, History } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronRight, CircleDashed, History } from 'lucide-react'
 import { memo, useState } from 'react'
 
-import { useChapterArchiveHistory } from '@/apis/chapter-archive-apis'
+import { useChapterArchiveHistory, useRetractChapterArchive } from '@/apis/chapter-archive-apis'
+import { Button } from '@/components/ui/button'
 import {
   Sheet,
   SheetContent,
@@ -32,13 +33,26 @@ export const ArchiveHistorySheet = memo(function ArchiveHistorySheet({
 }: ArchiveHistorySheetProps) {
   const historyQuery = useChapterArchiveHistory(workId, chapterNodeId)
   const [selectedArchiveId, setSelectedArchiveId] = useState<string | null>(null)
+  const [isConfirmingRetraction, setIsConfirmingRetraction] = useState(false)
+  const retractMutation = useRetractChapterArchive(workId)
   const archives = historyQuery.data ?? []
   const selectedArchive = archives.find((archive) => archive.id === selectedArchiveId)
     ?? archives.find((archive) => archive.isCurrent)
     ?? archives.at(-1)
 
+  const canRetract = selectedArchive?.isCurrent === true && selectedArchive.retractedAt === undefined
+
   return (
-    <Sheet open={chapterNodeId !== null} onOpenChange={onOpenChange}>
+    <Sheet
+      open={chapterNodeId !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          setIsConfirmingRetraction(false)
+          retractMutation.reset()
+        }
+        onOpenChange(open)
+      }}
+    >
       <SheetContent className="w-[min(52rem,calc(100vw-1rem))]">
         <SheetHeader>
           <div className="flex items-center gap-space-xs text-mute">
@@ -46,7 +60,7 @@ export const ArchiveHistorySheet = memo(function ArchiveHistorySheet({
             <span className="font-mono text-mono-eyebrow">ARCHIVE HISTORY</span>
           </div>
           <SheetTitle className="mt-space-xs">{chapterTitle}</SheetTitle>
-          <SheetDescription>{archives.length} 个不可变归档修订</SheetDescription>
+          <SheetDescription>{archives.length} 个归档修订记录</SheetDescription>
         </SheetHeader>
 
         {historyQuery.isPending ? (
@@ -64,11 +78,16 @@ export const ArchiveHistorySheet = memo(function ArchiveHistorySheet({
                   type="button"
                   aria-current={selectedArchive.id === archive.id ? 'true' : undefined}
                   className="flex w-full flex-col border-l-2 border-transparent px-space-sm py-space-sm text-left hover:bg-hairline-soft aria-current:border-link aria-current:bg-hairline-soft"
-                  onClick={() => setSelectedArchiveId(archive.id)}
+                  onClick={() => {
+                    setSelectedArchiveId(archive.id)
+                    setIsConfirmingRetraction(false)
+                    retractMutation.reset()
+                  }}
                 >
                   <span className="flex items-center gap-1 text-label-sm text-ink">
                     归档 v{archive.revision}
                     {archive.isCurrent ? <span className="font-mono text-[0.625rem] text-mute">CURRENT</span> : null}
+                    {archive.retractedAt ? <span className="font-mono text-[0.625rem] text-error">RETRACTED</span> : null}
                   </span>
                   <time className="mt-1 text-body-sm text-faint" dateTime={archive.createdAt}>
                     {archiveDateFormatter.format(new Date(archive.createdAt))}
@@ -82,6 +101,9 @@ export const ArchiveHistorySheet = memo(function ArchiveHistorySheet({
                 <div className="flex flex-wrap items-center gap-space-xs">
                   <Archive aria-hidden="true" className="text-mute" size={15} />
                   <h3 className="text-heading-md text-ink">归档 v{selectedArchive.revision}</h3>
+                  {selectedArchive.retractedAt ? (
+                    <span className="font-mono text-[0.625rem] text-error">RETRACTED</span>
+                  ) : null}
                   {selectedArchive.projectionStatus === 'pending' ? (
                     <span className="inline-flex items-center gap-1 text-body-sm text-warning">
                       <CircleDashed aria-hidden="true" size={12} />
@@ -94,6 +116,44 @@ export const ArchiveHistorySheet = memo(function ArchiveHistorySheet({
                   <span>OUTLINE REVISION {selectedArchive.outlineRevision}</span>
                   <span>{selectedArchive.sections.length} SECTIONS</span>
                 </div>
+                {canRetract ? (
+                  <div className="mt-space-md flex flex-wrap items-center gap-space-sm">
+                    {isConfirmingRetraction ? (
+                      <>
+                        <span className="text-body-sm text-warning">撤销后章节与小节将恢复编辑，历史记录仍保留。</span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={retractMutation.isPending}
+                          onClick={() => setIsConfirmingRetraction(false)}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          disabled={retractMutation.isPending}
+                          onClick={() => retractMutation.mutate(selectedArchive.id, { onSuccess: () => setIsConfirmingRetraction(false) })}
+                        >
+                          <ArchiveRestore aria-hidden="true" size={14} />
+                          {retractMutation.isPending ? '撤销中...' : '确认撤销'}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setIsConfirmingRetraction(true)}>
+                        <ArchiveRestore aria-hidden="true" size={14} />
+                        撤销归档
+                      </Button>
+                    )}
+                  </div>
+                ) : null}
+                {retractMutation.isError ? (
+                  <p className="mt-space-sm text-body-sm text-error">
+                    {retractMutation.error instanceof Error ? retractMutation.error.message : '撤销归档失败'}
+                  </p>
+                ) : null}
               </header>
 
               <div className="divide-y divide-hairline">

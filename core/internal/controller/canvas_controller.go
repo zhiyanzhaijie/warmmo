@@ -300,6 +300,22 @@ func (c *CanvasController) ListChapterArchiveHistory(response http.ResponseWrite
 	writeJSON(response, http.StatusOK, map[string]any{"archives": archives})
 }
 
+func (c *CanvasController) RetractChapterArchive(response http.ResponseWriter, request *http.Request) {
+	err := c.service.RetractChapterArchive(request.Context(), request.PathValue("workID"), request.PathValue("archiveID"))
+	switch {
+	case errors.Is(err, service.ErrInvalidCanvasRequest):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "章节归档请求无效"})
+	case errors.Is(err, canvas.ErrChapterArchiveNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "章节归档不存在"})
+	case errors.Is(err, canvas.ErrChapterArchiveNotCurrent):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "只能撤销当前归档"})
+	case err != nil:
+		c.internalError(response, "retract chapter archive", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (c *CanvasController) SwitchNodeVersion(response http.ResponseWriter, request *http.Request) {
 	var input struct {
 		VersionID string `json:"versionId"`

@@ -763,24 +763,60 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run warmag
 }
 
 func readChapterArchiveSections(ctx context.Context, tx *sql.Tx, workID, chapterOutlineNodeID string, summaries []archiveSectionResult) ([]archiveSectionSource, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT so.id,cs.id,cs.current_version_id,cs.revision,cs.title,cs.content FROM canvas_edges chapter_edge JOIN canvas_nodes so ON so.work_id=chapter_edge.work_id AND so.id=chapter_edge.target_node_id AND so.kind=? JOIN canvas_edges section_edge ON section_edge.work_id=chapter_edge.work_id AND section_edge.source_node_id=so.id AND section_edge.kind='generated_from' JOIN canvas_nodes cs ON cs.work_id=section_edge.work_id AND cs.id=section_edge.target_node_id AND cs.kind=? WHERE chapter_edge.work_id=? AND chapter_edge.source_node_id=? AND chapter_edge.kind='generated_from'`, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection, workID, chapterOutlineNodeID)
+	rows, err := tx.QueryContext(ctx, `
+SELECT so.id,cs.id,cs.current_version_id,cs.revision,cs.title,cs.content
+FROM canvas_edges chapter_edge
+JOIN canvas_nodes so
+  ON so.work_id=chapter_edge.work_id AND so.id=chapter_edge.target_node_id AND so.kind=?
+LEFT JOIN canvas_edges section_edge
+  ON section_edge.work_id=chapter_edge.work_id AND section_edge.source_node_id=so.id AND section_edge.kind='generated_from'
+LEFT JOIN canvas_nodes cs
+  ON cs.work_id=section_edge.work_id AND cs.id=section_edge.target_node_id AND cs.kind=?
+WHERE chapter_edge.work_id=? AND chapter_edge.source_node_id=? AND chapter_edge.kind='generated_from'`, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection, workID, chapterOutlineNodeID)
 	if err != nil {
 		return nil, fmt.Errorf("read chapter archive sections: %w", err)
 	}
-	defer rows.Close()
 	sourcesByNodeID := make(map[string]archiveSectionSource)
+	plannedSectionOutlineIDs := make(map[string]struct{})
+	completedSectionOutlineIDs := make(map[string]struct{})
 	for rows.Next() {
-		var source archiveSectionSource
-		if err := rows.Scan(&source.SectionOutlineNodeID, &source.ChapterSectionNodeID, &source.ChapterSectionVersionID, &source.NodeRevision, &source.Title, &source.Content); err != nil {
+		var (
+			sectionOutlineNodeID    string
+			chapterSectionNodeID    sql.NullString
+			chapterSectionVersionID sql.NullString
+			nodeRevision            sql.NullInt64
+			title                   sql.NullString
+			content                 sql.NullString
+		)
+		if err := rows.Scan(&sectionOutlineNodeID, &chapterSectionNodeID, &chapterSectionVersionID, &nodeRevision, &title, &content); err != nil {
 			return nil, err
 		}
+		plannedSectionOutlineIDs[sectionOutlineNodeID] = struct{}{}
+		if !chapterSectionNodeID.Valid {
+			continue
+		}
+		source := archiveSectionSource{
+			SectionOutlineNodeID:    sectionOutlineNodeID,
+			ChapterSectionNodeID:    chapterSectionNodeID.String,
+			ChapterSectionVersionID: chapterSectionVersionID.String,
+			NodeRevision:            nodeRevision.Int64,
+			Title:                   title.String,
+			Content:                 content.String,
+		}
 		sourcesByNodeID[source.ChapterSectionNodeID] = source
+		completedSectionOutlineIDs[source.SectionOutlineNodeID] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	if len(sourcesByNodeID) == 0 {
 		return nil, fmt.Errorf("%w: chapter has no completed sections", canvas.ErrInvalidChapterArchive)
+	}
+	if len(plannedSectionOutlineIDs) != len(completedSectionOutlineIDs) {
+		return nil, fmt.Errorf("%w: all %d section outlines must have completed chapter sections", canvas.ErrChapterArchiveIncomplete, len(plannedSectionOutlineIDs))
 	}
 	if len(summaries) != len(sourcesByNodeID) {
 		return nil, fmt.Errorf("%w: every completed section must be summarized", canvas.ErrInvalidChapterArchive)
