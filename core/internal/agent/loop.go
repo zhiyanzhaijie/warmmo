@@ -253,7 +253,14 @@ func (l *Loop) Run(ctx context.Context, input RunInput, model TextModel, emit Em
 			toolCalls++
 			if err != nil {
 				_ = emit(EventToolFailed, map[string]string{"name": decision.ToolName, "message": err.Error()})
-				return RunResult{}, fmt.Errorf("call tool %q: %w", decision.ToolName, err)
+				if errors.Is(err, ErrToolNotAllowed) || errors.Is(err, ErrToolNotFound) {
+					return RunResult{}, fmt.Errorf("call tool %q: %w", decision.ToolName, err)
+				}
+				state.observations = append(state.observations, Observation{
+					Source:  decision.ToolName + ".error",
+					Summary: err.Error(),
+				})
+				continue
 			}
 			summary := summarize(result)
 			state.observations = append(state.observations, Observation{Source: decision.ToolName, Summary: summary})
@@ -632,12 +639,15 @@ func requestsNodeReplacement(prompt, nodeKind string) bool {
 		}
 	}
 	phrasesByKind := map[string][]string{
-		"character":       {"新角色", "新人物", "另一个角色", "另一个人物", "创建角色", "创建一个角色", "new character", "another character", "create a character"},
-		"world":           {"新世界观", "另一个世界观", "创建世界观", "new world", "create a world"},
-		"location":        {"新地点", "新场景", "另一个地点", "创建地点", "new location", "create a location"},
-		"event":           {"新事件", "另一个事件", "创建事件", "new event", "create an event"},
-		"mechanism":       {"新机制", "另一个机制", "创建机制", "new mechanism", "create a mechanism"},
-		"chapter-outline": {"新章节", "新大纲", "创建章节", "创建大纲", "new chapter", "new outline"},
+		"character": {"新角色", "新人物", "另一个角色", "另一个人物", "创建角色", "创建一个角色", "new character", "another character", "create a character"},
+		"world":     {"新世界观", "另一个世界观", "创建世界观", "new world", "create a world"},
+		"location":  {"新地点", "新场景", "另一个地点", "创建地点", "new location", "create a location"},
+		"event":     {"新事件", "另一个事件", "创建事件", "new event", "create an event"},
+		"mechanism": {"新机制", "另一个机制", "创建机制", "new mechanism", "create a mechanism"},
+		"chapter-outline": {
+			"新章节", "新的章节", "下一章", "下一个章节", "续写新章", "续写下一章",
+			"新大纲", "新的章节概览", "创建章节", "创建大纲", "new chapter", "next chapter", "new outline",
+		},
 	}
 	for _, phrase := range phrasesByKind[nodeKind] {
 		if strings.Contains(normalized, phrase) {

@@ -20,6 +20,12 @@ export const chapterArchiveKeys = {
     'history',
     chapterOutlineNodeId,
   ] as const,
+  storySpine: (workId: string, page: number, pageSize: number) => [
+    ...chapterArchiveKeys.work(workId),
+    'story-spine',
+    page,
+    pageSize,
+  ] as const,
 }
 
 export function useCurrentChapterArchives(workId: string) {
@@ -63,7 +69,7 @@ export interface PaginationMetadata {
 
 export function useStorySpine(workId: string, page = 1, pageSize = 20) {
   return useQuery({
-    queryKey: [...chapterArchiveKeys.work(workId), 'story-spine', page, pageSize],
+    queryKey: chapterArchiveKeys.storySpine(workId, page, pageSize),
     queryFn: async ({ signal }) => {
       const encodedWorkId = encodeURIComponent(workId)
       return coreClient<{ items: ChapterArchiveTimeline[]; pagination: PaginationMetadata }>(

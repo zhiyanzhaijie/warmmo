@@ -57,8 +57,7 @@ export function useAgentRunStream(workId: string) {
         ]
         if (event.type === 'run.completed' && typeof event.data?.archiveId === 'string') {
           invalidations.push(
-            queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.current(workId) }),
-            queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.history(workId, nodeId) }),
+            queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.work(workId) }),
             queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) }),
           )
         }

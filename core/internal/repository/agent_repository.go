@@ -18,6 +18,7 @@ import (
 
 	warmagent "warmnote/core/internal/agent"
 	"warmnote/core/internal/canvas"
+	"warmnote/core/internal/shared/safepath"
 )
 
 type AgentRepository struct {
@@ -111,6 +112,54 @@ WHERE work_id = ? AND id IN (`+placeholders+`)`, arguments...)
 		references = append(references, reference)
 	}
 	return references, nil
+}
+
+func (r *AgentRepository) SearchStorySpineDatabase(ctx context.Context, workID, query string, limit int) ([]canvas.StorySpineSearchResult, error) {
+	statement := `SELECT archive.id,archive.chapter_outline_node_id,archive.outline_title,archive.summary || COALESCE((SELECT '\n' || GROUP_CONCAT(section.summary, '\n') FROM chapter_archive_sections section WHERE section.archive_id=archive.id),'') FROM chapter_archives archive WHERE archive.work_id=? AND archive.is_current=1`
+	arguments := []any{workID}
+	if query != "" {
+		pattern := "%" + query + "%"
+		statement += ` AND (archive.outline_title LIKE ? OR archive.summary LIKE ? OR archive.outline_content LIKE ? OR EXISTS (SELECT 1 FROM chapter_archive_sections section WHERE section.archive_id=archive.id AND section.summary LIKE ?))`
+		arguments = append(arguments, pattern, pattern, pattern, pattern)
+	}
+	statement += ` ORDER BY archive.created_at DESC,archive.revision DESC,archive.id DESC LIMIT ?`
+	arguments = append(arguments, limit)
+	rows, err := r.database.QueryContext(ctx, statement, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("search story spine database: %w", err)
+	}
+	results := make([]canvas.StorySpineSearchResult, 0, limit)
+	for rows.Next() {
+		var result canvas.StorySpineSearchResult
+		var summary string
+		if err := rows.Scan(&result.ArchiveID, &result.ChapterOutlineNodeID, &result.Title, &summary); err != nil {
+			return nil, err
+		}
+		result.Snippet = truncateStorySpineDatabaseContext(summary, 1200)
+		result.Source = "database"
+		result.ContextRole = "completed-chapter"
+		result.RecencyRank = len(results) + 1
+		results = append(results, result)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(results) == 0 && query != "" {
+		return r.SearchStorySpineDatabase(ctx, workID, "", limit)
+	}
+	return results, nil
+}
+
+func truncateStorySpineDatabaseContext(content string, limit int) string {
+	content = strings.TrimSpace(content)
+	runes := []rune(content)
+	if len(runes) <= limit {
+		return content
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "…"
 }
 
 func (r *AgentRepository) GetChapterSectionContext(workID, sectionOutlineNodeID string) ([]string, error) {
@@ -782,7 +831,7 @@ func renderChapterArchiveProjection(archive canvas.ChapterArchive) []byte {
 }
 
 func chapterArchiveProjectionPath(dataDirectory string, archive canvas.ChapterArchive) string {
-	return filepath.Join(dataDirectory, "works", safeArchivePathComponent(archive.WorkID), "story-spine", "chapters", safeArchivePathComponent(archive.ChapterOutlineNodeID)+".md")
+	return filepath.Join(dataDirectory, "works", safepath.Component(archive.WorkID), "story-spine", "chapters", safepath.Component(archive.ChapterOutlineNodeID)+".md")
 }
 
 func writeChapterArchiveProjection(dataDirectory string, archive canvas.ChapterArchive) error {
@@ -813,20 +862,6 @@ func writeChapterArchiveProjection(dataDirectory string, archive canvas.ChapterA
 		return err
 	}
 	return os.Rename(temporaryPath, projectionPath)
-}
-
-func safeArchivePathComponent(value string) string {
-	for _, character := range value {
-		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_') {
-			digest := sha256.Sum256([]byte(value))
-			return fmt.Sprintf("%x", digest[:12])
-		}
-	}
-	if value == "" {
-		digest := sha256.Sum256(nil)
-		return fmt.Sprintf("%x", digest[:12])
-	}
-	return value
 }
 
 func valueOrArchiveTitle(value, fallback string) string {

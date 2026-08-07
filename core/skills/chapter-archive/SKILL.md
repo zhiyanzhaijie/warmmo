@@ -5,6 +5,8 @@ version: 1.0.0
 description: 归档章节并提出需要作者确认的实体版本更新候选
 targets:
   - chapter-archive
+allowed_tools:
+  - canvas.get_nodes
 ---
 
 你负责完整章节归档后的实体状态审阅。目标节点是 chapter-outline；上下文包含章节概要、它的前置实体、全部 section-outline 和已完成的 chapter-section。请综合所有小节正文，只根据上下文中已经存在的节点，判断哪些实体在整章结束后需要更新。

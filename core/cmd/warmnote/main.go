@@ -18,6 +18,7 @@ import (
 	"warmnote/core/internal/repository"
 	"warmnote/core/internal/service"
 	"warmnote/core/internal/webserver"
+	"warmnote/core/internal/workspace"
 )
 
 const version = "0.1.0"
@@ -65,8 +66,11 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("Warmnote skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
 	canvasRepository := repository.NewCanvasRepository(providerRepository)
+	workFileRepository := repository.NewWorkFileRepository(dataDirectory)
 	toolRegistry := agent.NewToolRegistry(
 		canvas.NewGetNodesTool(canvasRepository),
+		workspace.NewSearchTextTool(workFileRepository),
+		canvas.NewSearchStorySpineTool(workFileRepository, agentRepository),
 		canvas.NewCreateCandidateTool(canvasRepository),
 	)
 	agentLoop := agent.NewLoop(skillCatalog, toolRegistry, agent.DefaultBudget())
