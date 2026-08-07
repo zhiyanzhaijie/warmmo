@@ -142,7 +142,7 @@ func truncateRunes(value string, limit int) string {
 }
 
 func DefaultBudget() Budget {
-	return Budget{MaxSteps: 8, MaxModelCalls: 8, MaxToolCalls: 4, MaxDuration: 3 * time.Minute}
+	return Budget{MaxSteps: 16, MaxModelCalls: 16, MaxToolCalls: 16, MaxDuration: 3 * time.Minute}
 }
 
 type Loop struct {

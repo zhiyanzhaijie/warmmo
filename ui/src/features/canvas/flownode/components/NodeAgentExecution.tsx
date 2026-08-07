@@ -12,7 +12,7 @@ import {
   Sparkles,
   Wrench,
 } from 'lucide-react'
-import { memo, useMemo } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef } from 'react'
 
 import {
   ChainOfThought,
@@ -43,6 +43,14 @@ interface ToolExecutionStep extends ExecutionStep {
 export const NodeAgentExecution = memo(function NodeAgentExecution({ nodeId }: { nodeId: string }) {
   const run = useFlowNodeStore((state) => state.nodeAgentRuns[nodeId])
   const steps = useMemo(() => run === undefined ? [] : buildExecutionSteps(run), [run])
+  const scrollViewportRef = useRef<HTMLDivElement>(null)
+  const eventCount = run?.events.length ?? 0
+
+  useLayoutEffect(() => {
+    const viewport = scrollViewportRef.current
+    if (viewport === null) return
+    viewport.scrollTop = viewport.scrollHeight
+  }, [eventCount, run?.status])
 
   if (run === undefined || run.status === 'completed') return null
 
@@ -63,9 +71,9 @@ export const NodeAgentExecution = memo(function NodeAgentExecution({ nodeId }: {
   const isWaiting = run.status === 'waiting_input'
 
   return (
-    <div className="nodrag nopan nowheel absolute inset-0 z-10 overflow-hidden bg-canvas-elevated/95 px-space-xs py-space-xxs backdrop-blur-[1px]">
-      <ChainOfThought defaultOpen className="flex h-full flex-col space-y-0">
-        <ChainOfThoughtHeader className="min-h-5 gap-1 text-[11px] leading-4 [&>svg:first-child]:hidden [&>svg:last-child]:size-3">
+    <div className="nodrag nopan nowheel absolute inset-0 z-10 flex size-full min-h-0 flex-col overflow-hidden bg-canvas-elevated/95 px-space-xs py-space-xxs backdrop-blur-[1px]">
+      <ChainOfThought defaultOpen className="flex size-full min-h-0 flex-1 flex-col space-y-0">
+        <ChainOfThoughtHeader className="min-h-5 shrink-0 gap-1 text-[11px] leading-4 [&>svg:first-child]:hidden [&>svg:last-child]:size-3">
           <span className="flex min-w-0 items-center gap-space-xxs">
             {isWaiting ? <MessageCircleQuestion
               aria-hidden="true"
@@ -77,17 +85,22 @@ export const NodeAgentExecution = memo(function NodeAgentExecution({ nodeId }: {
             <span className="truncate">{summary}</span>
           </span>
         </ChainOfThoughtHeader>
-        <ChainOfThoughtContent className="mt-1 max-h-full min-h-0 space-y-1 overflow-y-auto pb-1">
-          {steps.map((step) => (
-            <ChainOfThoughtStep
-              key={step.id}
-              icon={step.icon}
-              label={step.label}
-              description={step.description}
-              status={step.status === 'error' ? 'complete' : step.status}
-              className={`gap-1 text-[11px] leading-3.5 [&_svg]:size-3 [&>div:first-child]:mt-px [&>div:first-child>div]:top-5 [&>div:last-child]:space-y-0.5 [&>div:last-child>div:nth-child(2)]:text-[10px] [&>div:last-child>div:nth-child(2)]:leading-3 ${step.status === 'error' ? 'text-error' : ''}`}
-            />
-          ))}
+        <ChainOfThoughtContent
+          ref={scrollViewportRef}
+          className="mt-1 h-full min-h-0 overflow-y-auto overscroll-contain pb-1"
+        >
+          <div className="flex min-h-full flex-col justify-end gap-1">
+            {steps.map((step) => (
+              <ChainOfThoughtStep
+                key={step.id}
+                icon={step.icon}
+                label={step.label}
+                description={step.description}
+                status={step.status === 'error' ? 'complete' : step.status}
+                className={`gap-1 text-[11px] leading-3.5 [&_svg]:size-3 [&>div:first-child]:mt-px [&>div:first-child>div]:top-5 [&>div:last-child]:space-y-0.5 [&>div:last-child>div:nth-child(2)]:text-[10px] [&>div:last-child>div:nth-child(2)]:leading-3 ${step.status === 'error' ? 'text-error' : ''}`}
+              />
+            ))}
+          </div>
         </ChainOfThoughtContent>
       </ChainOfThought>
     </div>
