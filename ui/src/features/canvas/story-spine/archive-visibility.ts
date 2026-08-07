@@ -1,6 +1,6 @@
-import type { ChapterArchive } from '@/types/chapter-archive'
+import type { ChapterArchiveVisibility } from '@/types/chapter-archive'
 
-export function collectArchiveLockedNodeIds(archives: ChapterArchive[]) {
+export function collectArchiveLockedNodeIds(archives: ChapterArchiveVisibility[]) {
   const lockedNodeIds = new Set<string>()
   for (const archive of archives) {
     lockedNodeIds.add(archive.chapterOutlineNodeId)
@@ -18,7 +18,7 @@ export interface CollapsedArchiveGraph {
 }
 
 export function collectCollapsedArchiveGraph(
-  archives: ChapterArchive[],
+  archives: ChapterArchiveVisibility[],
   expandedChapterNodeIds: ReadonlySet<string>,
 ): CollapsedArchiveGraph {
   const hiddenNodeIds = new Set<string>()

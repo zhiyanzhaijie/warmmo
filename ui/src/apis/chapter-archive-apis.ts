@@ -1,10 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { coreClient } from '@/lib/api/core-client'
-import type { ChapterArchive } from '@/types/chapter-archive'
+import type { ChapterArchive, ChapterArchiveTimeline, ChapterArchiveVisibility } from '@/types/chapter-archive'
 
 interface ChapterArchivesResponse {
   archives: ChapterArchive[]
+}
+
+interface ChapterArchiveVisibilityResponse {
+  archives: ChapterArchiveVisibility[]
 }
 
 export const chapterArchiveKeys = {
@@ -23,7 +27,7 @@ export function useCurrentChapterArchives(workId: string) {
     queryKey: chapterArchiveKeys.current(workId),
     queryFn: async ({ signal }) => {
       const encodedWorkId = encodeURIComponent(workId)
-      const response = await coreClient<ChapterArchivesResponse>(
+      const response = await coreClient<ChapterArchiveVisibilityResponse>(
         `/works/${encodedWorkId}/chapter-archives`,
         { signal },
       )
@@ -44,6 +48,28 @@ export function useChapterArchiveHistory(workId: string, chapterOutlineNodeId: s
         { signal },
       )
       return response.archives
+    },
+  })
+}
+
+export interface PaginationMetadata {
+  page: number
+  pageSize: number
+  total: number
+  totalPages: number
+  hasPrevious: boolean
+  hasNext: boolean
+}
+
+export function useStorySpine(workId: string, page = 1, pageSize = 20) {
+  return useQuery({
+    queryKey: [...chapterArchiveKeys.work(workId), 'story-spine', page, pageSize],
+    queryFn: async ({ signal }) => {
+      const encodedWorkId = encodeURIComponent(workId)
+      return coreClient<{ items: ChapterArchiveTimeline[]; pagination: PaginationMetadata }>(
+        `/works/${encodedWorkId}/story-spine?page=${page}&pageSize=${pageSize}`,
+        { signal },
+      )
     },
   })
 }

@@ -31,3 +31,33 @@ export interface ChapterArchive {
   createdAt: string
   supersededAt?: string
 }
+
+export interface ChapterArchiveVisibilitySection {
+  sectionOutlineNodeId: string
+  chapterSectionNodeId: string
+}
+
+export interface ChapterArchiveVisibility {
+  chapterOutlineNodeId: string
+  sections: ChapterArchiveVisibilitySection[]
+}
+
+export interface ChapterArchiveTimelineSection {
+  archiveId: string
+  ordinal: number
+  sectionOutlineNodeId: string
+  chapterSectionNodeId: string
+  nodeRevision: number
+  title: string
+  summary: string
+}
+
+export interface ChapterArchiveTimeline {
+  id: string
+  chapterOutlineNodeId: string
+  revision: number
+  outlineTitle: string
+  summary: string
+  projectionStatus: ChapterArchiveProjectionStatus
+  sections: ChapterArchiveTimelineSection[]
+}

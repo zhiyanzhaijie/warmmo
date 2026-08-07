@@ -253,7 +253,7 @@ func (c *CanvasController) ListNodeVersions(response http.ResponseWriter, reques
 }
 
 func (c *CanvasController) ListCurrentChapterArchives(response http.ResponseWriter, request *http.Request) {
-	archives, err := c.service.ListCurrentChapterArchives(request.Context(), request.PathValue("workID"))
+	archives, err := c.service.ListChapterArchiveVisibility(request.Context(), request.PathValue("workID"))
 	if errors.Is(err, service.ErrInvalidCanvasRequest) {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "章节归档请求无效"})
 		return
@@ -263,6 +263,28 @@ func (c *CanvasController) ListCurrentChapterArchives(response http.ResponseWrit
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"archives": archives})
+}
+
+func (c *CanvasController) ListStorySpine(response http.ResponseWriter, request *http.Request) {
+	pageable, err := parsePagination(request)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "分页参数无效"})
+		return
+	}
+	page, err := c.service.ListChapterArchiveTimelinePage(
+		request.Context(),
+		request.PathValue("workID"),
+		pageable,
+	)
+	if errors.Is(err, service.ErrInvalidCanvasRequest) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "故事脉络请求无效"})
+		return
+	}
+	if err != nil {
+		c.internalError(response, "list story spine", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, page)
 }
 
 func (c *CanvasController) ListChapterArchiveHistory(response http.ResponseWriter, request *http.Request) {

@@ -6,7 +6,7 @@ import '@xyflow/react/dist/style.css'
 import '@/features/canvas/canvas.css'
 
 import { useCanvasCandidates, useCanvasEdges, useCanvasNodes, useLayoutCanvasChapter } from '@/apis/canvas-apis'
-import { useCurrentChapterArchives } from '@/apis/chapter-archive-apis'
+import { useCurrentChapterArchives, useStorySpine } from '@/apis/chapter-archive-apis'
 import { CanvasAgentWorkspace } from '@/features/canvas/agent-workspace'
 import { NodeDerivationToolbar } from '@/features/canvas/agent-workspace/NodeDerivationToolbar'
 import { CanvasHeader } from '@/features/canvas/CanvasHeader'
@@ -41,6 +41,7 @@ function CanvasWorkspace({ workId }: { workId: string }) {
   const candidatesQuery = useCanvasCandidates(workId)
   const edgesQuery = useCanvasEdges(workId)
   const archivesQuery = useCurrentChapterArchives(workId)
+  const storySpineQuery = useStorySpine(workId)
   const {
     isPending: isLayoutPending,
     mutate: layoutChapter,
@@ -109,7 +110,7 @@ function CanvasWorkspace({ workId }: { workId: string }) {
       />
       <StorySpineTimeline
         workId={workId}
-        archives={archivesQuery.data ?? []}
+        archives={storySpineQuery.data?.items ?? []}
         canvasNodes={nodesQuery.data ?? []}
         expandedChapterNodeIds={expandedChapterNodeIds}
         onExpandChapter={expandChapter}

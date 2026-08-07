@@ -35,6 +35,7 @@ func NewRouter(runtimeController *controller.RuntimeController, providerControll
 	router.HandleFunc("GET /api/v1/works/{workID}/nodes/{nodeID}/versions", canvasController.ListNodeVersions)
 	router.HandleFunc("POST /api/v1/works/{workID}/nodes/{nodeID}/versions/current", canvasController.SwitchNodeVersion)
 	router.HandleFunc("GET /api/v1/works/{workID}/chapter-archives", canvasController.ListCurrentChapterArchives)
+	router.HandleFunc("GET /api/v1/works/{workID}/story-spine", canvasController.ListStorySpine)
 	router.HandleFunc("GET /api/v1/works/{workID}/nodes/{nodeID}/chapter-archives", canvasController.ListChapterArchiveHistory)
 	router.HandleFunc("PATCH /api/v1/works/{workID}/nodes/{nodeID}", canvasController.UpdateNode)
 	router.HandleFunc("PATCH /api/v1/works/{workID}/nodes/{nodeID}/position", canvasController.UpdateNodePosition)

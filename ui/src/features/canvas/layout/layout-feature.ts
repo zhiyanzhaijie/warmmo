@@ -1,5 +1,5 @@
 import type { CanvasNode, CanvasNodePosition } from '@/types/canvas'
-import type { ChapterArchive } from '@/types/chapter-archive'
+import type { ChapterArchiveVisibility } from '@/types/chapter-archive'
 
 export interface ArchivedNodeDragLayout {
   rootNodeId: string
@@ -11,7 +11,7 @@ export interface ArchivedNodeDragLayout {
 export function createArchivedNodeDragLayout(
   rootNodeId: string,
   nodes: CanvasNode[],
-  archives: ChapterArchive[],
+  archives: ChapterArchiveVisibility[],
 ): ArchivedNodeDragLayout | null {
   const rootNode = nodes.find((node) => node.id === rootNodeId)
   if (rootNode === undefined) return null

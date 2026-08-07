@@ -38,6 +38,7 @@
   --color-error-deep: #c50000;
   --color-warning: #f5a623;
   --color-archive: #4f7a70;
+  --color-film: #211c1a;
   --color-background: #fafafa;
   --color-foreground: #171717;
   --color-popover: #ffffff;
@@ -148,6 +149,7 @@
   --color-error-deep: #ff3b41;
   --color-warning: #f5a623;
   --color-archive: #79a99d;
+  --color-film: #2b2523;
   --color-background: #0a0a0a;
   --color-foreground: #ededed;
   --color-popover: #171717;

@@ -1,11 +1,11 @@
 import type { StorySpineChapter, StorySpineTone } from '@/features/canvas/story-spine/types'
 import type { CanvasNode } from '@/types/canvas'
-import type { ChapterArchive } from '@/types/chapter-archive'
+import type { ChapterArchiveTimeline } from '@/types/chapter-archive'
 
 const storySpineTones: StorySpineTone[] = ['cyan', 'magenta', 'amber', 'violet', 'green']
 
 export function toStorySpineChapters(
-  archives: ChapterArchive[],
+  archives: ChapterArchiveTimeline[],
   canvasNodes: CanvasNode[],
 ): StorySpineChapter[] {
   const availableNodeIds = new Set(canvasNodes.map((node) => node.id))

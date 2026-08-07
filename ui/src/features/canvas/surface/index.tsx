@@ -32,7 +32,7 @@ import { useCanvasNodeCreation } from '@/features/canvas/surface/use-node-creati
 import { useCanvasSelection } from '@/features/canvas/surface/use-selection'
 import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 import type { CanvasNode } from '@/types/canvas'
-import type { ChapterArchive } from '@/types/chapter-archive'
+import type { ChapterArchiveVisibility } from '@/types/chapter-archive'
 
 const canvasPanMouseButtons = [1, 2]
 const reactFlowProOptions = { hideAttribution: true }
@@ -44,7 +44,7 @@ export const CanvasSurface = memo(function CanvasSurface({
 }: {
   workId: string
   canvasNodes: CanvasNode[]
-  chapterArchives: ChapterArchive[]
+  chapterArchives: ChapterArchiveVisibility[]
 }) {
   const archiveLocks = useArchiveLocks(workId)
   const { mutate: updatePositions } = useUpdateCanvasNodePositions(workId)

@@ -3,6 +3,7 @@ import { LoaderCircle, Redo2, Undo2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { useCreateCanvasNode } from '@/apis/canvas-apis'
+import { Button } from '@/components/ui/button'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
 import { isTextEntryTarget } from '@/features/canvas/keyboard'
 import { useCanvasHistoryActions } from '@/features/canvas/node-creator/hook'
@@ -59,7 +60,7 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
         shortcut="⌘Z / Ctrl+Z"
         onClick={history.undo}
       >
-        <Undo2 size={15} />
+        <Undo2 aria-hidden="true" size={15} />
       </HistoryButton>
       <nav
         aria-label="创建画布节点"
@@ -75,21 +76,32 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
           return (
             <div key={kind} className="flex items-center">
               {startsCategory ? <div className="mx-1 h-5 w-px bg-hairline" /> : null}
-              <button
+              <Button
                 aria-label={`新建${definition.label}`}
-                className="relative grid size-8 shrink-0 place-items-center rounded-sm text-mute hover:bg-hairline-soft hover:text-ink disabled:cursor-wait disabled:opacity-40"
-                type="button"
+                className="group relative hover:bg-hairline-soft disabled:cursor-wait disabled:opacity-40"
+                size="icon-sm"
+                variant="ghost"
                 title={`新建${definition.label} · 快捷键 ${definition.shortcut}`}
                 disabled={createNode.isPending}
                 onClick={() => createAtViewportCenter(kind)}
               >
                 {pendingKind === kind
-                  ? <LoaderCircle className="animate-spin" size={15} />
-                  : <Icon size={15} />}
+                  ? <LoaderCircle
+                    aria-hidden="true"
+                    className="animate-spin opacity-50 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                    size={15}
+                    style={{ color: definition.accentColor }}
+                  />
+                  : <Icon
+                    aria-hidden="true"
+                    className="opacity-50 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                    size={15}
+                    style={{ color: definition.accentColor }}
+                  />}
                 <span className="pointer-events-none absolute right-0.5 bottom-0.5 font-mono text-[9px] leading-none text-faint">
                   {definition.shortcut}
                 </span>
-              </button>
+              </Button>
             </div>
           )
         })}
@@ -100,7 +112,7 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
         shortcut="⇧⌘Z / Ctrl+Shift+Z"
         onClick={history.redo}
       >
-        <Redo2 size={15} />
+        <Redo2 aria-hidden="true" size={15} />
       </HistoryButton>
     </div>
   )
@@ -122,14 +134,15 @@ function HistoryButton({
   if (!available) return <span aria-hidden="true" className="size-8 shrink-0" />
 
   return (
-    <button
+    <Button
       aria-label={label}
-      className="grid size-8 shrink-0 place-items-center rounded-sm border-0 bg-transparent text-mute transition-colors hover:bg-hairline-soft hover:text-ink"
+      className="bg-transparent text-mute hover:bg-hairline-soft hover:text-ink"
+      size="icon-sm"
       title={`${label} · ${shortcut}`}
-      type="button"
+      variant="ghost"
       onClick={onClick}
     >
       {children}
-    </button>
+    </Button>
   )
 }

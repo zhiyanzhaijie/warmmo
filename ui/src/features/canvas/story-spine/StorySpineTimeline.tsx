@@ -1,6 +1,15 @@
 import { Archive, CircleDashed, History } from 'lucide-react'
 import { memo, useCallback, useMemo, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from '@/components/ui/drawer'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { useFocusNode } from '@/features/canvas/flownode/use-focus-node'
@@ -8,22 +17,22 @@ import { ArchiveHistorySheet } from '@/features/canvas/story-spine/ArchiveHistor
 import { toStorySpineChapters } from '@/features/canvas/story-spine/adapters'
 import type { StorySpineChapter, StorySpineSection, StorySpineTone } from '@/features/canvas/story-spine/types'
 import type { CanvasNode } from '@/types/canvas'
-import type { ChapterArchive } from '@/types/chapter-archive'
+import type { ChapterArchiveTimeline } from '@/types/chapter-archive'
 
 interface StorySpineTimelineProps {
   workId: string
-  archives: ChapterArchive[]
+  archives: ChapterArchiveTimeline[]
   canvasNodes: CanvasNode[]
   expandedChapterNodeIds: ReadonlySet<string>
   onExpandChapter: (chapterNodeId: string) => void
 }
 
-const toneClasses: Record<StorySpineTone, { rail: string; active: string }> = {
-  cyan: { rail: 'bg-cyan/55', active: 'bg-cyan text-primary' },
-  magenta: { rail: 'bg-magenta/50', active: 'bg-magenta text-white' },
-  amber: { rail: 'bg-warning/55', active: 'bg-warning text-primary' },
-  violet: { rail: 'bg-violet/45', active: 'bg-violet text-white' },
-  green: { rail: 'bg-emerald-500/45', active: 'bg-emerald-500 text-white' },
+const toneClasses: Record<StorySpineTone, { marker: string; highlight: string; selected: string }> = {
+  cyan: { marker: 'bg-cyan', highlight: 'hover:border-cyan focus-visible:border-cyan', selected: 'border-cyan' },
+  magenta: { marker: 'bg-magenta', highlight: 'hover:border-magenta focus-visible:border-magenta', selected: 'border-magenta' },
+  amber: { marker: 'bg-warning', highlight: 'hover:border-warning focus-visible:border-warning', selected: 'border-warning' },
+  violet: { marker: 'bg-violet', highlight: 'hover:border-violet focus-visible:border-violet', selected: 'border-violet' },
+  green: { marker: 'bg-emerald-500', highlight: 'hover:border-emerald-500 focus-visible:border-emerald-500', selected: 'border-emerald-500' },
 }
 
 export const StorySpineTimeline = memo(function StorySpineTimeline({
@@ -37,6 +46,10 @@ export const StorySpineTimeline = memo(function StorySpineTimeline({
     () => toStorySpineChapters(archives, canvasNodes),
     [archives, canvasNodes],
   )
+  const totalSectionUnits = useMemo(
+    () => chapters.reduce((total, chapter) => total + Math.max(1, chapter.sections.length), 0),
+    [chapters],
+  )
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
   const selectedNodeId = selectedNodeIds.length === 1 ? selectedNodeIds[0] : null
   const focusNode = useFocusNode()
@@ -46,39 +59,60 @@ export const StorySpineTimeline = memo(function StorySpineTimeline({
     if (needsReveal) window.requestAnimationFrame(() => focusNode(sectionNodeId))
   }, [focusNode, onExpandChapter])
   const [historyChapterNodeId, setHistoryChapterNodeId] = useState<string | null>(null)
+  const [isStorySpineOpen, setIsStorySpineOpen] = useState(false)
   const historyChapter = chapters.find((chapter) => chapter.nodeId === historyChapterNodeId)
-
-  if (chapters.length === 0) return null
 
   return (
     <>
-      <section
-        aria-label="故事脉络"
-        className="fixed right-space-md bottom-14 left-space-md z-30 h-[5.75rem] overflow-hidden rounded-sm border border-hairline bg-canvas-elevated/95 shadow-floating backdrop-blur-sm sm:right-space-md sm:bottom-space-md sm:left-44"
-      >
-        <div className="flex h-7 items-center gap-space-xs border-b border-hairline px-space-sm">
-          <Archive aria-hidden="true" className="text-mute" size={13} />
-          <h2 className="text-label-sm text-ink">故事脉络</h2>
-          <span className="font-mono text-body-sm text-faint">{chapters.length}</span>
+      <Drawer open={isStorySpineOpen} onOpenChange={setIsStorySpineOpen}>
+        <div className="pointer-events-none fixed right-space-md bottom-space-md left-space-md z-30 flex justify-center">
+          <DrawerTrigger asChild>
+            <Button
+              aria-label="打开故事脉络"
+              className="pointer-events-auto gap-space-xs border border-hairline bg-canvas-elevated/95 text-mute shadow-floating backdrop-blur-sm hover:bg-hairline-soft hover:text-ink"
+              size="sm"
+              variant="outline"
+            >
+              <Archive aria-hidden="true" size={14} />
+              <span>故事脉络</span>
+              <span className="font-mono text-body-sm text-faint">{chapters.length}</span>
+            </Button>
+          </DrawerTrigger>
         </div>
-        <TooltipProvider delayDuration={180}>
-          <div className="h-[4rem] overflow-x-auto overflow-y-hidden px-space-sm py-space-xs">
-            <div className="flex h-full min-w-max items-stretch gap-1">
-              {chapters.map((chapter) => (
-                <ChapterTrack
-                  key={chapter.archiveId}
-                  chapter={chapter}
-                  expanded={expandedChapterNodeIds.has(chapter.nodeId)}
-                  selectedNodeId={selectedNodeId}
-                  onFocusNode={focusNode}
-                  onFocusSection={focusSection}
-                  onOpenHistory={setHistoryChapterNodeId}
-                />
-              ))}
+        <DrawerContent className="gap-0 border-t-0 [&>button:last-child]:top-1 [&>button:last-child]:right-space-sm">
+          <DrawerHeader className="flex h-10 items-center gap-space-xs border-b-0 px-space-md py-0 pr-14">
+            <Archive aria-hidden="true" className="text-mute" size={15} />
+            <DrawerTitle className="text-label-sm">故事脉络</DrawerTitle>
+            <span className="font-mono text-body-sm text-faint">{chapters.length}</span>
+            <DrawerDescription className="sr-only">
+              按章节查看故事脉络并定位到画布节点
+            </DrawerDescription>
+          </DrawerHeader>
+          <TooltipProvider delayDuration={180}>
+            <div className="overflow-x-auto overflow-y-hidden px-space-md py-space-sm">
+              <div
+                className="grid min-h-28 w-full min-w-[48rem] items-stretch"
+                style={{ gridTemplateColumns: `repeat(${Math.max(1, totalSectionUnits)}, minmax(0, 1fr))` }}
+              >
+                {chapters.length === 0 ? (
+                  <div className="col-[1/-1] flex min-w-64 items-center text-body-sm text-faint">暂无归档脉络</div>
+                ) : chapters.map((chapter) => (
+                    <ChapterTrack
+                      key={chapter.archiveId}
+                      chapter={chapter}
+                      sectionUnits={Math.max(1, chapter.sections.length)}
+                      expanded={expandedChapterNodeIds.has(chapter.nodeId)}
+                      selectedNodeId={selectedNodeId}
+                      onFocusNode={focusNode}
+                      onFocusSection={focusSection}
+                      onOpenHistory={setHistoryChapterNodeId}
+                    />
+                  ))}
+              </div>
             </div>
-          </div>
-        </TooltipProvider>
-      </section>
+          </TooltipProvider>
+        </DrawerContent>
+      </Drawer>
       <ArchiveHistorySheet
         workId={workId}
         chapterNodeId={historyChapterNodeId}
@@ -93,6 +127,7 @@ export const StorySpineTimeline = memo(function StorySpineTimeline({
 
 interface ChapterTrackProps {
   chapter: StorySpineChapter
+  sectionUnits: number
   expanded: boolean
   selectedNodeId: string | null
   onFocusNode: (nodeId: string) => void
@@ -102,23 +137,26 @@ interface ChapterTrackProps {
 
 const ChapterTrack = memo(function ChapterTrack({
   chapter,
+  sectionUnits,
   expanded,
   selectedNodeId,
   onFocusNode,
   onFocusSection,
   onOpenHistory,
 }: ChapterTrackProps) {
-  const tone = toneClasses[chapter.tone]
-
   return (
-    <div className="flex min-w-36 flex-col">
-      <div className={`flex h-5 items-center border-l-2 px-1.5 ${tone.rail}`}>
+    <div
+      className="flex min-w-0 flex-col bg-transparent px-px"
+      style={{ gridColumn: `span ${sectionUnits}` }}
+    >
+      <div className="flex h-7 items-center px-1.5">
+        <span aria-hidden="true" className={`mr-1.5 h-2.5 w-0.5 shrink-0 ${toneClasses[chapter.tone].marker}`} />
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
               aria-disabled={!chapter.isNodeAvailable}
-              className="min-w-0 flex-1 truncate text-left text-body-sm font-medium text-ink aria-disabled:cursor-not-allowed aria-disabled:opacity-45"
+              className="min-w-0 flex-1 cursor-pointer truncate text-left text-body-sm font-medium text-ink aria-disabled:cursor-not-allowed aria-disabled:opacity-45"
               onClick={() => {
                 if (chapter.isNodeAvailable) onFocusNode(chapter.nodeId)
               }}
@@ -148,7 +186,7 @@ const ChapterTrack = memo(function ChapterTrack({
             <button
               type="button"
               aria-label={`查看${chapter.title}归档历史`}
-              className="ml-0.5 grid size-4 shrink-0 place-items-center text-mute hover:text-ink"
+              className="ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center text-faint transition-colors hover:text-ink"
               onClick={() => onOpenHistory(chapter.nodeId)}
             >
               <History aria-hidden="true" size={11} />
@@ -157,7 +195,7 @@ const ChapterTrack = memo(function ChapterTrack({
           <TooltipContent side="top">查看归档历史</TooltipContent>
         </Tooltip>
       </div>
-      <div className={`flex h-7 items-stretch gap-px p-0.5 ${tone.rail}`}>
+      <div className="flex h-20 items-stretch gap-px overflow-hidden bg-canvas">
         {chapter.sections.map((section) => (
           <SectionTick
             key={section.id}
@@ -199,13 +237,11 @@ const SectionTick = memo(function SectionTick({
           aria-disabled={!section.isNodeAvailable}
           aria-label={`定位到第 ${section.ordinal} 小节：${section.title}`}
           aria-pressed={selected}
-          className={`grid h-6 w-9 shrink-0 place-items-center border border-white/30 font-mono text-[0.625rem] transition-[filter,transform] hover:brightness-110 active:scale-95 aria-disabled:cursor-not-allowed aria-disabled:opacity-35 ${selected ? toneClasses[tone].active : 'bg-canvas-elevated/85 text-body'}`}
+          className={`h-20 min-w-1 flex-1 cursor-pointer border bg-film transition-colors focus-visible:relative focus-visible:z-10 focus-visible:outline-none aria-disabled:cursor-not-allowed aria-disabled:opacity-35 ${toneClasses[tone].highlight} ${selected ? toneClasses[tone].selected : 'border-transparent'}`}
           onClick={() => {
             if (section.isNodeAvailable) onFocusSection(chapterNodeId, section.nodeId, !expanded)
           }}
-        >
-          {section.ordinal}
-        </button>
+        />
       </TooltipTrigger>
       <TooltipContent side="top" align="start" className="max-w-72">
         <p className="text-label-sm">{section.ordinal}. {section.title}</p>

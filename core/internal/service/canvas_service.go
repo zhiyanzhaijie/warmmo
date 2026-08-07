@@ -7,6 +7,7 @@ import (
 
 	"warmnote/core/internal/agent"
 	"warmnote/core/internal/canvas"
+	"warmnote/core/internal/shared/pagination"
 )
 
 var ErrInvalidCanvasRequest = errors.New("invalid canvas request")
@@ -67,6 +68,34 @@ func (s *CanvasService) ListCurrentChapterArchives(ctx context.Context, workID s
 		return nil, ErrInvalidCanvasRequest
 	}
 	return s.store.ListCurrentChapterArchives(ctx, workID)
+}
+
+func (s *CanvasService) ListChapterArchiveVisibility(ctx context.Context, workID string) ([]canvas.ChapterArchiveVisibility, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" { return nil, ErrInvalidCanvasRequest }
+	return s.store.ListChapterArchiveVisibility(ctx, workID)
+}
+
+func (s *CanvasService) ListCurrentChapterArchivesPage(
+	ctx context.Context,
+	workID string,
+	pageable pagination.Pageable,
+) (pagination.Page[canvas.ChapterArchive], error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return pagination.Page[canvas.ChapterArchive]{}, ErrInvalidCanvasRequest
+	}
+	if err := pagination.Validate(pageable); err != nil {
+		return pagination.Page[canvas.ChapterArchive]{}, ErrInvalidCanvasRequest
+	}
+	return s.store.ListCurrentChapterArchivesPage(ctx, workID, pageable)
+}
+
+func (s *CanvasService) ListChapterArchiveTimelinePage(ctx context.Context, workID string, pageable pagination.Pageable) (pagination.Page[canvas.ChapterArchiveTimeline], error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" { return pagination.Page[canvas.ChapterArchiveTimeline]{}, ErrInvalidCanvasRequest }
+	if err := pagination.Validate(pageable); err != nil { return pagination.Page[canvas.ChapterArchiveTimeline]{}, ErrInvalidCanvasRequest }
+	return s.store.ListChapterArchiveTimelinePage(ctx, workID, pageable)
 }
 
 func (s *CanvasService) ListChapterArchiveHistory(ctx context.Context, workID, chapterOutlineNodeID string) ([]canvas.ChapterArchive, error) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"warmnote/core/internal/canvas"
+	"warmnote/core/internal/shared/pagination"
 )
 
 type archiveLockQuerier interface {
@@ -40,14 +41,142 @@ SELECT EXISTS (
 }
 
 func (r *CanvasRepository) ListCurrentChapterArchives(ctx context.Context, workID string) ([]canvas.ChapterArchive, error) {
-	return r.listChapterArchives(ctx, workID, "", true)
+	return r.listChapterArchives(ctx, workID, "", true, nil)
+}
+
+func (r *CanvasRepository) ListChapterArchiveVisibility(ctx context.Context, workID string) ([]canvas.ChapterArchiveVisibility, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT id,chapter_outline_node_id FROM chapter_archives WHERE work_id=? AND is_current=1 ORDER BY created_at, revision, id`, workID)
+	if err != nil {
+		return nil, fmt.Errorf("list chapter archive visibility: %w", err)
+	}
+	archives := make([]canvas.ChapterArchiveVisibility, 0)
+	archiveIDs := make([]string, 0)
+	for rows.Next() {
+		var archiveID string
+		var archive canvas.ChapterArchiveVisibility
+		if err := rows.Scan(&archiveID, &archive.ChapterOutlineNodeID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		archives = append(archives, archive)
+		archiveIDs = append(archiveIDs, archiveID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, archiveID := range archiveIDs {
+		sections, err := r.listChapterArchiveVisibilitySections(ctx, archiveID)
+		if err != nil {
+			return nil, err
+		}
+		archives[i].Sections = sections
+	}
+	return archives, nil
+}
+
+func (r *CanvasRepository) listChapterArchiveVisibilitySections(ctx context.Context, archiveID string) ([]canvas.ChapterArchiveVisibilitySection, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT section_outline_node_id,chapter_section_node_id FROM chapter_archive_sections WHERE archive_id=? ORDER BY ordinal`, archiveID)
+	if err != nil { return nil, fmt.Errorf("list chapter archive visibility sections: %w", err) }
+	defer rows.Close()
+	sections := make([]canvas.ChapterArchiveVisibilitySection, 0)
+	for rows.Next() {
+		var section canvas.ChapterArchiveVisibilitySection
+		if err := rows.Scan(&section.SectionOutlineNodeID, &section.ChapterSectionNodeID); err != nil { return nil, err }
+		sections = append(sections, section)
+	}
+	return sections, rows.Err()
+}
+
+func (r *CanvasRepository) ListCurrentChapterArchivesPage(
+	ctx context.Context,
+	workID string,
+	pageable pagination.Pageable,
+) (pagination.Page[canvas.ChapterArchive], error) {
+	window, err := pagination.WindowFor(pageable)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchive]{}, err
+	}
+	// Story spine is an archive timeline, so superseded revisions remain
+	// visible even though only current revisions participate in canvas locks.
+	total, err := r.countChapterArchives(ctx, workID, "", false)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchive]{}, err
+	}
+	archives, err := r.listChapterArchives(ctx, workID, "", true, &window)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchive]{}, err
+	}
+	page, err := pagination.NewPage(archives, total, pageable)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchive]{}, err
+	}
+	return page, nil
+}
+
+func (r *CanvasRepository) ListChapterArchiveTimelinePage(ctx context.Context, workID string, pageable pagination.Pageable) (pagination.Page[canvas.ChapterArchiveTimeline], error) {
+	window, err := pagination.WindowFor(pageable)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
+	}
+	total, err := r.countChapterArchives(ctx, workID, "", true)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
+	}
+	rows, err := r.database.QueryContext(ctx, `SELECT id,chapter_outline_node_id,revision,outline_title,summary,projection_status FROM chapter_archives WHERE work_id=? ORDER BY created_at, revision, id LIMIT ? OFFSET ?`, workID, window.Limit, window.Offset)
+	if err != nil {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, fmt.Errorf("list chapter archive timeline: %w", err)
+	}
+	items := make([]canvas.ChapterArchiveTimeline, 0)
+	for rows.Next() {
+		var item canvas.ChapterArchiveTimeline
+		if err := rows.Scan(&item.ID, &item.ChapterOutlineNodeID, &item.Revision, &item.OutlineTitle, &item.Summary, &item.ProjectionStatus); err != nil {
+			rows.Close()
+			return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Close(); err != nil {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
+	}
+	for index := range items {
+		items[index].Sections, err = r.listChapterArchiveTimelineSections(ctx, items[index].ID)
+		if err != nil {
+			return pagination.Page[canvas.ChapterArchiveTimeline]{}, err
+		}
+	}
+	return pagination.NewPage(items, total, pageable)
+}
+
+func (r *CanvasRepository) listChapterArchiveTimelineSections(ctx context.Context, archiveID string) ([]canvas.ChapterArchiveTimelineSection, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT archive_id,ordinal,section_outline_node_id,chapter_section_node_id,node_revision,title,summary FROM chapter_archive_sections WHERE archive_id=? ORDER BY ordinal`, archiveID)
+	if err != nil { return nil, fmt.Errorf("list chapter archive timeline sections: %w", err) }
+	defer rows.Close()
+	sections := make([]canvas.ChapterArchiveTimelineSection, 0)
+	for rows.Next() {
+		var section canvas.ChapterArchiveTimelineSection
+		if err := rows.Scan(&section.ArchiveID, &section.Ordinal, &section.SectionOutlineNodeID, &section.ChapterSectionNodeID, &section.NodeRevision, &section.Title, &section.Summary); err != nil { return nil, err }
+		sections = append(sections, section)
+	}
+	return sections, rows.Err()
 }
 
 func (r *CanvasRepository) ListChapterArchiveHistory(ctx context.Context, workID, chapterOutlineNodeID string) ([]canvas.ChapterArchive, error) {
-	return r.listChapterArchives(ctx, workID, chapterOutlineNodeID, false)
+	return r.listChapterArchives(ctx, workID, chapterOutlineNodeID, false, nil)
 }
 
-func (r *CanvasRepository) listChapterArchives(ctx context.Context, workID, chapterOutlineNodeID string, currentOnly bool) ([]canvas.ChapterArchive, error) {
+func (r *CanvasRepository) listChapterArchives(
+	ctx context.Context,
+	workID string,
+	chapterOutlineNodeID string,
+	currentOnly bool,
+	window *pagination.Window,
+) ([]canvas.ChapterArchive, error) {
 	query := `SELECT id,work_id,chapter_outline_node_id,revision,run_id,outline_version_id,outline_revision,outline_title,outline_content,summary,source_digest,is_current,projection_status,created_at,superseded_at FROM chapter_archives WHERE work_id=?`
 	arguments := []any{workID}
 	if chapterOutlineNodeID != "" {
@@ -57,7 +186,11 @@ func (r *CanvasRepository) listChapterArchives(ctx context.Context, workID, chap
 	if currentOnly {
 		query += " AND is_current=1"
 	}
-	query += " ORDER BY created_at, revision"
+	query += " ORDER BY created_at, revision, id"
+	if window != nil {
+		query += " LIMIT ? OFFSET ?"
+		arguments = append(arguments, window.Limit, window.Offset)
+	}
 	rows, err := r.database.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("list chapter archives: %w", err)
@@ -88,6 +221,28 @@ func (r *CanvasRepository) listChapterArchives(ctx context.Context, workID, chap
 		r.ensureCurrentChapterArchiveProjections(ctx, archives)
 	}
 	return archives, nil
+}
+
+func (r *CanvasRepository) countChapterArchives(
+	ctx context.Context,
+	workID string,
+	chapterOutlineNodeID string,
+	currentOnly bool,
+) (int64, error) {
+	query := "SELECT COUNT(*) FROM chapter_archives WHERE work_id=?"
+	arguments := []any{workID}
+	if chapterOutlineNodeID != "" {
+		query += " AND chapter_outline_node_id=?"
+		arguments = append(arguments, chapterOutlineNodeID)
+	}
+	if currentOnly {
+		query += " AND is_current=1"
+	}
+	var total int64
+	if err := r.database.QueryRowContext(ctx, query, arguments...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count chapter archives: %w", err)
+	}
+	return total, nil
 }
 
 func (r *CanvasRepository) ensureCurrentChapterArchiveProjections(ctx context.Context, archives []canvas.ChapterArchive) {

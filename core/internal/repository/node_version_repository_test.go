@@ -10,6 +10,7 @@ import (
 
 	"warmnote/core/internal/agent"
 	"warmnote/core/internal/canvas"
+	"warmnote/core/internal/shared/pagination"
 )
 
 func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {
@@ -78,6 +79,17 @@ func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {
 	archives, err := canvasRepository.ListCurrentChapterArchives(ctx, character.WorkID)
 	if err != nil || len(archives) != 1 {
 		t.Fatalf("current archives = %d, err = %v", len(archives), err)
+	}
+	pageRequest, err := pagination.New(1, 1)
+	if err != nil {
+		t.Fatalf("create archive page request: %v", err)
+	}
+	archivePage, err := canvasRepository.ListCurrentChapterArchivesPage(ctx, character.WorkID, pageRequest)
+	if err != nil {
+		t.Fatalf("list current archive page: %v", err)
+	}
+	if len(archivePage.Items) != 1 || archivePage.Pagination.Total != 1 || archivePage.Pagination.TotalPages != 1 {
+		t.Fatalf("current archive page = %+v", archivePage)
 	}
 	firstArchive := archives[0]
 	if firstArchive.Revision != 1 || firstArchive.OutlineContent != chapter.Content || firstArchive.ProjectionStatus != "ready" {

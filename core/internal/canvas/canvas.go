@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"warmnote/core/internal/agent"
+	"warmnote/core/internal/shared/pagination"
 )
 
 var (
@@ -125,6 +126,39 @@ type ChapterArchiveSection struct {
 	ContentHash             string `json:"contentHash"`
 }
 
+// ChapterArchiveVisibility contains only node relationships required to lock
+// archived nodes and render collapsed chapter proxies on the canvas.
+type ChapterArchiveVisibility struct {
+	ChapterOutlineNodeID string                              `json:"chapterOutlineNodeId"`
+	Sections             []ChapterArchiveVisibilitySection  `json:"sections"`
+}
+
+type ChapterArchiveVisibilitySection struct {
+	SectionOutlineNodeID string `json:"sectionOutlineNodeId"`
+	ChapterSectionNodeID string `json:"chapterSectionNodeId"`
+}
+
+// ChapterArchiveTimeline is the compact read model used by the story spine.
+type ChapterArchiveTimeline struct {
+	ID                   string                               `json:"id"`
+	ChapterOutlineNodeID string                               `json:"chapterOutlineNodeId"`
+	Revision             int64                                `json:"revision"`
+	OutlineTitle         string                               `json:"outlineTitle"`
+	Summary              string                               `json:"summary"`
+	ProjectionStatus     string                               `json:"projectionStatus"`
+	Sections             []ChapterArchiveTimelineSection     `json:"sections"`
+}
+
+type ChapterArchiveTimelineSection struct {
+	ArchiveID            string `json:"archiveId"`
+	Ordinal              int    `json:"ordinal"`
+	SectionOutlineNodeID string `json:"sectionOutlineNodeId"`
+	ChapterSectionNodeID string `json:"chapterSectionNodeId"`
+	NodeRevision         int64  `json:"nodeRevision"`
+	Title                string `json:"title"`
+	Summary              string `json:"summary"`
+}
+
 type CreateNodeInput struct {
 	WorkID         string
 	Kind           NodeKind
@@ -200,6 +234,9 @@ type Store interface {
 	ListNodeVersions(context.Context, string, string) ([]NodeVersion, error)
 	SwitchNodeVersion(context.Context, string, string, string) (Node, error)
 	ListCurrentChapterArchives(context.Context, string) ([]ChapterArchive, error)
+	ListCurrentChapterArchivesPage(context.Context, string, pagination.Pageable) (pagination.Page[ChapterArchive], error)
+	ListChapterArchiveVisibility(context.Context, string) ([]ChapterArchiveVisibility, error)
+	ListChapterArchiveTimelinePage(context.Context, string, pagination.Pageable) (pagination.Page[ChapterArchiveTimeline], error)
 	ListChapterArchiveHistory(context.Context, string, string) ([]ChapterArchive, error)
 }
 
