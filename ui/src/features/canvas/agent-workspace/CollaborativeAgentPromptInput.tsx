@@ -1,7 +1,8 @@
 import type { ChatStatus } from 'ai'
-import { Paperclip } from 'lucide-react'
+import { Compass, Feather, Paperclip } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react'
 
+import type { CollaborativeAgentTarget } from '@/apis/canvas-apis'
 import {
   Confirmation,
   ConfirmationAction,
@@ -9,7 +10,6 @@ import {
   ConfirmationRequest,
   ConfirmationTitle,
 } from '@/components/ai-elements/confirmation'
-
 import {
   PromptInput,
   PromptInputBody,
@@ -21,6 +21,7 @@ import {
   PromptInputTools,
 } from '@/components/ai-elements/prompt-input'
 import { ModelSelector } from '@/components/models/ModelSelector'
+import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import {
   CanvasPromptEditor,
@@ -35,80 +36,85 @@ import type {
 } from '@/features/canvas/agent-workspace/types'
 import type { EnabledModel } from '@/types/provider'
 
-const preserveTextOnlyPaste = () => undefined
+const modes: Array<{
+  icon: typeof Feather
+  label: string
+  target: CollaborativeAgentTarget
+}> = [
+  { icon: Compass, label: '闲聊', target: 'collaborative-explore' },
+  { icon: Feather, label: '创作', target: 'collaborative-targeted' },
+]
 
-interface NodeAgentPromptInputProps {
+interface CollaborativeAgentPromptInputProps {
   attachmentNodeIds: ReadonlySet<string>
   attachmentNodes: CanvasContextNode[]
   availableContextNodes: CanvasContextNode[]
   canSubmit: boolean
-  hasError: boolean
   isContextPicking: boolean
+  isResponding: boolean
   isStreaming: boolean
   isSubmitting: boolean
+  mode: CollaborativeAgentTarget
   model: EnabledModel | null
-  nodeKind: string
-  pendingAttachmentNodeIds: ReadonlySet<string>
   pendingInput: PendingAgentInput | null
   prompt: CanvasPromptValue
-  isResponding: boolean
+  onContextNodeAdd: (nodeId: string) => void
   onContextNodeRemove: (nodeId: string) => void
   onContextPickerToggle: () => void
+  onModeChange: (mode: CollaborativeAgentTarget) => void
   onModelChange: (model: EnabledModel | null) => void
   onPromptChange: (prompt: CanvasPromptValue) => void
-  onPriorityContextNodeAdd: (nodeId: string) => void
   onRespond: (answer: string) => void
   onSubmit: (input: CanvasAgentPromptSubmission) => void
 }
 
-export const NodeAgentPromptInput = memo(function NodeAgentPromptInput({
+export const CollaborativeAgentPromptInput = memo(function CollaborativeAgentPromptInput({
   attachmentNodeIds,
   attachmentNodes,
   availableContextNodes,
   canSubmit,
-  hasError,
   isContextPicking,
+  isResponding,
   isStreaming,
   isSubmitting,
+  mode,
   model,
-  nodeKind,
-  pendingAttachmentNodeIds,
   pendingInput,
   prompt,
-  isResponding,
+  onContextNodeAdd,
   onContextNodeRemove,
   onContextPickerToggle,
+  onModeChange,
   onModelChange,
   onPromptChange,
-  onPriorityContextNodeAdd,
   onRespond,
   onSubmit,
-}: NodeAgentPromptInputProps) {
+}: CollaborativeAgentPromptInputProps) {
   const [answer, setAnswer] = useState('')
   const [selectedOption, setSelectedOption] = useState('')
   const promptDraftRef = useRef(prompt)
   const promptEditorRef = useRef<CanvasPromptEditorHandle>(null)
+  const isAnswerMode = pendingInput !== null
+
   useEffect(() => {
     setAnswer('')
     setSelectedOption('')
   }, [pendingInput?.approvalEventId])
 
-  const isAnswerMode = pendingInput !== null
   useEffect(() => {
     for (const nodeId of promptDraftRef.current.contextNodeIds) {
-      if (attachmentNodeIds.has(nodeId) || pendingAttachmentNodeIds.has(nodeId)) continue
+      if (attachmentNodeIds.has(nodeId)) continue
       promptEditorRef.current?.removeContextNode(nodeId)
     }
-  }, [attachmentNodeIds, pendingAttachmentNodeIds])
+  }, [attachmentNodeIds])
 
   const responseText = [selectedOption, answer.trim()].filter(Boolean).join('\n')
   const status: ChatStatus = isSubmitting || isResponding
     ? 'submitted'
     : isStreaming
       ? 'streaming'
-      : hasError
-        ? 'error'
-        : 'ready'
+      : 'ready'
+
   const submitPrompt = () => {
     if (pendingInput !== null) {
       if (responseText === '' || isResponding) return
@@ -117,17 +123,14 @@ export const NodeAgentPromptInput = memo(function NodeAgentPromptInput({
     }
     const nextPrompt = promptDraftRef.current.requestText.trim()
     if (!canSubmit || nextPrompt === '') return
-    onSubmit({
-      contextNodeIds: [...attachmentNodeIds],
-      prompt: nextPrompt,
-    })
+    onSubmit({ contextNodeIds: [...attachmentNodeIds], prompt: nextPrompt })
   }
 
   const handlePromptChange = (value: CanvasPromptValue) => {
     const previousContextNodeIds = new Set(promptDraftRef.current.contextNodeIds)
     promptDraftRef.current = value
     for (const nodeId of value.contextNodeIds) {
-      if (!previousContextNodeIds.has(nodeId)) onPriorityContextNodeAdd(nodeId)
+      if (!previousContextNodeIds.has(nodeId)) onContextNodeAdd(nodeId)
     }
     onPromptChange(value)
   }
@@ -135,22 +138,24 @@ export const NodeAgentPromptInput = memo(function NodeAgentPromptInput({
   return (
     <TooltipProvider>
       <PromptInput
-        className="[&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-[calc(var(--radius-md)+var(--spacing-space-sm))] [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none"
-        data-node-kind={nodeKind}
+        className="border-0 outline-none [&_.ProseMirror]:!px-space-xs [&_.ProseMirror]:!pb-space-xs [&_[data-slot=prompt-placeholder]]:!left-space-xs [&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-sm [&_[data-slot=input-group]]:!border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:!shadow-none [&_[data-slot=input-group]]:!ring-0 [&_[data-slot=input-group]]:!outline-none"
+        data-node-kind="collaborative"
         onSubmit={submitPrompt}
       >
         <PromptInputHeader className={isAnswerMode ? 'p-space-sm pb-0' : 'p-0'}>
           {pendingInput === null ? (
-            <CanvasContextNodes
-              disabled={isSubmitting || isStreaming}
-              isPicking={isContextPicking}
-              nodes={attachmentNodes}
-              onPickerToggle={onContextPickerToggle}
-              onRemove={(nodeId) => {
-                promptEditorRef.current?.removeContextNode(nodeId)
-                onContextNodeRemove(nodeId)
-              }}
-            />
+            <div className="w-full [&>div]:px-space-xs [&>div]:pt-0">
+              <CanvasContextNodes
+                disabled={isSubmitting || isStreaming}
+                isPicking={isContextPicking}
+                nodes={attachmentNodes}
+                onPickerToggle={onContextPickerToggle}
+                onRemove={(nodeId) => {
+                  promptEditorRef.current?.removeContextNode(nodeId)
+                  onContextNodeRemove(nodeId)
+                }}
+              />
+            </div>
           ) : (
             <Confirmation
               approval={{ id: pendingInput.approvalEventId }}
@@ -184,45 +189,68 @@ export const NodeAgentPromptInput = memo(function NodeAgentPromptInput({
         <PromptInputBody>
           {isAnswerMode ? (
             <PromptInputTextarea
-              className="min-h-28 max-h-48 px-space-md py-space-sm text-body-md leading-6 text-ink placeholder:text-faint"
+              className="min-h-28 max-h-48 px-space-xs py-space-xs text-body-md leading-6 text-ink placeholder:text-faint"
               onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setAnswer(event.currentTarget.value)}
-              onPaste={preserveTextOnlyPaste}
               placeholder="补充你的回答（可选）"
               value={answer}
             />
           ) : (
             <CanvasPromptEditor
               ref={promptEditorRef}
+              ariaLabel="给全局创作 Agent 的消息"
               availableContextNodes={availableContextNodes}
               disabled={isSubmitting || isStreaming}
               initialValue={prompt}
-              placeholder="告诉这个节点接下来要做什么"
+              placeholder={mode === 'collaborative-targeted' ? '描述你想完成的创作目标' : '聊聊剧情、关系或任何想法'}
               onChange={handlePromptChange}
             />
           )}
         </PromptInputBody>
 
-        <PromptInputFooter className="min-h-11 flex-wrap gap-space-xs px-space-sm pb-space-sm">
+        <PromptInputFooter className="min-h-11 flex-wrap gap-space-xs px-space-xs pb-0">
           {isAnswerMode ? (
             <span className="px-space-xs text-body-sm text-mute">等待你的决定</span>
-          ) : <PromptInputTools>
-            <PromptInputButton
-              aria-label="附加素材"
-              disabled
-              tooltip="附件上传将在 Agent 接口支持后开放"
-            >
-              <Paperclip size={15} />
-            </PromptInputButton>
-            <ModelSelector
-              capability="text"
-              value={model}
-              onValueChange={onModelChange}
-              autoSelectFirst
-              compact
-              className="h-8 min-w-0 max-w-44 border-transparent bg-hairline-soft px-space-xs text-body-sm"
-              ariaLabel="选择当前节点使用的文本模型"
-            />
-          </PromptInputTools>}
+          ) : (
+            <PromptInputTools className="flex-wrap">
+              <div className="flex h-8 shrink-0 rounded-sm bg-hairline-soft p-px" role="group" aria-label="协作模式">
+                {modes.map((option) => {
+                  const Icon = option.icon
+                  const active = option.target === mode
+                  return (
+                    <Button
+                      key={option.target}
+                      aria-pressed={active}
+                      className={active ? 'h-full bg-canvas-elevated text-ink shadow-whisper hover:bg-canvas-elevated' : 'h-full text-mute'}
+                      disabled={isSubmitting || isStreaming}
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => onModeChange(option.target)}
+                    >
+                      <Icon aria-hidden="true" size={12} />
+                      {option.label}
+                    </Button>
+                  )
+                })}
+              </div>
+              <ModelSelector
+                capability="text"
+                value={model}
+                onValueChange={onModelChange}
+                autoSelectFirst
+                compact
+                className="h-8 min-w-0 max-w-44 border-transparent bg-hairline-soft px-space-xs text-body-sm"
+                ariaLabel="选择全局 Agent 使用的文本模型"
+              />
+              <PromptInputButton
+                aria-label="附加素材"
+                disabled
+                size="icon-sm"
+                tooltip="附件上传将在 Agent 接口支持后开放"
+              >
+                <Paperclip size={15} />
+              </PromptInputButton>
+            </PromptInputTools>
+          )}
           <PromptInputSubmit
             aria-label={isAnswerMode ? '继续 Agent 执行' : status === 'submitted' || status === 'streaming' ? 'Agent 指令运行中' : '运行 Agent 指令'}
             className="bg-primary text-on-primary hover:opacity-85"

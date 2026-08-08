@@ -8,16 +8,16 @@ import {
   useDeleteCanvasEdges,
   useRespondToAgentRun,
 } from '@/apis/canvas-apis'
-import {
-  CanvasAgentPromptInput,
-  type CanvasAgentPromptSubmission,
-  type PendingAgentInput,
-} from '@/features/canvas/agent-workspace/AgentPromptInput'
+import { NodeAgentPromptInput } from '@/features/canvas/agent-workspace/AgentPromptInput'
 import {
   createCanvasPromptValueFromText,
   type CanvasPromptValue,
 } from '@/features/canvas/agent-workspace/CanvasPromptEditor'
-import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
+import type {
+  CanvasAgentPromptSubmission,
+  PendingAgentInput,
+} from '@/features/canvas/agent-workspace/types'
+import { useNodeUpdateAgentRunStream } from '@/features/canvas/agent-workspace/use-node-update-agent-run-stream'
 import {
   getContextNodePickerTargetNodeId,
   type NodeAgentRunState,
@@ -85,12 +85,13 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
   const cancelContextNodePicker = useFlowNodeStore((state) => state.actions.cancelContextNodePicker)
   const dismissNodeAgentRun = useFlowNodeStore((state) => state.actions.dismissNodeAgentRun)
   const startContextNodePicker = useFlowNodeStore((state) => state.actions.startContextNodePicker)
-  const { streamRun } = useAgentRunStream(workId)
+  const { streamRun } = useNodeUpdateAgentRunStream(workId)
   const { mutate: deleteEdges } = useDeleteCanvasEdges(workId)
   const { mutate: createContextEdge } = useCreateCanvasEdge(workId)
   const isCreatingTargetRun = createRun.isPending && createRun.variables?.targetNodeId === targetNodeId
   const isContextPicking = canvasInteractionMode.kind === 'context-node-picker' &&
-    canvasInteractionMode.targetNodeId === targetNodeId
+    canvasInteractionMode.target.kind === 'node-agent' &&
+    canvasInteractionMode.target.nodeId === targetNodeId
   const pendingAttachmentNodeIds = useMemo(() => {
     if (targetNodeId === null) return emptyContextNodeIdSet
     const prefix = `${targetNodeId}\u0000`
@@ -131,7 +132,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
       cancelContextNodePicker()
       return
     }
-    startContextNodePicker(targetNodeId)
+    startContextNodePicker({ kind: 'node-agent', nodeId: targetNodeId })
   }, [cancelContextNodePicker, contextNodePickerTargetNodeId, startContextNodePicker, targetNodeId])
 
   const removeContextNode = useCallback((nodeId: string) => {
@@ -209,7 +210,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
         data-node-kind={targetNode.data.kind}
         className="nodrag nopan nowheel w-[min(calc(100vw_-_2rem),40rem)] overflow-visible rounded-[calc(var(--radius-md)+var(--spacing-space-sm))] bg-canvas-elevated shadow-floating"
       >
-        <CanvasAgentPromptInput
+        <NodeAgentPromptInput
           key={targetNodeId}
           attachmentNodeIds={attachmentNodeIdSet}
           attachmentNodes={attachmentNodes}

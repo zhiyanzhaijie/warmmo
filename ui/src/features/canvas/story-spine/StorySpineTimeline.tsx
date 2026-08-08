@@ -64,23 +64,32 @@ export const StorySpineTimeline = memo(function StorySpineTimeline({
 
   return (
     <>
-      <Drawer open={isStorySpineOpen} onOpenChange={setIsStorySpineOpen}>
-        <div className="pointer-events-none fixed right-space-md bottom-space-md left-space-md z-30 flex justify-center">
+      <Drawer
+        dismissible={false}
+        handleOnly
+        modal={false}
+        open={isStorySpineOpen}
+        onOpenChange={setIsStorySpineOpen}
+      >
+        <div className="pointer-events-none fixed right-space-md bottom-0 left-space-md z-30 flex justify-center">
           <DrawerTrigger asChild>
             <Button
               aria-label="打开故事脉络"
-              className="pointer-events-auto gap-space-xs border border-hairline bg-canvas-elevated/95 text-mute shadow-floating backdrop-blur-sm hover:bg-hairline-soft hover:text-ink"
-              size="sm"
-              variant="outline"
+              className="group pointer-events-auto h-6 w-28 rounded-t-sm border border-b-0 border-hairline bg-canvas-elevated/95 p-0 shadow-whisper backdrop-blur-sm hover:bg-canvas-elevated"
+              variant="ghost"
             >
-              <Archive aria-hidden="true" size={14} />
-              <span>故事脉络</span>
-              <span className="font-mono text-body-sm text-faint">{chapters.length}</span>
+              <span aria-hidden="true" className="h-1 w-16 rounded-full bg-hairline transition-colors group-hover:bg-mute" />
             </Button>
           </DrawerTrigger>
         </div>
-        <DrawerContent className="gap-0 border-t-0 [&>button:last-child]:top-1 [&>button:last-child]:right-space-sm">
-          <DrawerHeader className="flex h-10 items-center gap-space-xs border-b-0 px-space-md py-0 pr-14">
+        <DrawerContent
+          className="gap-0"
+          onHandleClose={() => setIsStorySpineOpen(false)}
+          showCloseButton={false}
+          showHandle
+          showOverlay={false}
+        >
+          <DrawerHeader className="flex h-9 items-center gap-space-xs border-b-0 px-space-md py-0 pr-space-md">
             <Archive aria-hidden="true" className="text-mute" size={15} />
             <DrawerTitle className="text-label-sm">故事脉络</DrawerTitle>
             <span className="font-mono text-body-sm text-faint">{chapters.length}</span>

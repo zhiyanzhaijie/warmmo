@@ -217,7 +217,7 @@ export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPro
     <div className="min-w-0 flex-1 self-stretch">
       <textarea aria-hidden="true" className="sr-only" name="message" readOnly tabIndex={-1} value={promptValueRef.current.displayText} />
       <div className="relative">
-        {isEmpty ? <span aria-hidden="true" className="pointer-events-none absolute top-space-xxs left-space-md text-body-md leading-6 text-faint">{placeholder}</span> : null}
+        {isEmpty ? <span aria-hidden="true" data-slot="prompt-placeholder" className="pointer-events-none absolute top-space-xxs left-space-md text-body-md leading-6 text-faint">{placeholder}</span> : null}
         <EditorContent
           editor={editor}
           className="min-w-0 [&_.ProseMirror[contenteditable=false]]:cursor-not-allowed [&_.ProseMirror[contenteditable=false]]:text-faint [&_.ProseMirror>p]:m-0 [&_.ProseMirror>p+p]:mt-space-xs [&_.canvas-prompt-mention]:mx-0.5 [&_.canvas-prompt-mention]:inline-flex [&_.canvas-prompt-mention]:cursor-default [&_.canvas-prompt-mention]:items-center [&_.canvas-prompt-mention]:rounded-sm [&_.canvas-prompt-mention]:border [&_.canvas-prompt-mention]:border-hairline [&_.canvas-prompt-mention]:bg-hairline-soft [&_.canvas-prompt-mention]:px-1.5 [&_.canvas-prompt-mention]:py-0.5 [&_.canvas-prompt-mention]:text-body-sm [&_.canvas-prompt-mention]:font-medium [&_.canvas-prompt-mention]:text-ink [&_.ProseMirror-selectednode.canvas-prompt-mention]:ring-1 [&_.ProseMirror-selectednode.canvas-prompt-mention]:ring-link"

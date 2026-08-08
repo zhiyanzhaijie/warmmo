@@ -1,14 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { toast } from 'sonner'
 
 import {
-  canvasKeys,
   type CollaborativeAgentTarget,
   useCreateCollaborativeAgentRun,
   useRespondToAgentRun,
 } from '@/apis/canvas-apis'
-import { chapterArchiveKeys } from '@/apis/chapter-archive-apis'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import type { AgentEvent } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
@@ -35,7 +32,6 @@ export interface CollaborativePendingInput {
 }
 
 export function useCollaborativeAgentSession(workId: string) {
-  const queryClient = useQueryClient()
   const createRun = useCreateCollaborativeAgentRun(workId)
   const respondToRun = useRespondToAgentRun()
   const [turns, setTurns] = useState<CollaborativeTurn[]>([])
@@ -80,12 +76,6 @@ export function useCollaborativeAgentSession(workId: string) {
       if (!isTerminalAgentEvent(event.type)) return
 
       closeSource()
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) }),
-        queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) }),
-        queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) }),
-        queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.work(workId) }),
-      ])
     }
 
     for (const type of streamedAgentEventTypes) source.addEventListener(type, receive as EventListener)
@@ -99,7 +89,7 @@ export function useCollaborativeAgentSession(workId: string) {
       }))
       toast.error('过程流连接已断开')
     }
-  }, [queryClient, workId])
+  }, [workId])
 
   const run = useCallback((input: {
     contextNodeIds: string[]

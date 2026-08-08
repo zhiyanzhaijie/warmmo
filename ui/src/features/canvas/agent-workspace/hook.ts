@@ -2,13 +2,13 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 
-import { canvasKeys } from '@/apis/canvas-apis'
+import { canvasKeys, type NodeDerivationTarget } from '@/apis/canvas-apis'
 import { chapterArchiveKeys } from '@/apis/chapter-archive-apis'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import type { AgentEvent } from '@/types/canvas'
 
-export function useAgentRunStream(workId: string) {
+export function useNodeDerivationAgentRunStream(workId: string) {
   const queryClient = useQueryClient()
   const attachNodeAgentRun = useFlowNodeStore((state) => state.actions.attachNodeAgentRun)
   const appendNodeAgentEvent = useFlowNodeStore((state) => state.actions.appendNodeAgentEvent)
@@ -20,11 +20,11 @@ export function useAgentRunStream(workId: string) {
     eventSourcesRef.current.clear()
   }, [])
 
-  const streamRun = useCallback((runId: string, nodeId: string, afterSequence = 0) => {
+  const streamRun = useCallback((runId: string, nodeId: string, target: NodeDerivationTarget) => {
     eventSourcesRef.current.get(nodeId)?.close()
     attachNodeAgentRun(nodeId, runId)
 
-    const source = new EventSource(`/api/v1/agent-runs/${runId}/events?afterSequence=${afterSequence}`)
+    const source = new EventSource(`/api/v1/agent-runs/${runId}/events`)
     eventSourcesRef.current.set(nodeId, source)
     const closeSource = () => {
       source.close()
@@ -55,18 +55,23 @@ export function useAgentRunStream(workId: string) {
 
       if (isTerminalAgentEvent(event.type)) {
         closeSource()
-        const invalidations = [
-          queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) }),
-          queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) }),
-          queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) }),
-        ]
-        if (event.type === 'run.completed' && typeof event.data?.archiveId === 'string') {
-          invalidations.push(
+        if (event.type !== 'run.completed') return
+        if (target === 'chapter-archive') {
+          const invalidations = [
+            queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) }),
             queryClient.invalidateQueries({ queryKey: chapterArchiveKeys.work(workId) }),
             queryClient.invalidateQueries({ queryKey: canvasKeys.history(workId) }),
-          )
+          ]
+          if (Array.isArray(event.data?.candidateIds) && event.data.candidateIds.length > 0) {
+            invalidations.push(queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) }))
+          }
+          void Promise.all(invalidations)
+          return
         }
-        void Promise.all(invalidations)
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: canvasKeys.nodes(workId) }),
+          queryClient.invalidateQueries({ queryKey: canvasKeys.edges(workId) }),
+        ])
       }
     }
 

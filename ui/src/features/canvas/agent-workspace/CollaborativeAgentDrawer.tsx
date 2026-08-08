@@ -1,5 +1,5 @@
-import { BrainCircuit, Compass, Feather, Layers3, Plus, Sparkles } from 'lucide-react'
-import { memo, useCallback, useLayoutEffect, useMemo, useState } from 'react'
+import { BrainCircuit, Plus, Sparkles } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import { type CollaborativeAgentTarget } from '@/apis/canvas-apis'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
@@ -13,10 +13,7 @@ import {
   DrawerTrigger,
 } from '@/components/ui/drawer'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import {
-  CanvasAgentPromptInput,
-  type CanvasAgentPromptSubmission,
-} from '@/features/canvas/agent-workspace/AgentPromptInput'
+import { CollaborativeAgentPromptInput } from '@/features/canvas/agent-workspace/CollaborativeAgentPromptInput'
 import { CollaborativeAgentProgress } from '@/features/canvas/agent-workspace/CollaborativeAgentProgress'
 import {
   createCanvasPromptValueFromText,
@@ -27,7 +24,11 @@ import {
   useCollaborativeAgentSession,
   type CollaborativeTurn,
 } from '@/features/canvas/agent-workspace/use-collaborative-agent-session'
-import { useFlowNodeStore } from '@/features/canvas/flownode/store'
+import type { CanvasAgentPromptSubmission } from '@/features/canvas/agent-workspace/types'
+import {
+  isCollaborativeContextNodePicker,
+  useFlowNodeStore,
+} from '@/features/canvas/flownode/store'
 import type { CanvasNode } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
@@ -39,16 +40,6 @@ interface CollaborativeAgentDrawerProps {
 }
 
 const emptyPrompt = createCanvasPromptValueFromText('')
-const emptyNodeIdSet: ReadonlySet<string> = new Set()
-
-const modes: Array<{
-  icon: typeof Feather
-  label: string
-  target: CollaborativeAgentTarget
-}> = [
-  { icon: Feather, label: '目标创作', target: 'collaborative-targeted' },
-  { icon: Compass, label: '灵感探索', target: 'collaborative-explore' },
-]
 
 const starterPrompts = [
   '基于当前故事脉络，规划下一章的关键冲突',
@@ -62,7 +53,13 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   workId,
   onModelChange,
 }: CollaborativeAgentDrawerProps) {
-  const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
+  const canvasInteractionMode = useFlowNodeStore((state) => state.canvasInteractionMode)
+  const collaborativeContextNodeIds = useFlowNodeStore((state) => state.collaborativeContextNodeIds)
+  const addContextNode = useFlowNodeStore((state) => state.actions.addCollaborativeContextNode)
+  const removeContextNode = useFlowNodeStore((state) => state.actions.removeCollaborativeContextNode)
+  const clearContextNodes = useFlowNodeStore((state) => state.actions.clearCollaborativeContextNodes)
+  const startContextNodePicker = useFlowNodeStore((state) => state.actions.startContextNodePicker)
+  const cancelContextNodePicker = useFlowNodeStore((state) => state.actions.cancelContextNodePicker)
   const {
     activeTurn,
     canUseContextAgent,
@@ -78,11 +75,11 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   const [mode, setMode] = useState<CollaborativeAgentTarget>('collaborative-targeted')
   const [prompt, setPrompt] = useState<CanvasPromptValue>(emptyPrompt)
   const [composerVersion, setComposerVersion] = useState(0)
-  const [manualContextNodeIds, setManualContextNodeIds] = useState<ReadonlySet<string>>(() => new Set())
   const scrollViewportRef = useState<HTMLDivElement | null>(null)
   const [scrollViewport, setScrollViewport] = scrollViewportRef
-  const contextNodeIds = useMemo(() => new Set([...selectedNodeIds, ...manualContextNodeIds]), [manualContextNodeIds, selectedNodeIds])
+  const contextNodeIds = useMemo(() => new Set(collaborativeContextNodeIds), [collaborativeContextNodeIds])
   const contextNodes = useMemo(() => canvasNodes.filter((node) => contextNodeIds.has(node.id)), [canvasNodes, contextNodeIds])
+  const isContextPicking = isCollaborativeContextNodePicker(canvasInteractionMode)
   const canSubmit = model !== null && prompt.requestText.trim() !== '' && activeTurn === undefined && canUseContextAgent
 
   useLayoutEffect(() => {
@@ -94,31 +91,39 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
     setPrompt(value)
   }, [])
 
-  const addContextNode = useCallback((nodeId: string) => {
-    setManualContextNodeIds((current) => current.has(nodeId) ? current : new Set([...current, nodeId]))
-  }, [])
+  const toggleContextNodePicker = useCallback(() => {
+    if (isContextPicking) {
+      cancelContextNodePicker()
+      return
+    }
+    startContextNodePicker({ kind: 'collaborative-agent' })
+  }, [cancelContextNodePicker, isContextPicking, startContextNodePicker])
 
-  const removeContextNode = useCallback((nodeId: string) => {
-    setManualContextNodeIds((current) => {
-      if (!current.has(nodeId)) return current
-      const next = new Set(current)
-      next.delete(nodeId)
-      return next
-    })
-  }, [])
+  useEffect(() => {
+    if (open || !isContextPicking) return
+    cancelContextNodePicker()
+  }, [cancelContextNodePicker, isContextPicking, open])
+
+  useEffect(() => {
+    const availableNodeIds = new Set(canvasNodes.map((node) => node.id))
+    for (const nodeId of collaborativeContextNodeIds) {
+      if (!availableNodeIds.has(nodeId)) removeContextNode(nodeId)
+    }
+  }, [canvasNodes, collaborativeContextNodeIds, removeContextNode])
 
   const submit = useCallback((input: CanvasAgentPromptSubmission) => {
     if (model === null || !canSubmit) return
     run({
-      contextNodeIds: [...new Set([...selectedNodeIds, ...input.contextNodeIds])],
+      contextNodeIds: input.contextNodeIds,
       model,
       prompt: input.prompt,
       target: mode,
     })
     setPrompt(emptyPrompt)
-    setManualContextNodeIds(new Set())
+    clearContextNodes()
+    if (isContextPicking) cancelContextNodePicker()
     setComposerVersion((current) => current + 1)
-  }, [canSubmit, mode, model, run, selectedNodeIds])
+  }, [canSubmit, cancelContextNodePicker, clearContextNodes, isContextPicking, mode, model, run])
 
   const selectStarter = useCallback((value: string) => {
     setPrompt(createCanvasPromptValueFromText(value))
@@ -128,9 +133,10 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   const clearConversation = useCallback(() => {
     clear()
     setPrompt(emptyPrompt)
-    setManualContextNodeIds(new Set())
+    clearContextNodes()
+    if (isContextPicking) cancelContextNodePicker()
     setComposerVersion((current) => current + 1)
-  }, [clear])
+  }, [cancelContextNodePicker, clear, clearContextNodes, isContextPicking])
 
   const availabilityLabel = contextAgentPending
     ? '正在检查上下文能力'
@@ -140,7 +146,13 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
 
   return (
     <TooltipProvider delayDuration={180}>
-      <Drawer open={open} onOpenChange={setOpen}>
+      <Drawer
+        direction="right"
+        handleOnly
+        modal={false}
+        open={open}
+        onOpenChange={setOpen}
+      >
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="fixed top-space-md right-space-md z-40">
@@ -160,17 +172,21 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
           <TooltipContent side="left">{availabilityLabel}</TooltipContent>
         </Tooltip>
 
-        <DrawerContent side="right" className="gap-0 bg-canvas shadow-none sm:w-[32rem]">
-        <DrawerHeader className="flex h-14 items-center gap-space-sm px-space-md py-0 pr-14">
+        <DrawerContent
+          className="gap-0 bg-canvas shadow-none [&>[data-slot=drawer-close]]:top-space-xs [&>[data-slot=drawer-close]]:right-space-sm"
+          defaultWidth={512}
+          maxWidth={768}
+          minWidth={384}
+          resizable
+          showOverlay={false}
+        >
+        <DrawerHeader className="flex h-12 items-center gap-space-xs px-space-sm py-0 pr-12">
           <span className="grid size-7 place-items-center rounded-sm bg-primary text-on-primary">
             <Sparkles aria-hidden="true" size={14} />
           </span>
-          <div className="min-w-0 flex-1">
-            <DrawerTitle className="text-label-sm">创作协作</DrawerTitle>
-            <DrawerDescription className="mt-0 font-mono text-[0.625rem] uppercase text-faint">
-              Planner / Creator / Writer
-            </DrawerDescription>
-          </div>
+          <DrawerTitle className="sr-only">全局创作 Agent</DrawerTitle>
+          <DrawerDescription className="sr-only">与全局 Agent 闲聊或进行创作</DrawerDescription>
+          <div className="flex-1" />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -197,95 +213,30 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
           )}
         </div>
 
-        <div className="shrink-0 border-t border-hairline bg-canvas-elevated p-space-md">
-          {pendingInput !== null ? (
-            <CanvasAgentPromptInput
-              key={pendingInput.approvalEventId}
-              ariaLabel="回答创作 Agent"
-              attachmentNodeIds={contextNodeIds}
-              attachmentNodes={contextNodes}
-              availableContextNodes={canvasNodes}
-              canSubmit
-              className="[&_[data-slot=input-group]]:rounded-sm [&_[data-slot=input-group]]:border [&_[data-slot=input-group]]:border-hairline"
-              hasError={false}
-              isContextPicking={false}
-              isResponding={responding}
-              isStreaming={false}
-              isSubmitting={false}
-              model={model}
-              nodeKind="collaborative"
-              pendingAttachmentNodeIds={emptyNodeIdSet}
-              pendingInput={pendingInput}
-              prompt={prompt}
-              showContextPicker={false}
-              onContextNodeRemove={removeContextNode}
-              onContextPickerToggle={() => undefined}
-              onModelChange={onModelChange}
-              onPriorityContextNodeAdd={addContextNode}
-              onPromptChange={updatePrompt}
-              onRespond={respond}
-              onSubmit={submit}
-            />
-          ) : (
-            <>
-              <div className="mb-space-sm flex items-center justify-between gap-space-sm">
-                <div className="flex rounded-sm bg-hairline-soft p-px" role="group" aria-label="协作模式">
-                  {modes.map((option) => {
-                    const Icon = option.icon
-                    const active = option.target === mode
-                    return (
-                      <Button
-                        key={option.target}
-                        aria-pressed={active}
-                        className={active ? 'bg-canvas-elevated text-ink shadow-whisper hover:bg-canvas-elevated' : 'text-mute'}
-                        disabled={activeTurn !== undefined}
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => setMode(option.target)}
-                      >
-                        <Icon aria-hidden="true" size={12} />
-                        {option.label}
-                      </Button>
-                    )
-                  })}
-                </div>
-                {selectedNodeIds.length > 0 ? (
-                  <span className="flex items-center gap-space-xxs text-body-sm text-mute">
-                    <Layers3 aria-hidden="true" size={13} />
-                    {selectedNodeIds.length} 个焦点节点
-                  </span>
-                ) : null}
-              </div>
-              <CanvasAgentPromptInput
-                key={composerVersion}
-                ariaLabel="给全局创作 Agent 的消息"
-                attachmentNodeIds={contextNodeIds}
-                attachmentNodes={contextNodes}
-                availableContextNodes={canvasNodes}
-                canSubmit={canSubmit}
-                className="border border-hairline [&_[data-slot=input-group]]:rounded-sm [&_[data-slot=input-group]]:border-0"
-                hasError={false}
-                isContextPicking={false}
-                isResponding={false}
-                isStreaming={activeTurn?.status === 'running'}
-                isSubmitting={activeTurn?.status === 'submitting'}
-                model={model}
-                nodeKind="collaborative"
-                pendingAttachmentNodeIds={emptyNodeIdSet}
-                pendingInput={null}
-                placeholder={mode === 'collaborative-targeted' ? '描述你想完成的创作目标' : '从一个问题或模糊想法开始'}
-                prompt={prompt}
-                showContextPicker={false}
-                onContextNodeRemove={removeContextNode}
-                onContextPickerToggle={() => undefined}
-                onModelChange={onModelChange}
-                onPriorityContextNodeAdd={addContextNode}
-                onPromptChange={updatePrompt}
-                onRespond={() => undefined}
-                onSubmit={submit}
-              />
-            </>
-          )}
+        <div className="shrink-0 border-t border-hairline bg-canvas-elevated p-space-sm">
+          <CollaborativeAgentPromptInput
+            key={pendingInput?.approvalEventId ?? composerVersion}
+            attachmentNodeIds={contextNodeIds}
+            attachmentNodes={contextNodes}
+            availableContextNodes={canvasNodes}
+            canSubmit={canSubmit}
+            isContextPicking={isContextPicking}
+            isResponding={responding}
+            isStreaming={activeTurn?.status === 'running'}
+            isSubmitting={activeTurn?.status === 'submitting'}
+            mode={mode}
+            model={model}
+            pendingInput={pendingInput}
+            prompt={prompt}
+            onContextNodeAdd={addContextNode}
+            onContextNodeRemove={removeContextNode}
+            onContextPickerToggle={toggleContextNodePicker}
+            onModeChange={setMode}
+            onModelChange={onModelChange}
+            onPromptChange={updatePrompt}
+            onRespond={respond}
+            onSubmit={submit}
+          />
         </div>
         </DrawerContent>
       </Drawer>
@@ -305,7 +256,7 @@ function CollaborativeAgentEmptyState({
       <div className="mb-space-xl">
         <BrainCircuit aria-hidden="true" className="text-faint" size={26} strokeWidth={1.4} />
         <h2 className="mt-space-md text-heading-md text-ink">
-          {mode === 'collaborative-targeted' ? '从意图开始创作' : '从关系中发现可能'}
+          {mode === 'collaborative-targeted' ? '从创作目标开始' : '从一个想法开始聊'}
         </h2>
       </div>
       <div className="divide-y divide-hairline border-y border-hairline">

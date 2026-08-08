@@ -16,7 +16,11 @@ import {
 } from '@/apis/canvas-apis'
 import type { CanvasFlowEdge } from '@/features/canvas/flowedge/types'
 import { flowEdgeTypes, flowNodeTypes } from '@/features/canvas/flownode/registry'
-import { getContextNodePickerTargetNodeId, useFlowNodeStore } from '@/features/canvas/flownode/store'
+import {
+  getContextNodePickerTargetNodeId,
+  type ContextNodePickerTarget,
+  useFlowNodeStore,
+} from '@/features/canvas/flownode/store'
 import type { CanvasFlowNode } from '@/features/canvas/flownode/types'
 import { useSyncFlowNodeRenderDetail } from '@/features/canvas/flownode/use-sync-render-detail'
 import {
@@ -55,7 +59,12 @@ export const CanvasSurface = memo(function CanvasSurface({
   const selectedSourceNodeCount = useFlowNodeStore((state) => state.selectedSourceNodeIds.length)
   const edges = useFlowNodeStore((state) => state.edges)
   const canvasInteractionMode = useFlowNodeStore((state) => state.canvasInteractionMode)
+  const contextNodePickerTarget = canvasInteractionMode.kind === 'context-node-picker'
+    ? canvasInteractionMode.target
+    : null
   const contextNodePickerTargetNodeId = getContextNodePickerTargetNodeId(canvasInteractionMode)
+  const collaborativeContextNodeIds = useFlowNodeStore((state) => state.collaborativeContextNodeIds)
+  const addCollaborativeContextNode = useFlowNodeStore((state) => state.actions.addCollaborativeContextNode)
   const cancelContextNodePicker = useFlowNodeStore((state) => state.actions.cancelContextNodePicker)
   const focusSourceNode = useFlowNodeStore((state) => state.actions.focusSourceNode)
   const showNodeToolbar = useFlowNodeStore((state) => state.actions.showNodeToolbar)
@@ -76,6 +85,10 @@ export const CanvasSurface = memo(function CanvasSurface({
     session: creationSession,
   } = useCanvasNodeCreation(workId)
   const isContextPicking = canvasInteractionMode.kind === 'context-node-picker'
+  const collaborativeContextNodeIdSet = useMemo(
+    () => new Set(collaborativeContextNodeIds),
+    [collaborativeContextNodeIds],
+  )
 
   const contextPickerConnectedNodeIds = useMemo(() => {
     const connectedNodeIds = new Set<string>()
@@ -92,13 +105,14 @@ export const CanvasSurface = memo(function CanvasSurface({
     if (!isContextPicking) return renderedNodes
     return renderedNodes.map((node) => isContextNodeUnavailable(
       node,
-      contextNodePickerTargetNodeId,
+      contextNodePickerTarget,
       contextPickerConnectedNodeIds,
       contextPickReservations,
+      collaborativeContextNodeIdSet,
     )
       ? { ...node, className: appendNodeClassName(node.className, 'warmnote-flow__context-unavailable') }
       : node)
-  }, [contextPickerConnectedNodeIds, contextNodePickerTargetNodeId, contextPickReservations, isContextPicking, renderedNodes])
+  }, [collaborativeContextNodeIdSet, contextNodePickerTarget, contextPickerConnectedNodeIds, contextPickReservations, isContextPicking, renderedNodes])
 
   useEffect(() => {
     if (!isContextPicking) return
@@ -139,22 +153,29 @@ export const CanvasSurface = memo(function CanvasSurface({
   useSyncFlowNodeRenderDetail()
 
   const onNodeClick = useCallback<NodeMouseHandler<CanvasFlowNode>>((event, node) => {
-    if (contextNodePickerTargetNodeId !== null) {
+    if (contextNodePickerTarget !== null) {
       event.preventDefault()
       event.stopPropagation()
       if (!isContextNodePickable(
         node,
-        contextNodePickerTargetNodeId,
+        contextNodePickerTarget,
         contextPickerConnectedNodeIds,
         contextPickReservations,
+        collaborativeContextNodeIdSet,
       )) return
 
       const contextNodeId = node.data.sourceId
-      const reservationKey = getContextPickReservationKey(contextNodePickerTargetNodeId, contextNodeId)
+      if (contextNodePickerTarget.kind === 'collaborative-agent') {
+        addCollaborativeContextNode(contextNodeId)
+        return
+      }
+
+      const targetNodeId = contextNodePickerTarget.nodeId
+      const reservationKey = getContextPickReservationKey(targetNodeId, contextNodeId)
       setContextPickReservations((current) => new Set(current).add(reservationKey))
-      createContextEdge({ sourceNodeId: contextNodeId, targetNodeId: contextNodePickerTargetNodeId }, {
+      createContextEdge({ sourceNodeId: contextNodeId, targetNodeId }, {
         onSuccess: () => {
-          focusSourceNode(contextNodePickerTargetNodeId)
+          focusSourceNode(targetNodeId)
         },
         onError: () => {
           setContextPickReservations((current) => {
@@ -168,7 +189,7 @@ export const CanvasSurface = memo(function CanvasSurface({
       return
     }
     if (node.type === 'flow-node' && node.data.sourceType === 'node') showNodeToolbar(node.data.sourceId)
-  }, [contextPickerConnectedNodeIds, contextNodePickerTargetNodeId, contextPickReservations, createContextEdge, focusSourceNode, showNodeToolbar])
+  }, [addCollaborativeContextNode, collaborativeContextNodeIdSet, contextNodePickerTarget, contextPickerConnectedNodeIds, contextPickReservations, createContextEdge, focusSourceNode, showNodeToolbar])
 
   const onNodeDragStart = useCallback<OnNodeDrag<CanvasFlowNode>>((_, node, draggedNodes) => {
     if (isContextPicking) return
@@ -290,12 +311,15 @@ export const CanvasSurface = memo(function CanvasSurface({
 
 function isContextNodePickable(
   node: CanvasFlowNode,
-  targetNodeId: string | null,
+  target: ContextNodePickerTarget | null,
   connectedNodeIds: ReadonlySet<string>,
   reservations: ReadonlySet<string>,
+  collaborativeContextNodeIds: ReadonlySet<string>,
 ) {
-  if (targetNodeId === null || node.type !== 'flow-node' || node.data.sourceType !== 'node') return false
+  if (target === null || node.type !== 'flow-node' || node.data.sourceType !== 'node') return false
   const nodeId = node.data.sourceId
+  if (target.kind === 'collaborative-agent') return !collaborativeContextNodeIds.has(nodeId)
+  const targetNodeId = target.nodeId
   return nodeId !== targetNodeId
     && !connectedNodeIds.has(nodeId)
     && !reservations.has(getContextPickReservationKey(targetNodeId, nodeId))
@@ -303,13 +327,17 @@ function isContextNodePickable(
 
 function isContextNodeUnavailable(
   node: CanvasFlowNode,
-  targetNodeId: string | null,
+  target: ContextNodePickerTarget | null,
   connectedNodeIds: ReadonlySet<string>,
   reservations: ReadonlySet<string>,
+  collaborativeContextNodeIds: ReadonlySet<string>,
 ) {
-  if (targetNodeId === null || node.type !== 'flow-node' || node.data.sourceType !== 'node') return false
+  if (target === null || node.type !== 'flow-node' || node.data.sourceType !== 'node') return false
   const nodeId = node.data.sourceId
-  return connectedNodeIds.has(nodeId) || reservations.has(getContextPickReservationKey(targetNodeId, nodeId))
+  if (target.kind === 'collaborative-agent') return collaborativeContextNodeIds.has(nodeId)
+  return nodeId === target.nodeId
+    || connectedNodeIds.has(nodeId)
+    || reservations.has(getContextPickReservationKey(target.nodeId, nodeId))
 }
 
 function appendNodeClassName(className: string | undefined, nextClassName: string) {

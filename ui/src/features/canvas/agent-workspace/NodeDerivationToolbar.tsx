@@ -9,7 +9,7 @@ import {
 } from '@/apis/canvas-apis'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { useAgentRunStream } from '@/features/canvas/agent-workspace/hook'
+import { useNodeDerivationAgentRunStream } from '@/features/canvas/agent-workspace/hook'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 import type { CanvasNodeKind } from '@/types/canvas'
@@ -62,7 +62,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
   const beginNodeAgentRun = useFlowNodeStore((state) => state.actions.beginNodeAgentRun)
   const dismissNodeAgentRun = useFlowNodeStore((state) => state.actions.dismissNodeAgentRun)
   const isNodeDragging = useStore((state) => state.nodes.some((node) => node.dragging))
-  const { streamRun } = useAgentRunStream(workId)
+  const { streamRun } = useNodeDerivationAgentRunStream(workId)
   const targetNodeId = selectedNodeIds[0] ?? null
   const targetAgentRun = useFlowNodeStore((state) => targetNodeId === null
     ? undefined
@@ -131,7 +131,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
       contextNodeIds,
       model,
     }, {
-      onSuccess: (run) => streamRun(run.id, targetNodeId),
+      onSuccess: (run) => streamRun(run.id, targetNodeId, definition.target),
       onError: (error) => {
         toast.error(error instanceof Error ? error.message : '无法创建节点派生任务')
         dismissNodeAgentRun(targetNodeId)

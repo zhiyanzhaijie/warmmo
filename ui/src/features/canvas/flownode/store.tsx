@@ -8,14 +8,23 @@ import type { AgentEvent, CanvasNodePosition } from '@/types/canvas'
 
 export type NodeAgentRunStatus = 'submitting' | 'running' | 'waiting_input' | 'completed'
 export type NodeAgentOperation = 'update' | 'derive'
+export type ContextNodePickerTarget =
+  | { kind: 'node-agent'; nodeId: string }
+  | { kind: 'collaborative-agent' }
 export type CanvasInteractionMode =
   | { kind: 'editing' }
-  | { kind: 'context-node-picker'; targetNodeId: string }
+  | { kind: 'context-node-picker'; target: ContextNodePickerTarget }
 
 const editingCanvasInteractionMode: CanvasInteractionMode = { kind: 'editing' }
 
 export function getContextNodePickerTargetNodeId(mode: CanvasInteractionMode) {
-  return mode.kind === 'context-node-picker' ? mode.targetNodeId : null
+  return mode.kind === 'context-node-picker' && mode.target.kind === 'node-agent'
+    ? mode.target.nodeId
+    : null
+}
+
+export function isCollaborativeContextNodePicker(mode: CanvasInteractionMode) {
+  return mode.kind === 'context-node-picker' && mode.target.kind === 'collaborative-agent'
 }
 
 export interface NodeAgentRunState {
@@ -42,8 +51,11 @@ interface FlowNodeStoreActions {
   attachNodeAgentRun: (nodeId: string, runId: string, operation?: NodeAgentOperation) => void
   appendNodeAgentEvent: (nodeId: string, event: AgentEvent) => void
   dismissNodeAgentRun: (nodeId: string) => void
-  startContextNodePicker: (targetNodeId: string) => void
+  startContextNodePicker: (target: ContextNodePickerTarget) => void
   cancelContextNodePicker: () => void
+  addCollaborativeContextNode: (nodeId: string) => void
+  removeCollaborativeContextNode: (nodeId: string) => void
+  clearCollaborativeContextNodes: () => void
 }
 
 export interface FlowNodeStore {
@@ -56,6 +68,7 @@ export interface FlowNodeStore {
   detailLevel: FlowNodeDetailLevel
   pendingFocusSourceNodeId: string | null
   canvasInteractionMode: CanvasInteractionMode
+  collaborativeContextNodeIds: string[]
   nodeAgentRuns: Record<string, NodeAgentRunState>
   actions: FlowNodeStoreActions
 }
@@ -65,16 +78,31 @@ export type FlowNodeStoreApi = StoreApi<FlowNodeStore>
 export function createFlowNodeStore(): FlowNodeStoreApi {
   return createStore<FlowNodeStore>()((set) => {
     const actions: FlowNodeStoreActions = {
-      startContextNodePicker: (targetNodeId) => {
+      startContextNodePicker: (target) => {
         set((state) => state.canvasInteractionMode.kind === 'context-node-picker' &&
-          state.canvasInteractionMode.targetNodeId === targetNodeId
+          areContextNodePickerTargetsEqual(state.canvasInteractionMode.target, target)
           ? state
-          : { canvasInteractionMode: { kind: 'context-node-picker', targetNodeId } })
+          : { canvasInteractionMode: { kind: 'context-node-picker', target } })
       },
       cancelContextNodePicker: () => {
         set((state) => state.canvasInteractionMode.kind === 'editing'
           ? state
           : { canvasInteractionMode: editingCanvasInteractionMode })
+      },
+      addCollaborativeContextNode: (nodeId) => {
+        set((state) => state.collaborativeContextNodeIds.includes(nodeId)
+          ? state
+          : { collaborativeContextNodeIds: [...state.collaborativeContextNodeIds, nodeId] })
+      },
+      removeCollaborativeContextNode: (nodeId) => {
+        set((state) => state.collaborativeContextNodeIds.includes(nodeId)
+          ? { collaborativeContextNodeIds: state.collaborativeContextNodeIds.filter((id) => id !== nodeId) }
+          : state)
+      },
+      clearCollaborativeContextNodes: () => {
+        set((state) => state.collaborativeContextNodeIds.length === 0
+          ? state
+          : { collaborativeContextNodeIds: [] })
       },
       syncNodes: (incomingNodes) => {
         set((state) => {
@@ -226,10 +254,17 @@ export function createFlowNodeStore(): FlowNodeStoreApi {
       detailLevel: 'full',
       pendingFocusSourceNodeId: null,
       canvasInteractionMode: editingCanvasInteractionMode,
+      collaborativeContextNodeIds: [],
       nodeAgentRuns: {},
       actions,
     }
   })
+}
+
+function areContextNodePickerTargetsEqual(left: ContextNodePickerTarget, right: ContextNodePickerTarget) {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'collaborative-agent' || right.kind === 'collaborative-agent') return true
+  return left.nodeId === right.nodeId
 }
 
 export const FlowNodeStoreContext = createContext<FlowNodeStoreApi | null>(null)
