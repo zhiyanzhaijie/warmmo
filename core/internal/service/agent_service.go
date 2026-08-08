@@ -44,11 +44,35 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	if input.Target != agent.TargetNodeUpdate &&
 		input.Target != agent.TargetSectionOutlineBatch &&
 		input.Target != agent.TargetChapterSection &&
-		input.Target != agent.TargetChapterArchive {
+		input.Target != agent.TargetChapterArchive &&
+		!agent.IsCollaborativeTarget(input.Target) {
 		return agent.Run{}, fmt.Errorf("%w: target %q is not supported", ErrInvalidAgentRun, input.Target)
 	}
-	if input.TargetNodeID == "" {
+	if input.TargetNodeID == "" && !agent.IsCollaborativeTarget(input.Target) {
 		return agent.Run{}, fmt.Errorf("%w: targetNodeId is required", ErrInvalidAgentRun)
+	}
+	if agent.IsCollaborativeTarget(input.Target) {
+		globalContext, err := s.repository.GetGlobalContextNodeReferences(input.WorkID)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		input.ContextNodes = append(input.ContextNodes, globalContext...)
+		input.ContextNodeIDs = append(input.ContextNodeIDs, nodeReferenceIDs(globalContext)...)
+		input.ContextNodeIDs = uniqueNodeIDs(input.ContextNodeIDs)
+		if len(input.ContextNodeIDs) > 0 {
+			contextNodes, err := s.repository.GetNodeReferences(input.WorkID, input.ContextNodeIDs)
+			if err != nil {
+				return agent.Run{}, err
+			}
+			input.ContextNodes = contextNodes
+		}
+		input.RunID = uuid.NewString()
+		run, err := s.repository.CreateRun(input)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		go s.execute(run, input, false)
+		return run, nil
 	}
 	if input.Target == agent.TargetNodeUpdate && !containsNodeID(input.ContextNodeIDs, input.TargetNodeID) {
 		return agent.Run{}, fmt.Errorf("%w: targetNodeId must be included in contextNodeIds", ErrInvalidAgentRun)
@@ -164,6 +188,31 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
 		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs),
 	}
+	if agent.IsCollaborativeTarget(run.Target) {
+		globalContext, err := s.repository.GetGlobalContextNodeReferences(run.WorkID)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		input.ContextNodes = append(input.ContextNodes, globalContext...)
+		input.ContextNodeIDs = append(input.ContextNodeIDs, nodeReferenceIDs(globalContext)...)
+		input.ContextNodeIDs = uniqueNodeIDs(input.ContextNodeIDs)
+		if len(input.ContextNodeIDs) > 0 {
+			contextNodes, err := s.repository.GetNodeReferences(run.WorkID, input.ContextNodeIDs)
+			if err != nil {
+				return agent.Run{}, err
+			}
+			input.ContextNodes = contextNodes
+		}
+		queuedResponse, err := s.repository.QueueResponse(runID, approvalEventID, answer)
+		if err != nil {
+			return agent.Run{}, err
+		}
+		input.UserResponses = append(responses, queuedResponse)
+		run.Status = agent.RunStatusQueued
+		run.ErrorMessage = ""
+		go s.execute(run, input, true)
+		return run, nil
+	}
 	nodeKind, targetNodeRevision, err := s.repository.GetCanvasNodeMetadata(run.WorkID, run.TargetNodeID)
 	if err != nil {
 		return agent.Run{}, err
@@ -197,6 +246,16 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 	run.ErrorMessage = ""
 	go s.execute(run, input, true)
 	return run, nil
+}
+
+func nodeReferenceIDs(references []agent.NodeReference) []string {
+	ids := make([]string, 0, len(references))
+	for _, reference := range references {
+		if strings.TrimSpace(reference.ID) != "" {
+			ids = append(ids, reference.ID)
+		}
+	}
+	return ids
 }
 
 func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool) {
@@ -242,7 +301,9 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 		return
 	}
 	var completeErr error
-	if agent.IsNodeUpdateTarget(input.Target) {
+	if agent.IsCollaborativeTarget(input.Target) {
+		completeErr = s.repository.CompleteReadOnly(run, result)
+	} else if agent.IsNodeUpdateTarget(input.Target) {
 		completeErr = s.repository.CompleteNodeUpdate(runCtx, run, input.TargetNodeID, result)
 	} else if input.Target == agent.TargetSectionOutlineBatch || input.Target == agent.TargetChapterSection {
 		completeErr = s.repository.CompleteDerivation(runCtx, run, input.TargetNodeID, result)
@@ -365,5 +426,5 @@ func publicAgentError(err error) string {
 	if errors.Is(err, canvas.ErrArchivedNodeLocked) {
 		return "章节已归档并锁定，不能再次修改或归档"
 	}
-	return "Agent 执行失败，请检查模型配置后重试"
+	return "Agent 执行失败，请重试或查看 Core 日志"
 }

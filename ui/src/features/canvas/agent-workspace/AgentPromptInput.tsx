@@ -30,6 +30,7 @@ import {
 import { CanvasContextNodes } from '@/features/canvas/agent-workspace/ContextNodes'
 import type { CanvasContextNode } from '@/features/canvas/agent-workspace/types'
 import type { EnabledModel } from '@/types/provider'
+import { cn } from '@/lib/utils'
 
 const preserveTextOnlyPaste = () => undefined
 
@@ -47,6 +48,7 @@ export interface CanvasAgentPromptSubmission {
 }
 
 interface CanvasAgentPromptInputProps {
+  ariaLabel?: string
   attachmentNodeIds: ReadonlySet<string>
   attachmentNodes: CanvasContextNode[]
   availableContextNodes: CanvasContextNode[]
@@ -60,6 +62,9 @@ interface CanvasAgentPromptInputProps {
   pendingAttachmentNodeIds: ReadonlySet<string>
   pendingInput: PendingAgentInput | null
   prompt: CanvasPromptValue
+  className?: string
+  placeholder?: string
+  showContextPicker?: boolean
   isResponding: boolean
   onContextNodeRemove: (nodeId: string) => void
   onContextPickerToggle: () => void
@@ -72,6 +77,7 @@ interface CanvasAgentPromptInputProps {
 
 export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
   attachmentNodeIds,
+  ariaLabel = '节点指令',
   attachmentNodes,
   availableContextNodes,
   canSubmit,
@@ -84,6 +90,9 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
   pendingAttachmentNodeIds,
   pendingInput,
   prompt,
+  className,
+  placeholder = '告诉这个节点接下来要做什么',
+  showContextPicker = true,
   isResponding,
   onContextNodeRemove,
   onContextPickerToggle,
@@ -144,7 +153,7 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
   return (
     <TooltipProvider>
       <PromptInput
-        className="[&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-[calc(var(--radius-md)+var(--spacing-space-sm))] [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none"
+        className={cn('[&_[data-slot=input-group]]:relative [&_[data-slot=input-group]]:min-h-0 [&_[data-slot=input-group]]:items-stretch [&_[data-slot=input-group]]:overflow-visible [&_[data-slot=input-group]]:rounded-[calc(var(--radius-md)+var(--spacing-space-sm))] [&_[data-slot=input-group]]:border-0 [&_[data-slot=input-group]]:bg-canvas-elevated [&_[data-slot=input-group]]:shadow-none', className)}
         data-node-kind={nodeKind}
         onSubmit={submitPrompt}
       >
@@ -154,6 +163,7 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
               disabled={isSubmitting || isStreaming}
               isPicking={isContextPicking}
               nodes={attachmentNodes}
+              showPicker={showContextPicker}
               onPickerToggle={onContextPickerToggle}
               onRemove={(nodeId) => {
                 promptEditorRef.current?.removeContextNode(nodeId)
@@ -202,10 +212,11 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
           ) : (
             <CanvasPromptEditor
               ref={promptEditorRef}
+              ariaLabel={ariaLabel}
               availableContextNodes={availableContextNodes}
               disabled={isSubmitting || isStreaming}
               initialValue={prompt}
-              placeholder="告诉这个节点接下来要做什么"
+              placeholder={placeholder}
               onChange={handlePromptChange}
             />
           )}
@@ -233,7 +244,7 @@ export const CanvasAgentPromptInput = memo(function CanvasAgentPromptInput({
             />
           </PromptInputTools>}
           <PromptInputSubmit
-            aria-label={isAnswerMode ? '继续 Agent 执行' : status === 'submitted' || status === 'streaming' ? '节点指令运行中' : '运行节点指令'}
+            aria-label={isAnswerMode ? '继续 Agent 执行' : status === 'submitted' || status === 'streaming' ? 'Agent 指令运行中' : '运行 Agent 指令'}
             className="bg-primary text-on-primary hover:opacity-85"
             disabled={isAnswerMode ? responseText === '' || isResponding : !canSubmit}
             size={isAnswerMode ? 'sm' : 'icon-sm'}

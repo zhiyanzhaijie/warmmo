@@ -46,6 +46,7 @@ export interface CanvasPromptEditorHandle {
 }
 
 interface CanvasPromptEditorProps {
+  ariaLabel?: string
   availableContextNodes: CanvasContextNode[]
   disabled: boolean
   initialValue: CanvasPromptValue
@@ -69,6 +70,7 @@ interface CanvasPromptMentionMenuProps {
 }
 
 export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPromptEditorProps>(function CanvasPromptEditor({
+  ariaLabel = '节点指令',
   availableContextNodes,
   disabled,
   initialValue,
@@ -157,7 +159,7 @@ export const CanvasPromptEditor = forwardRef<CanvasPromptEditorHandle, CanvasPro
     ],
     editorProps: {
       attributes: {
-        'aria-label': '节点指令',
+        'aria-label': ariaLabel,
         'aria-multiline': 'true',
         'data-slot': 'input-group-control',
         role: 'textbox',

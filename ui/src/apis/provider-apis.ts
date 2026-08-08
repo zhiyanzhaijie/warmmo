@@ -34,7 +34,8 @@ export function useModelCatalog() {
   return useQuery({
     queryKey: providerKeys.catalog(),
     queryFn: ({ signal }) => coreClient<CatalogResponse>('/model-catalog', { signal }),
-    staleTime: Infinity,
+    staleTime: 0,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
   })
 }

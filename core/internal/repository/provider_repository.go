@@ -14,6 +14,7 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite/vec"
 
 	"warmnote/core/internal/model"
 )
@@ -21,7 +22,7 @@ import (
 const (
 	databaseFileName     = "warmnote.db"
 	masterKeySize        = 32
-	currentSchemaVersion = 13
+	currentSchemaVersion = 16
 	providerSchemaSQL    = `
 CREATE TABLE IF NOT EXISTS agent_provider_configurations (
     id TEXT PRIMARY KEY,
@@ -263,6 +264,181 @@ CREATE INDEX IF NOT EXISTS idx_chapter_archive_sections_work_node
 ALTER TABLE chapter_archives ADD COLUMN retracted_at TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_chapter_archives_work_retracted_created
     ON chapter_archives(work_id, retracted_at, created_at);`
+	knowledgeVectorSchemaSQL = `
+CREATE TABLE IF NOT EXISTS knowledge_vector_documents (
+    vector_row_id INTEGER PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    node_id TEXT NOT NULL DEFAULT '',
+    version_id TEXT NOT NULL DEFAULT '',
+    archive_id TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0,
+    chunk_index INTEGER NOT NULL DEFAULT 0,
+    model_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    indexed_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(object_type, object_id, chunk_index, model_id, scope)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_vector_documents_work_scope
+    ON knowledge_vector_documents(work_id, scope, status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_vector_documents_node_scope
+    ON knowledge_vector_documents(work_id, node_id, scope, status);
+CREATE TABLE IF NOT EXISTS knowledge_index_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_id TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(work_id, object_type, object_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_index_jobs_pending
+    ON knowledge_index_jobs(status, updated_at, id);
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vectors USING vec0(
+    embedding float[1024] distance_metric=cosine
+);
+CREATE TRIGGER IF NOT EXISTS knowledge_enqueue_node_version
+AFTER INSERT ON canvas_node_versions
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, created_at, updated_at)
+    VALUES (NEW.work_id, 'node-version', NEW.id, 'pending', NEW.created_at, NEW.created_at)
+    ON CONFLICT(work_id, object_type, object_id) DO UPDATE SET status='pending', last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_enqueue_current_version
+AFTER UPDATE OF current_version_id ON canvas_nodes
+WHEN NEW.current_version_id <> OLD.current_version_id AND NEW.current_version_id <> ''
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, created_at, updated_at)
+    VALUES (NEW.work_id, 'node-version', NEW.current_version_id, 'pending', NEW.updated_at, NEW.updated_at)
+    ON CONFLICT(work_id, object_type, object_id) DO UPDATE SET status='pending', last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_enqueue_archive
+AFTER INSERT ON chapter_archives
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, created_at, updated_at)
+    VALUES (NEW.work_id, 'archive', NEW.id, 'pending', NEW.created_at, NEW.created_at)
+    ON CONFLICT(work_id, object_type, object_id) DO UPDATE SET status='pending', last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_enqueue_archive_section
+AFTER INSERT ON chapter_archive_sections
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, created_at, updated_at)
+    VALUES (NEW.work_id, 'archive-section', NEW.archive_id || ':' || NEW.chapter_section_node_id, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(work_id, object_type, object_id) DO UPDATE SET status='pending', last_error='', updated_at=excluded.updated_at;
+END;
+INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, created_at, updated_at)
+SELECT work_id, 'node-version', current_version_id, 'pending', updated_at, updated_at
+FROM canvas_nodes WHERE current_version_id <> ''
+ON CONFLICT(work_id, object_type, object_id) DO NOTHING;
+INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, created_at, updated_at)
+SELECT work_id, 'archive', id, 'pending', created_at, created_at
+FROM chapter_archives WHERE is_current = 1 AND retracted_at = ''
+ON CONFLICT(work_id, object_type, object_id) DO NOTHING;`
+	knowledgeVectorPartitionSchemaSQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_vectors_partitioned USING vec0(
+    work_id TEXT PARTITION KEY,
+    model_id TEXT,
+    scope TEXT,
+    kind TEXT,
+    is_spine BOOLEAN,
+    embedding FLOAT[1024] DISTANCE_METRIC=cosine
+);
+INSERT OR REPLACE INTO knowledge_vectors_partitioned(rowid, work_id, model_id, scope, kind, is_spine, embedding)
+SELECT v.rowid,
+       d.work_id,
+       d.model_id,
+       d.scope,
+       d.kind,
+       CASE WHEN d.object_type IN ('archive', 'archive-section') THEN 1 ELSE 0 END,
+       v.embedding
+FROM knowledge_vectors v
+JOIN knowledge_vector_documents d ON d.vector_row_id = v.rowid
+WHERE d.status = 'ready';
+DROP TABLE IF EXISTS knowledge_vectors;
+DROP TRIGGER IF EXISTS knowledge_enqueue_node_version;
+DROP TRIGGER IF EXISTS knowledge_enqueue_current_version;
+DROP TRIGGER IF EXISTS knowledge_enqueue_archive;
+DROP TRIGGER IF EXISTS knowledge_enqueue_archive_section;
+CREATE TRIGGER knowledge_enqueue_node_version
+AFTER INSERT ON canvas_node_versions
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, attempts, last_error, created_at, updated_at)
+    VALUES (NEW.work_id, 'node-version', NEW.id, 'pending', 0, '', NEW.created_at, NEW.created_at)
+    ON CONFLICT(work_id, object_type, object_id)
+    DO UPDATE SET status='pending', attempts=0, last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER knowledge_enqueue_current_version
+AFTER UPDATE OF current_version_id ON canvas_nodes
+WHEN NEW.current_version_id <> OLD.current_version_id AND NEW.current_version_id <> ''
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, attempts, last_error, created_at, updated_at)
+    VALUES (NEW.work_id, 'node-version', NEW.current_version_id, 'pending', 0, '', NEW.updated_at, NEW.updated_at)
+    ON CONFLICT(work_id, object_type, object_id)
+    DO UPDATE SET status='pending', attempts=0, last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER knowledge_enqueue_archive
+AFTER INSERT ON chapter_archives
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, attempts, last_error, created_at, updated_at)
+    VALUES (NEW.work_id, 'archive', NEW.id, 'pending', 0, '', NEW.created_at, NEW.created_at)
+    ON CONFLICT(work_id, object_type, object_id)
+    DO UPDATE SET status='pending', attempts=0, last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER knowledge_enqueue_archive_section
+AFTER INSERT ON chapter_archive_sections
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, attempts, last_error, created_at, updated_at)
+    VALUES (NEW.work_id, 'archive-section', NEW.archive_id || ':' || NEW.chapter_section_node_id, 'pending', 0, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(work_id, object_type, object_id)
+    DO UPDATE SET status='pending', attempts=0, last_error='', updated_at=excluded.updated_at;
+END;
+CREATE TRIGGER knowledge_enqueue_archive_state_change
+AFTER UPDATE OF is_current, retracted_at ON chapter_archives
+WHEN NEW.is_current <> OLD.is_current OR NEW.retracted_at <> OLD.retracted_at
+BEGIN
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, attempts, last_error, created_at, updated_at)
+    VALUES (NEW.work_id, 'archive', NEW.id, 'pending', 0, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(work_id, object_type, object_id)
+    DO UPDATE SET status='pending', attempts=0, last_error='', updated_at=excluded.updated_at;
+
+    INSERT INTO knowledge_index_jobs(work_id, object_type, object_id, status, attempts, last_error, created_at, updated_at)
+    SELECT s.work_id,
+           'archive-section',
+           s.archive_id || ':' || s.chapter_section_node_id,
+           'pending',
+           0,
+           '',
+           CURRENT_TIMESTAMP,
+           CURRENT_TIMESTAMP
+    FROM chapter_archive_sections s
+    WHERE s.archive_id = NEW.id
+    ON CONFLICT(work_id, object_type, object_id)
+    DO UPDATE SET status='pending', attempts=0, last_error='', updated_at=excluded.updated_at;
+END;`
+	knowledgeVectorDimensionSchemaSQL = `
+DROP TABLE IF EXISTS knowledge_vectors_partitioned;
+DROP TABLE IF EXISTS knowledge_vectors;
+DELETE FROM knowledge_vector_documents;
+UPDATE knowledge_index_jobs
+SET status = 'pending', attempts = 0, last_error = '', updated_at = CURRENT_TIMESTAMP;
+CREATE VIRTUAL TABLE knowledge_vectors_partitioned USING vec0(
+    work_id TEXT PARTITION KEY,
+    model_id TEXT,
+    scope TEXT,
+    kind TEXT,
+    is_spine BOOLEAN,
+    embedding FLOAT[1024] DISTANCE_METRIC=cosine
+);`
 )
 
 var (
@@ -588,7 +764,22 @@ func (r *ProviderRepository) migrateSchema() error {
 			return fmt.Errorf("add chapter archive retraction: %w", err)
 		}
 	}
-	if _, err := transaction.Exec("PRAGMA user_version = 13"); err != nil {
+	if schemaVersion < 14 {
+		if _, err := transaction.Exec(knowledgeVectorSchemaSQL); err != nil {
+			return fmt.Errorf("add knowledge vector schema: %w", err)
+		}
+	}
+	if schemaVersion < 15 {
+		if _, err := transaction.Exec(knowledgeVectorPartitionSchemaSQL); err != nil {
+			return fmt.Errorf("partition knowledge vector schema: %w", err)
+		}
+	}
+	if schemaVersion < 16 {
+		if _, err := transaction.Exec(knowledgeVectorDimensionSchemaSQL); err != nil {
+			return fmt.Errorf("upgrade knowledge vector dimension: %w", err)
+		}
+	}
+	if _, err := transaction.Exec("PRAGMA user_version = 16"); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

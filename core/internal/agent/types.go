@@ -21,10 +21,14 @@ type RunStatus string
 type CandidateStatus string
 
 const (
-	TargetNodeUpdate          = "node-update"
-	TargetSectionOutlineBatch = "section-outline-batch"
-	TargetChapterSection      = "chapter-section"
-	TargetChapterArchive      = "chapter-archive"
+	TargetNodeUpdate            = "node-update"
+	TargetSectionOutlineBatch   = "section-outline-batch"
+	TargetChapterSection        = "chapter-section"
+	TargetChapterArchive        = "chapter-archive"
+	TargetCollaborativeTargeted = "collaborative-targeted"
+	TargetCollaborativeExplore  = "collaborative-explore"
+	TargetCollaborativePlanner  = "collaborative-planner"
+	TargetWritingPolish         = "writing-polish"
 
 	RunStatusQueued       RunStatus = "queued"
 	RunStatusRunning      RunStatus = "running"
@@ -37,6 +41,61 @@ const (
 	CandidateStatusAccepted CandidateStatus = "accepted"
 	CandidateStatusRejected CandidateStatus = "rejected"
 )
+
+type AgentRole string
+
+const (
+	RolePlanner AgentRole = "planner"
+	RoleCreator AgentRole = "creator"
+	RoleWriter  AgentRole = "writer"
+)
+
+type CollaborationPlan struct {
+	Intent            string `json:"intent"`
+	Brief             string `json:"brief"`
+	ContextQuery      string `json:"contextQuery"`
+	CreatorTarget     string `json:"creatorTarget"`
+	CreatorSkillID    string `json:"creatorSkillId"`
+	OutputKind        string `json:"outputKind"`
+	WriterRequired    bool   `json:"writerRequired"`
+	WriterInstruction string `json:"writerInstruction"`
+}
+
+// ProposalSet is the user-reviewable boundary for any collaborative canvas
+// mutation. It deliberately contains no persistence IDs for new nodes.
+type ProposalSet struct {
+	BaseRevisions map[string]int64      `json:"baseRevisions"`
+	Nodes         []ProposalNode        `json:"nodes"`
+	Updates       []ProposalUpdate      `json:"updates"`
+	Edges         []ProposalEdge        `json:"edges"`
+	Reasons       []string              `json:"reasons"`
+	Questions     []string              `json:"questions"`
+}
+
+type ProposalNode struct {
+	ClientID string `json:"clientId"`
+	Kind     string `json:"kind"`
+	Title    string `json:"title"`
+	Content  string `json:"content"`
+}
+
+type ProposalUpdate struct {
+	NodeID       string `json:"nodeId"`
+	BaseRevision int64  `json:"baseRevision"`
+	Title        string `json:"title"`
+	Content      string `json:"content"`
+}
+
+type ProposalEdge struct {
+	SourceID string `json:"sourceId"`
+	TargetID string `json:"targetId"`
+	Kind     string `json:"kind"`
+}
+
+func IsCollaborativeTarget(target string) bool {
+	return strings.TrimSpace(target) == TargetCollaborativeTargeted ||
+		strings.TrimSpace(target) == TargetCollaborativeExplore
+}
 
 type EventType string
 
@@ -70,6 +129,9 @@ const (
 	EventRunCompleted         EventType = "run.completed"
 	EventRunFailed            EventType = "run.failed"
 	EventRunCancelled         EventType = "run.cancelled"
+	EventRoleStarted          EventType = "role.started"
+	EventRoleHandoff          EventType = "role.handoff"
+	EventRoleCompleted        EventType = "role.completed"
 )
 
 var (
@@ -158,6 +220,7 @@ type UserResponse struct {
 type RunResult struct {
 	Title            string
 	Content          string
+	Role             AgentRole
 	SkillID          string
 	SkillVersion     string
 	CandidateID      string

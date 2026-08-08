@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +17,8 @@ import (
 	"warmnote/core/internal/agent/adkadapter"
 	"warmnote/core/internal/canvas"
 	"warmnote/core/internal/controller"
+	"warmnote/core/internal/embedding"
+	"warmnote/core/internal/model"
 	"warmnote/core/internal/repository"
 	"warmnote/core/internal/service"
 	"warmnote/core/internal/webserver"
@@ -67,11 +71,15 @@ func run(logger *slog.Logger) error {
 	logger.Info("Warmnote skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
 	canvasRepository := repository.NewCanvasRepository(providerRepository)
 	workFileRepository := repository.NewWorkFileRepository(dataDirectory)
+	contextSearchGateway := repository.NewContextSearchGateway(ctx, func() (*repository.ContextIndex, error) {
+		return configureContextIndex(providerRepository, providerService)
+	})
 	toolRegistry := agent.NewToolRegistry(
 		canvas.NewGetNodesTool(canvasRepository),
 		workspace.NewSearchTextTool(workFileRepository),
 		canvas.NewSearchStorySpineTool(workFileRepository, agentRepository),
 		canvas.NewCreateCandidateTool(canvasRepository),
+		canvas.NewSearchContextTool(contextSearchGateway),
 	)
 	agentLoop := agent.NewLoop(skillCatalog, toolRegistry, agent.DefaultBudget())
 	agentEngine := adkadapter.NewEngine(agentLoop, func(_ context.Context, providerID, modelID string) (adkadapter.ModelConfig, error) {
@@ -111,6 +119,49 @@ func run(logger *slog.Logger) error {
 		}
 		return err
 	}
+}
+
+func configureContextIndex(providerRepository *repository.ProviderRepository, providerService *service.ProviderService) (*repository.ContextIndex, error) {
+	providerID := strings.TrimSpace(os.Getenv("WARMNOTE_EMBEDDING_PROVIDER_ID"))
+	modelID := strings.TrimSpace(os.Getenv("WARMNOTE_EMBEDDING_MODEL_ID"))
+	if providerID == "" && modelID == "" {
+		enabledModels, err := providerService.EnabledModels()
+		if err != nil {
+			return nil, fmt.Errorf("list enabled embedding models: %w", err)
+		}
+		for _, enabledModel := range enabledModels {
+			if enabledModel.Capability != model.ModelCapabilityEmbedding {
+				continue
+			}
+			providerID = enabledModel.ProviderID
+			modelID = enabledModel.ModelID
+			break
+		}
+		if providerID == "" {
+			return nil, nil
+		}
+	}
+	if providerID == "" || modelID == "" {
+		return nil, errors.New("WARMNOTE_EMBEDDING_PROVIDER_ID and WARMNOTE_EMBEDDING_MODEL_ID must be configured together")
+	}
+	if providerID != model.CanonicalEmbeddingProviderID {
+		return nil, fmt.Errorf("context search only supports embedding provider %q", model.CanonicalEmbeddingProviderID)
+	}
+	if modelID != model.CanonicalEmbeddingModelID {
+		return nil, fmt.Errorf("context search only supports embedding model %q", model.CanonicalEmbeddingModelID)
+	}
+	baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve embedding model: %w", err)
+	}
+	embedder, err := embedding.NewOpenAICompatible(embedding.OpenAICompatibleConfig{
+		BaseURL: baseURL, APIKey: apiKey, ModelID: modelID,
+		Dimensions: repository.ContextEmbeddingDimension,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return repository.NewContextIndex(providerRepository, embedder), nil
 }
 
 func resolveDataDirectory() (string, error) {

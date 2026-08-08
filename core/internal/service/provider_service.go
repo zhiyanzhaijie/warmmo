@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -50,7 +53,9 @@ func (s *ProviderService) SaveConfiguration(input model.SaveProviderConfiguratio
 	if !ok {
 		return model.ProviderConfiguration{}, ErrProviderNotFound
 	}
-	if input.BaseURL == "" {
+	if provider.ID == model.CanonicalEmbeddingProviderID {
+		input.BaseURL = provider.DefaultBaseURL
+	} else if input.BaseURL == "" {
 		input.BaseURL = provider.DefaultBaseURL
 	}
 	if err := validateBaseURL(input.BaseURL); err != nil {
@@ -60,14 +65,11 @@ func (s *ProviderService) SaveConfiguration(input model.SaveProviderConfiguratio
 		return model.ProviderConfiguration{}, fmt.Errorf("%w: select at least one model", ErrInvalidProviderConfiguration)
 	}
 
-	validModels := make(map[string]struct{}, len(provider.Models))
-	for _, candidate := range provider.Models {
-		validModels[candidate.ID] = struct{}{}
-	}
 	uniqueModelIDs := make(map[string]struct{}, len(input.ModelIDs))
 	for _, modelID := range input.ModelIDs {
 		modelID = strings.TrimSpace(modelID)
-		if _, ok := validModels[modelID]; !ok {
+		candidate, ok := s.findModel(provider, modelID)
+		if !ok || (candidate.Capability == model.ModelCapabilityEmbedding && candidate.ID != model.CanonicalEmbeddingModelID) {
 			return model.ProviderConfiguration{}, fmt.Errorf("%w: model %q is unavailable", ErrInvalidProviderConfiguration, modelID)
 		}
 		uniqueModelIDs[modelID] = struct{}{}
@@ -96,7 +98,7 @@ func (s *ProviderService) TestConfiguration(ctx context.Context, providerID stri
 	}
 
 	baseURL := strings.TrimRight(strings.TrimSpace(input.BaseURL), "/")
-	if baseURL == "" {
+	if provider.ID == model.CanonicalEmbeddingProviderID || baseURL == "" {
 		baseURL = provider.DefaultBaseURL
 	}
 	if err := validateBaseURL(baseURL); err != nil {
@@ -112,6 +114,18 @@ func (s *ProviderService) TestConfiguration(ctx context.Context, providerID stri
 		}
 		if err != nil {
 			return model.ProviderTestResult{}, err
+		}
+	}
+	if input.ModelID != "" {
+		candidate, ok := s.findModel(provider, strings.TrimSpace(input.ModelID))
+		if !ok {
+			return model.ProviderTestResult{}, fmt.Errorf("%w: model %q is unavailable", ErrInvalidProviderConfiguration, input.ModelID)
+		}
+		if candidate.Capability == model.ModelCapabilityEmbedding {
+			if candidate.ID != model.CanonicalEmbeddingModelID {
+				return model.ProviderTestResult{}, fmt.Errorf("%w: only the canonical embedding model is supported", ErrInvalidProviderConfiguration)
+			}
+			return s.testEmbeddingConfiguration(ctx, baseURL, apiKey, candidate.ID)
 		}
 	}
 
@@ -187,6 +201,64 @@ func (s *ProviderService) findProvider(providerID string) (model.ProviderDefinit
 	return model.ProviderDefinition{}, false
 }
 
+func (s *ProviderService) findModel(provider model.ProviderDefinition, modelID string) (model.ModelDefinition, bool) {
+	for _, candidate := range provider.Models {
+		if candidate.ID == modelID {
+			return candidate, true
+		}
+	}
+	return model.ModelDefinition{}, false
+}
+
+func (s *ProviderService) testEmbeddingConfiguration(ctx context.Context, baseURL, apiKey, modelID string) (model.ProviderTestResult, error) {
+	payload, err := json.Marshal(map[string]any{
+		"model": modelID,
+		"input": "Warmnote embedding connection test",
+		"dimensions": model.CanonicalEmbeddingDimensions,
+		"encoding_format": "float",
+	})
+	if err != nil {
+		return model.ProviderTestResult{}, fmt.Errorf("encode embedding test request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/embeddings", bytes.NewReader(payload))
+	if err != nil {
+		return model.ProviderTestResult{}, fmt.Errorf("create embedding test request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	startedAt := time.Now()
+	response, err := s.httpClient.Do(request)
+	latencyMS := time.Since(startedAt).Milliseconds()
+	if err != nil {
+		return model.ProviderTestResult{}, fmt.Errorf("request embedding provider: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return model.ProviderTestResult{Valid: false, Message: "API Key 无效或没有访问权限", LatencyMS: latencyMS}, nil
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
+		return model.ProviderTestResult{Valid: false, Message: fmt.Sprintf("Embedding Provider 返回 HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body))), LatencyMS: latencyMS}, nil
+	}
+	var decoded struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024)).Decode(&decoded); err != nil {
+		return model.ProviderTestResult{Valid: false, Message: "Embedding Provider 返回内容无法解析", LatencyMS: latencyMS}, nil
+	}
+	if len(decoded.Data) != 1 || len(decoded.Data[0].Embedding) != model.CanonicalEmbeddingDimensions {
+		actualDimensions := 0
+		if len(decoded.Data) == 1 {
+			actualDimensions = len(decoded.Data[0].Embedding)
+		}
+		return model.ProviderTestResult{Valid: false, Message: fmt.Sprintf("Embedding 返回维度为 %d，需要 %d", actualDimensions, model.CanonicalEmbeddingDimensions), LatencyMS: latencyMS}, nil
+	}
+	return model.ProviderTestResult{Valid: true, Message: "Embedding API Key 有效，模型连接正常（1024 维）", LatencyMS: latencyMS}, nil
+}
+
 func validateBaseURL(baseURL string) error {
 	parsedBaseURL, err := url.ParseRequestURI(baseURL)
 	if err != nil || parsedBaseURL.Host == "" {
@@ -213,6 +285,12 @@ func defaultModelCatalog() []model.ProviderDefinition {
 				{ID: "gpt-5", Name: "GPT-5", Capability: model.ModelCapabilityText, Description: "高质量文本生成与创作推理"},
 				{ID: "gpt-5-mini", Name: "GPT-5 mini", Capability: model.ModelCapabilityText, Description: "更快、更经济的日常文本生成"},
 				{ID: "gpt-image-1", Name: "GPT Image 1", Capability: model.ModelCapabilityImage, Description: "角色、场景与概念图生成"},
+			},
+		},
+		{
+			ID: model.CanonicalEmbeddingProviderID, Name: "硅基流动", DefaultBaseURL: "https://api.siliconflow.cn/v1",
+			Models: []model.ModelDefinition{
+				{ID: model.CanonicalEmbeddingModelID, Name: "Qwen3 Embedding 0.6B", Capability: model.ModelCapabilityEmbedding, Description: "中文故事上下文检索（固定 1024 维）", Dimensions: model.CanonicalEmbeddingDimensions},
 			},
 		},
 	}

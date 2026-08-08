@@ -5,8 +5,12 @@ import "time"
 type ModelCapability string
 
 const (
-	ModelCapabilityText  ModelCapability = "text"
-	ModelCapabilityImage ModelCapability = "image"
+	ModelCapabilityText      ModelCapability = "text"
+	ModelCapabilityImage     ModelCapability = "image"
+	ModelCapabilityEmbedding ModelCapability = "embedding"
+	CanonicalEmbeddingProviderID             = "siliconflow"
+	CanonicalEmbeddingModelID                = "Qwen/Qwen3-Embedding-0.6B"
+	CanonicalEmbeddingDimensions             = 1024
 )
 
 type ModelDefinition struct {
@@ -14,6 +18,7 @@ type ModelDefinition struct {
 	Name        string          `json:"name"`
 	Capability  ModelCapability `json:"capability"`
 	Description string          `json:"description"`
+	Dimensions  int             `json:"dimensions,omitempty"`
 }
 
 type ProviderDefinition struct {
@@ -43,6 +48,7 @@ type SaveProviderConfiguration struct {
 type TestProviderConfiguration struct {
 	BaseURL string `json:"baseUrl"`
 	APIKey  string `json:"apiKey"`
+	ModelID string `json:"modelId,omitempty"`
 }
 
 type ProviderTestResult struct {

@@ -8,6 +8,7 @@ import '@/features/canvas/canvas.css'
 import { useCanvasCandidates, useCanvasEdges, useCanvasNodes, useLayoutCanvasChapter } from '@/apis/canvas-apis'
 import { useCurrentChapterArchives, useStorySpine } from '@/apis/chapter-archive-apis'
 import { CanvasAgentWorkspace } from '@/features/canvas/agent-workspace'
+import { CollaborativeAgentDrawer } from '@/features/canvas/agent-workspace/CollaborativeAgentDrawer'
 import { NodeDerivationToolbar } from '@/features/canvas/agent-workspace/NodeDerivationToolbar'
 import { CanvasHeader } from '@/features/canvas/CanvasHeader'
 import { FlowNodeStoreProvider } from '@/features/canvas/flownode/FlowNodeStoreProvider'
@@ -122,6 +123,12 @@ function CanvasWorkspace({ workId }: { workId: string }) {
         canvasNodes={nodesQuery.data ?? []}
         workId={workId}
         model={model}
+        onModelChange={setModel}
+      />
+      <CollaborativeAgentDrawer
+        canvasNodes={nodesQuery.data ?? []}
+        model={model}
+        workId={workId}
         onModelChange={setModel}
       />
       <NodeDerivationToolbar workId={workId} model={model} />

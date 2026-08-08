@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { useContextAgentAvailability } from '@/apis/model-apis'
 import { coreClient } from '@/lib/api/core-client'
 import type {
   AgentCandidate,
@@ -331,6 +332,35 @@ export function useCreateAgentRun(workId: string) {
         },
       }),
   })
+}
+
+export type CollaborativeAgentTarget = 'collaborative-targeted' | 'collaborative-explore'
+
+export function useCreateCollaborativeAgentRun(workId: string) {
+  const contextAgent = useContextAgentAvailability()
+  const mutation = useMutation({
+    mutationFn: (input: {
+      prompt: string
+      target: CollaborativeAgentTarget
+      contextNodeIds: string[]
+      model: ModelReference
+    }) => {
+      if (!contextAgent.isAvailable) {
+        return Promise.reject(new Error('配置 embedding 模型后才能使用画布上下文 Agent'))
+      }
+      return coreClient<AgentRun>(`/works/${workId}/agent-runs`, {
+        method: 'POST',
+        body: {
+          prompt: input.prompt,
+          contextNodeIds: input.contextNodeIds,
+          target: input.target,
+          providerId: input.model.providerId,
+          modelId: input.model.modelId,
+        },
+      })
+    },
+  })
+  return { ...mutation, contextAgentAvailable: contextAgent.isAvailable, contextAgentPending: contextAgent.isPending }
 }
 
 export type NodeDerivationTarget = 'section-outline-batch' | 'chapter-section' | 'chapter-archive'

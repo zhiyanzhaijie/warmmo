@@ -77,6 +77,7 @@ func requestDecision(
 	prompt string,
 	remainingModelCalls int,
 	emit Emitter,
+	systemPrompts ...string,
 ) (Decision, int, error) {
 	attempts := min(maxDecisionAttempts, remainingModelCalls)
 	if attempts <= 0 {
@@ -86,10 +87,14 @@ func requestDecision(
 	currentPrompt := prompt
 	var lastParseErr error
 	var lastPreview string
+	system := decisionInstruction
+	if len(systemPrompts) > 0 && strings.TrimSpace(systemPrompts[0]) != "" {
+		system = systemPrompts[0]
+	}
 	for attempt := 1; attempt <= attempts; attempt++ {
 		decisionText, _, err := model.Complete(ctx, ModelRequest{
 			ModelID:        modelID,
-			System:         decisionInstruction,
+			System:         system,
 			Prompt:         currentPrompt,
 			ResponseFormat: ModelResponseFormatJSONObject,
 		})
@@ -169,12 +174,18 @@ func (l *Loop) Run(ctx context.Context, input RunInput, model TextModel, emit Em
 	runCtx, cancel := context.WithTimeout(ctx, l.budget.MaxDuration)
 	defer cancel()
 
-	nodeCount := len(input.ContextNodes) + 1
+	nodeCount := len(input.ContextNodes)
+	if !IsCollaborativeTarget(input.Target) {
+		nodeCount++
+	}
 	if err := emit(EventContextPreparing, map[string]any{"nodeCount": nodeCount, "mode": "on-demand"}); err != nil {
 		return RunResult{}, err
 	}
 	if err := emit(EventContextReady, map[string]any{"nodeCount": nodeCount, "mode": "on-demand"}); err != nil {
 		return RunResult{}, err
+	}
+	if IsCollaborativeTarget(input.Target) {
+		return l.runCollaborative(runCtx, input, model, emit)
 	}
 
 	if err := emit(EventSkillSearching, map[string]any{"target": input.Target}); err != nil {
@@ -420,6 +431,7 @@ func (l *Loop) completeContent(ctx context.Context, state loopState, content str
 		}
 		return RunResult{
 			Title: update.Title, Content: update.Content,
+			Role:    RoleCreator,
 			SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version,
 			ExpectedRevision: revision,
 		}, nil
@@ -430,9 +442,12 @@ func (l *Loop) completeContent(ctx context.Context, state loopState, content str
 			return RunResult{}, err
 		}
 		return RunResult{
-			Content: content, SkillID: state.activeSkill.ID,
+			Content: content, Role: state.role, SkillID: state.activeSkill.ID,
 			SkillVersion: state.activeSkill.Version, ExpectedRevision: revision,
 		}, nil
+	}
+	if IsCollaborativeTarget(state.input.Target) {
+		return RunResult{Content: content, Role: state.role, SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version}, nil
 	}
 	toolArgs, err := json.Marshal(map[string]string{"content": content})
 	if err != nil {
@@ -503,17 +518,22 @@ func targetNodeRevision(state loopState) (int64, error) {
 }
 
 type loopState struct {
-	input        RunInput
-	matches      []SkillMatch
-	activeSkill  Skill
-	plan         string
-	observations []Observation
+	input             RunInput
+	matches           []SkillMatch
+	activeSkill       Skill
+	plan              string
+	observations      []Observation
+	role              AgentRole
+	collaborationPlan *CollaborationPlan
 }
 
 func (s loopState) decisionPrompt(step int, tools *ToolRegistry) string {
 	payload := s.promptPayload()
 	payload["step"] = step
 	payload["skillMatches"] = s.matches
+	if s.role != "" {
+		payload["agentRole"] = s.role
+	}
 	if s.activeSkill.ID != "" {
 		payload["activeSkill"] = map[string]any{
 			"id": s.activeSkill.ID, "version": s.activeSkill.Version,
@@ -537,6 +557,29 @@ func (s loopState) promptPayload() map[string]any {
 	}
 	if len(s.input.UserResponses) > 0 {
 		payload["userResponses"] = s.input.UserResponses
+	}
+	if IsCollaborativeTarget(s.input.Target) {
+		payload["operation"] = "targeted_creation"
+		if s.input.Target == TargetCollaborativeExplore {
+			payload["operation"] = "divergent_exploration"
+		}
+		if s.role != "" {
+			payload["agentRole"] = s.role
+		}
+		if s.collaborationPlan != nil {
+			payload["collaborationPlan"] = s.collaborationPlan
+		}
+		availableContextNodes := s.input.ContextNodes
+		if availableContextNodes == nil {
+			availableContextNodes = []NodeReference{}
+		}
+		payload["availableContextNodes"] = availableContextNodes
+		payload["contextAccessPolicy"] = []string{
+			"Use canvas.search_context to discover candidates from the local graph/vector index when available.",
+			"Read authoritative content with canvas.get_nodes only after selecting candidate IDs.",
+			"Batch selected IDs into calls of at most 64 nodes.",
+		}
+		return payload
 	}
 	if !IsNodeUpdateTarget(s.input.Target) &&
 		s.input.Target != TargetSectionOutlineBatch &&

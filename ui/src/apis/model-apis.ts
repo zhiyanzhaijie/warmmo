@@ -31,3 +31,11 @@ export function useAvailableModels(capability: ModelCapability) {
 
   return { ...query, models }
 }
+
+export function useContextAgentAvailability() {
+  const query = useAvailableModels('embedding')
+  return {
+    ...query,
+    isAvailable: !query.isPending && !query.isError && query.models.length > 0,
+  }
+}

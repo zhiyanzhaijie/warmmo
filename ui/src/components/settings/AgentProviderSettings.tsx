@@ -23,6 +23,11 @@ import {
 } from '@/apis/provider-apis'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  CANONICAL_EMBEDDING_DIMENSIONS,
+  CANONICAL_EMBEDDING_MODEL_ID,
+  CANONICAL_EMBEDDING_PROVIDER_ID,
+} from '@/types/provider'
 
 import type {
   ModelCapability,
@@ -73,18 +78,23 @@ export function AgentProviderSettings() {
   const configurations = configurationsData.configurations
 
   const openNewEditor = () => {
-    const provider = providers.find((candidate) =>
+    const embeddingProvider = providers.find((candidate) =>
+      supportsCapability(candidate, 'embedding')
+      && !configurations.some((configuration) => configuration.providerId === candidate.id),
+    )
+    const provider = embeddingProvider ?? providers.find((candidate) =>
       candidate.models.some((model) => model.capability === 'text')
       && !configurations.some((configuration) => configuration.providerId === candidate.id),
     ) ?? providers.find((candidate) => candidate.models.some((model) => model.capability === 'text'))
     if (provider === undefined) return
 
     const existing = configurations.find((configuration) => configuration.providerId === provider.id)
+    const capability: ModelCapability = provider.id === CANONICAL_EMBEDDING_PROVIDER_ID ? 'embedding' : 'text'
     setEditor({
-      capability: 'text',
+      capability,
       providerId: provider.id,
       baseUrl: existing?.baseUrl ?? provider.defaultBaseUrl,
-      modelIds: existing?.modelIds ?? [],
+      modelIds: capability === 'embedding' ? [CANONICAL_EMBEDDING_MODEL_ID] : existing?.modelIds ?? [],
       apiKey: '',
       editing: existing !== undefined,
     })
@@ -156,6 +166,7 @@ export function AgentProviderSettings() {
           showAPIKey={showAPIKey}
           submitting={isSaving}
           onChange={setEditor}
+          onErrorChange={setFormError}
           onShowAPIKeyChange={setShowAPIKey}
           onCancel={() => { setEditor(null); setFormError(null); setShowAPIKey(false) }}
           onSave={handleSave}
@@ -206,6 +217,7 @@ function ProviderEditor({
   showAPIKey,
   submitting,
   onChange,
+  onErrorChange,
   onShowAPIKeyChange,
   onCancel,
   onSave,
@@ -217,6 +229,7 @@ function ProviderEditor({
   showAPIKey: boolean
   submitting: boolean
   onChange: (editor: EditorState) => void
+  onErrorChange: (message: string | null) => void
   onShowAPIKeyChange: (show: boolean) => void
   onCancel: () => void
   onSave: (input: SaveProviderConfiguration) => Promise<void>
@@ -229,10 +242,10 @@ function ProviderEditor({
     reset: resetTest,
   } = useTestProvider()
   const availableProviders = useMemo(
-    () => providers.filter((provider) => provider.models.some((model) => model.capability === editor.capability)),
+    () => providers.filter((provider) => supportsCapability(provider, editor.capability)),
     [editor.capability, providers],
   )
-  const provider = providers.find((candidate) => candidate.id === editor.providerId) ?? availableProviders[0]
+  const provider = availableProviders.find((candidate) => candidate.id === editor.providerId) ?? availableProviders[0]
   const availableModels = provider?.models.filter((model) => model.capability === editor.capability) ?? []
   const existingConfiguration = configurations.find((configuration) => configuration.providerId === editor.providerId)
   const hasCurrentModel = availableModels.some((model) => editor.modelIds.includes(model.id))
@@ -242,36 +255,49 @@ function ProviderEditor({
 
   const updateEditor = (next: EditorState) => {
     resetTest()
+    onErrorChange(null)
     onChange(next)
   }
 
   const changeCapability = (capability: ModelCapability) => {
     const currentProvider = providers.find((candidate) => candidate.id === editor.providerId)
-    const nextProvider = currentProvider?.models.some((model) => model.capability === capability)
+    const nextProvider = currentProvider !== undefined && supportsCapability(currentProvider, capability)
       ? currentProvider
-      : providers.find((candidate) => candidate.models.some((model) => model.capability === capability))
-    if (nextProvider === undefined) return
+      : providers.find((candidate) => supportsCapability(candidate, capability))
+    if (nextProvider === undefined) {
+      onErrorChange(capability === 'embedding'
+        ? '当前 Core 未提供硅基流动 Qwen3 Embedding，请重启 Core 后刷新页面'
+        : '当前 Core 没有可用的对应模型 Provider')
+      return
+    }
     const existing = configurations.find((configuration) => configuration.providerId === nextProvider.id)
     updateEditor({
       ...editor,
       capability,
       providerId: nextProvider.id,
       baseUrl: existing?.baseUrl ?? nextProvider.defaultBaseUrl,
-      modelIds: existing?.modelIds ?? (nextProvider.id === editor.providerId ? editor.modelIds : []),
+      modelIds: capability === 'embedding'
+        ? nextProvider.models.filter((model) => model.id === CANONICAL_EMBEDDING_MODEL_ID).map((model) => model.id)
+        : existing?.modelIds ?? (nextProvider.id === editor.providerId ? editor.modelIds : []),
       apiKey: '',
       editing: existing !== undefined,
     })
   }
 
   const changeProvider = (providerId: string) => {
-    const nextProvider = providers.find((candidate) => candidate.id === providerId)
-    if (nextProvider === undefined) return
+    const nextProvider = providers.find((candidate) => candidate.id === providerId && supportsCapability(candidate, editor.capability))
+    if (nextProvider === undefined) {
+      onErrorChange('当前 Provider 不支持所选模型类型')
+      return
+    }
     const existing = configurations.find((configuration) => configuration.providerId === providerId)
     updateEditor({
       ...editor,
       providerId,
       baseUrl: existing?.baseUrl ?? nextProvider.defaultBaseUrl,
-      modelIds: existing?.modelIds ?? [],
+      modelIds: editor.capability === 'embedding'
+        ? nextProvider.models.filter((model) => model.id === CANONICAL_EMBEDDING_MODEL_ID).map((model) => model.id)
+        : existing?.modelIds ?? [],
       apiKey: '',
       editing: existing !== undefined,
     })
@@ -290,7 +316,11 @@ function ProviderEditor({
     if (provider === undefined || !canTest) return
     testProvider({
       providerId: provider.id,
-      input: { baseUrl: editor.baseUrl, apiKey: editor.apiKey },
+      input: {
+        baseUrl: editor.baseUrl,
+        apiKey: editor.apiKey,
+        modelId: editor.capability === 'embedding' ? CANONICAL_EMBEDDING_MODEL_ID : undefined,
+      },
     })
   }
 
@@ -318,11 +348,12 @@ function ProviderEditor({
             <SelectContent>
               <SelectItem value="text">Text Model</SelectItem>
               <SelectItem value="image">Image Model</SelectItem>
+              <SelectItem value="embedding">Embedding Model</SelectItem>
             </SelectContent>
           </Select>
         </Field>
         <Field label="Provider">
-          <Select value={provider?.id ?? ''} onValueChange={changeProvider}>
+          <Select value={provider?.id ?? ''} onValueChange={changeProvider} disabled={editor.capability === 'embedding'}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {availableProviders.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{candidate.name}</SelectItem>)}
@@ -334,7 +365,15 @@ function ProviderEditor({
       <fieldset className="mt-space-md">
         <legend className="text-body-sm text-body">模型</legend>
         <div className="mt-space-xs divide-y divide-hairline rounded-sm border border-hairline">
-          {availableModels.map((model) => {
+          {editor.capability === 'embedding' ? availableModels.map((model) => (
+            <div key={model.id} className="flex items-center gap-space-sm px-space-sm py-space-xs">
+              <CircleCheck className="shrink-0 text-link" size={16} />
+              <span className="min-w-0 flex-1">
+                <span className="text-label-sm">{model.name}</span>
+                <span className="ml-space-xs text-body-sm text-mute">{CANONICAL_EMBEDDING_DIMENSIONS} 维 · 硅基流动</span>
+              </span>
+            </div>
+          )) : availableModels.map((model) => {
             const checked = editor.modelIds.includes(model.id)
             return (
               <label key={model.id} htmlFor={`provider-model-${model.id}`} className="flex cursor-pointer items-center gap-space-sm px-space-sm py-space-xs hover:bg-hairline-soft">
@@ -386,19 +425,21 @@ function ProviderEditor({
         <TestFeedback result={testResult ?? null} error={testError} />
       </div>
 
-      <details className="mt-space-md group">
-        <summary className="w-fit cursor-pointer text-body-sm text-body hover:text-ink">高级设置</summary>
-        <label className="mt-space-xs block max-w-2xl text-body-sm text-body">
-          API Base URL
-          <input
-            value={editor.baseUrl}
-            onChange={(event) => updateEditor({ ...editor, baseUrl: event.target.value })}
-            className="mt-space-xs h-10 w-full rounded-sm border border-hairline bg-canvas px-space-sm text-body-md text-ink outline-none focus:border-link focus:ring-2 focus:ring-link-soft"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </label>
-      </details>
+      {editor.capability !== 'embedding' ? (
+        <details className="mt-space-md group">
+          <summary className="w-fit cursor-pointer text-body-sm text-body hover:text-ink">高级设置</summary>
+          <label className="mt-space-xs block max-w-2xl text-body-sm text-body">
+            API Base URL
+            <input
+              value={editor.baseUrl}
+              onChange={(event) => updateEditor({ ...editor, baseUrl: event.target.value })}
+              className="mt-space-xs h-10 w-full rounded-sm border border-hairline bg-canvas px-space-sm text-body-md text-ink outline-none focus:border-link focus:ring-2 focus:ring-link-soft"
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </label>
+        </details>
+      ) : null}
 
       {error !== null ? <p className="mt-space-md text-body-sm text-error">{error}</p> : null}
 
@@ -428,6 +469,14 @@ function TestFeedback({ result, error }: { result: ProviderTestResult | null; er
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div className="text-body-sm text-body"><p>{label}</p><div className="mt-space-xs">{children}</div></div>
+}
+
+function supportsCapability(provider: ProviderDefinition, capability: ModelCapability) {
+  if (capability === 'embedding') {
+    return provider.id === CANONICAL_EMBEDDING_PROVIDER_ID
+      && provider.models.some((model) => model.id === CANONICAL_EMBEDDING_MODEL_ID && model.capability === 'embedding')
+  }
+  return provider.models.some((model) => model.capability === capability)
 }
 
 function ProviderRow({ configuration, provider, onEdit, onDelete }: {

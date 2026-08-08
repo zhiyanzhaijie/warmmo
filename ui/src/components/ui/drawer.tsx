@@ -35,9 +35,11 @@ function DrawerOverlay({
 function DrawerContent({
   className,
   children,
+  side = 'bottom',
   showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Content> & {
+  side?: 'bottom' | 'right'
   showCloseButton?: boolean
 }) {
   return (
@@ -46,7 +48,10 @@ function DrawerContent({
       <DrawerPrimitive.Content
         data-slot="drawer-content"
         className={cn(
-          'fixed inset-x-0 bottom-0 z-50 flex max-h-[min(36rem,calc(100dvh-2rem))] w-full flex-col rounded-t-sm border-t border-hairline bg-canvas-elevated shadow-floating outline-none data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom',
+          'fixed z-50 flex bg-canvas-elevated shadow-floating outline-none data-[state=closed]:animate-out data-[state=open]:animate-in',
+          side === 'right'
+            ? 'inset-y-0 right-0 h-dvh w-[min(32rem,calc(100vw-1rem))] flex-col border-l border-hairline data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right'
+            : 'inset-x-0 bottom-0 max-h-[min(36rem,calc(100dvh-2rem))] w-full flex-col rounded-t-sm border-t border-hairline data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom',
           className,
         )}
         {...props}

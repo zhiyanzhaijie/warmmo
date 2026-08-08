@@ -20,6 +20,7 @@ interface CanvasContextNodesProps {
   disabled: boolean
   isPicking: boolean
   nodes: CanvasContextNode[]
+  showPicker?: boolean
   onPickerToggle: () => void
   onRemove: (nodeId: string) => void
 }
@@ -28,12 +29,13 @@ export function CanvasContextNodes({
   disabled,
   isPicking,
   nodes,
+  showPicker = true,
   onPickerToggle,
   onRemove,
 }: CanvasContextNodesProps) {
   return (
     <div className="flex min-h-0 min-w-0 items-center gap-space-xs px-space-sm pt-space-sm">
-      <Tooltip>
+      {showPicker ? <Tooltip>
         <TooltipTrigger asChild>
           <button
             aria-label={isPicking ? '取消从画布选择上下文节点' : '从画布选择上下文节点'}
@@ -50,7 +52,7 @@ export function CanvasContextNodes({
           </button>
         </TooltipTrigger>
         <TooltipContent side="top">{isPicking ? '取消选择上下文' : '从画布选择上下文'}</TooltipContent>
-      </Tooltip>
+      </Tooltip> : null}
       <Attachments
         variant="inline"
         className="min-h-8 min-w-0 flex-1 flex-nowrap items-center gap-space-xxs overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"

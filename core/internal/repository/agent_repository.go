@@ -114,6 +114,40 @@ WHERE work_id = ? AND id IN (`+placeholders+`)`, arguments...)
 	return references, nil
 }
 
+// GetGlobalContextNodeReferences returns the current worldview nodes that are
+// authoritative for every collaborative creation. The agent receives only
+// routing metadata and must read content through canvas.get_nodes.
+func (r *AgentRepository) GetGlobalContextNodeReferences(workID string) ([]warmagent.NodeReference, error) {
+	rows, err := r.database.Query(`
+SELECT id, kind
+FROM canvas_nodes
+WHERE work_id = ? AND kind IN (?, ?, ?)
+ORDER BY CASE kind
+    WHEN ? THEN 1
+    WHEN ? THEN 2
+    WHEN ? THEN 3
+    ELSE 4
+END, created_at, id`, workID,
+		canvas.NodeKindWorld, canvas.NodeKindMechanism, canvas.NodeKindEvent,
+		canvas.NodeKindWorld, canvas.NodeKindMechanism, canvas.NodeKindEvent)
+	if err != nil {
+		return nil, fmt.Errorf("read global context node references: %w", err)
+	}
+	defer rows.Close()
+	global := make([]warmagent.NodeReference, 0)
+	for rows.Next() {
+		var reference warmagent.NodeReference
+		if err := rows.Scan(&reference.ID, &reference.Type); err != nil {
+			return nil, fmt.Errorf("scan global context node reference: %w", err)
+		}
+		global = append(global, reference)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate global context node references: %w", err)
+	}
+	return global, nil
+}
+
 func (r *AgentRepository) SearchStorySpineDatabase(ctx context.Context, workID, query string, limit int) ([]canvas.StorySpineSearchResult, error) {
 	statement := `SELECT archive.id,archive.chapter_outline_node_id,archive.outline_title,archive.summary || COALESCE((SELECT '\n' || GROUP_CONCAT(section.summary, '\n') FROM chapter_archive_sections section WHERE section.archive_id=archive.id),'') FROM chapter_archives archive WHERE archive.work_id=? AND archive.is_current=1`
 	arguments := []any{workID}
@@ -571,6 +605,40 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 	return candidate, nil
 }
 
+// CompleteReadOnly finishes a work-level exploration without creating a
+// canvas candidate. The result is already exposed through message.delta; this
+// event only closes the durable run lifecycle.
+func (r *AgentRepository) CompleteReadOnly(run warmagent.Run, result warmagent.RunResult) error {
+	now := time.Now().UTC()
+	transaction, err := r.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete read-only agent run: %w", err)
+	}
+	defer transaction.Rollback()
+	statusResult, err := transaction.Exec(`
+UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		warmagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, warmagent.RunStatusRunning)
+	if err != nil {
+		return fmt.Errorf("complete read-only agent run: %w", err)
+	}
+	changed, err := statusResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read completed read-only agent run: %w", err)
+	}
+	if changed == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	if _, err := appendEvent(transaction, run.ID, warmagent.EventRunCompleted, map[string]any{
+		"mode": "read-only", "role": result.Role, "skillId": result.SkillID,
+	}, now); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit read-only agent run: %w", err)
+	}
+	return nil
+}
+
 type archiveProposal struct {
 	NodeID      string  `json:"nodeId"`
 	Kind        string  `json:"kind"`
@@ -938,6 +1006,10 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, nodeID))
 	if before.Revision != result.ExpectedRevision {
 		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
 	}
+	var beforeVersionID string
+	if err := transaction.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, nodeID).Scan(&beforeVersionID); err != nil {
+		return fmt.Errorf("read canvas node version before agent update: %w", err)
+	}
 	updated, err := transaction.ExecContext(ctx, `
 UPDATE canvas_nodes
 SET title = ?, content = ?, revision = revision + 1, updated_at = ?
@@ -954,6 +1026,14 @@ WHERE work_id = ? AND id = ? AND revision = ?`,
 		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
 	}
 	if before.Title != result.Title || before.Content != result.Content {
+		versionNode := before
+		versionNode.Title = result.Title
+		versionNode.Content = result.Content
+		versionNode.Revision++
+		versionNode.UpdatedAt = now
+		if _, err := createNodeVersion(ctx, transaction, versionNode, beforeVersionID, run.ID); err != nil {
+			return err
+		}
 		payload := updateNodeActionPayload{
 			Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content},
 			After:  nodeContentState{NodeID: before.ID, Title: result.Title, Content: result.Content},

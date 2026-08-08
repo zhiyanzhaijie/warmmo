@@ -53,7 +53,7 @@ export function ModelSelector({
     : isError
       ? '模型服务不可用'
       : models.length === 0
-        ? `未配置${capability === 'text' ? '文本' : '图像'}模型`
+        ? `未配置${capability === 'text' ? '文本' : capability === 'image' ? '图像' : '嵌入'}模型`
         : '选择模型'
 
   return (
@@ -65,7 +65,7 @@ export function ModelSelector({
       }}
       disabled={disabled || isPending || isError || models.length === 0}
     >
-      <SelectTrigger className={cn('w-auto min-w-44 border-transparent bg-transparent hover:bg-hairline-soft', className)} aria-label={ariaLabel ?? `选择${capability === 'text' ? '文本' : '图像'}模型`}>
+      <SelectTrigger className={cn('w-auto min-w-44 border-transparent bg-transparent hover:bg-hairline-soft', className)} aria-label={ariaLabel ?? `选择${capability === 'text' ? '文本' : capability === 'image' ? '图像' : '嵌入'}模型`}>
         <SelectValue placeholder={placeholder}>
           {compact && selectedValue !== undefined
             ? selectedModel?.modelName ?? value?.modelId

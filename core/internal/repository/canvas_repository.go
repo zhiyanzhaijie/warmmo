@@ -109,6 +109,21 @@ func createInitialNodeVersion(ctx context.Context, transaction *sql.Tx, node can
 	return versionID, nil
 }
 
+func createNodeVersion(ctx context.Context, transaction *sql.Tx, node canvas.Node, parentVersionID, sourceRunID string) (string, error) {
+	var nextVersion int64
+	if err := transaction.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_number), 0) + 1 FROM canvas_node_versions WHERE work_id=? AND node_id=?`, node.WorkID, node.ID).Scan(&nextVersion); err != nil {
+		return "", fmt.Errorf("read next canvas node version: %w", err)
+	}
+	versionID := uuid.NewString()
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO canvas_node_versions (id,node_id,work_id,version_number,parent_version_id,title,content,source_run_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, versionID, node.ID, node.WorkID, nextVersion, parentVersionID, node.Title, node.Content, sourceRunID, node.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		return "", fmt.Errorf("create canvas node version: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `UPDATE canvas_nodes SET current_version_id=? WHERE work_id=? AND id=?`, versionID, node.WorkID, node.ID); err != nil {
+		return "", fmt.Errorf("set current canvas node version: %w", err)
+	}
+	return versionID, nil
+}
+
 type candidateQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -337,6 +352,10 @@ FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, input.NodeID))
 	if before.Revision != input.ExpectedRevision {
 		return canvas.Node{}, canvas.ErrRevisionConflict
 	}
+	var beforeVersionID string
+	if err := transaction.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, input.WorkID, input.NodeID).Scan(&beforeVersionID); err != nil {
+		return canvas.Node{}, fmt.Errorf("read canvas node version before update: %w", err)
+	}
 	now := time.Now().UTC()
 	node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
 UPDATE canvas_nodes
@@ -352,6 +371,9 @@ RETURNING id, work_id, revision, kind, title, content, x, y, created_at, updated
 		return canvas.Node{}, fmt.Errorf("update canvas node: %w", err)
 	}
 	if before.Title != node.Title || before.Content != node.Content {
+		if _, err := createNodeVersion(ctx, transaction, node, beforeVersionID, ""); err != nil {
+			return canvas.Node{}, err
+		}
 		payload := updateNodeActionPayload{
 			Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content},
 			After:  nodeContentState{NodeID: node.ID, Title: node.Title, Content: node.Content},

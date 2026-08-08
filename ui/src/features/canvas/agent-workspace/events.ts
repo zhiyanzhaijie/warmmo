@@ -29,6 +29,9 @@ export const agentEventLabels: Record<string, string> = {
   'run.completed': '运行完成',
   'run.failed': '运行失败',
   'run.cancelled': '运行取消',
+  'role.started': 'Agent 开始工作',
+  'role.handoff': 'Agent 交接',
+  'role.completed': 'Agent 完成工作',
 }
 
 export const streamedAgentEventTypes = [...Object.keys(agentEventLabels), 'message.delta']
