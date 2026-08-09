@@ -559,6 +559,11 @@ func (s loopState) promptPayload() map[string]any {
 		payload["userResponses"] = s.input.UserResponses
 	}
 	if IsCollaborativeTarget(s.input.Target) {
+		collaborativeCandidates := s.input.CollaborativeCandidates
+		if collaborativeCandidates == nil {
+			collaborativeCandidates = []CollaborativeCandidate{}
+		}
+		payload["collaborativeCandidates"] = collaborativeCandidates
 		payload["operation"] = "targeted_creation"
 		if s.input.Target == TargetCollaborativeExplore {
 			payload["operation"] = "divergent_exploration"

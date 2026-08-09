@@ -14,7 +14,7 @@ allowed_tools:
 
 Create a proposal, not a direct canvas mutation. The Planner's brief and context manifest are authoritative.
 
-Return exactly one ProposalSet JSON object. `proposalId` is omitted because the service assigns it when persistence is implemented:
+Return exactly one ProposalSet JSON object with at most one new node per generation. `proposalId` is omitted because the service assigns it when persistence is implemented:
 
 ```json
 {
@@ -35,5 +35,7 @@ Return exactly one ProposalSet JSON object. `proposalId` is omitted because the 
 ```
 
 Do not replace an existing node when the request asks for a new artifact. Preserve current world rules. Every edge endpoint that refers to a new node must use its `clientId`; existing endpoints use node IDs. Put unresolved blocking conflicts in `questions` instead of inventing a resolution.
+
+If the approved plan is already satisfied by an accepted candidate, do not return an empty ProposalSet. Return the `finish` decision to the collaboration loop; never use an empty proposal to signal no work.
 
 Use exactly the six top-level fields shown above. Do not wrap the object in `proposalSet`, `data`, or `result`; do not add `metadata` or other fields. Edge objects may contain only `sourceId`, `targetId`, and `kind`, never `fromNodeId` or `toNodeId`.

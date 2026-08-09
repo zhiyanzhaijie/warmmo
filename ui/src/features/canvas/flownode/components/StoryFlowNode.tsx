@@ -62,11 +62,14 @@ function FlowNodeShell({
         ) : null}
         {data.sourceType === 'node' && !contentLocked ? <NodeAgentExecution nodeId={data.sourceId} /> : null}
         {data.sourceType === 'candidate' ? (
-          <CandidateFlowNodeActions
-            workId={data.workId}
-            candidateId={data.sourceId}
-            title={data.title}
-          />
+			<CandidateFlowNodeActions
+				workId={data.workId}
+				candidateId={data.sourceId}
+				kind={data.kind}
+				title={data.title}
+				content={data.content}
+				reason={data.candidateReason}
+			/>
         ) : null}
         <span
           aria-hidden="true"

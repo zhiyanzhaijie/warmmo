@@ -64,12 +64,12 @@ type CollaborationPlan struct {
 // ProposalSet is the user-reviewable boundary for any collaborative canvas
 // mutation. It deliberately contains no persistence IDs for new nodes.
 type ProposalSet struct {
-	BaseRevisions map[string]int64      `json:"baseRevisions"`
-	Nodes         []ProposalNode        `json:"nodes"`
-	Updates       []ProposalUpdate      `json:"updates"`
-	Edges         []ProposalEdge        `json:"edges"`
-	Reasons       []string              `json:"reasons"`
-	Questions     []string              `json:"questions"`
+	BaseRevisions map[string]int64 `json:"baseRevisions"`
+	Nodes         []ProposalNode   `json:"nodes"`
+	Updates       []ProposalUpdate `json:"updates"`
+	Edges         []ProposalEdge   `json:"edges"`
+	Reasons       []string         `json:"reasons"`
+	Questions     []string         `json:"questions"`
 }
 
 type ProposalNode struct {
@@ -124,6 +124,7 @@ const (
 	EventMessageDelta         EventType = "message.delta"
 	EventValidationCompleted  EventType = "validation.completed"
 	EventCandidateCreated     EventType = "candidate.created"
+	EventCandidateDecision    EventType = "candidate.decision"
 	EventNodeUpdated          EventType = "node.updated"
 	EventNodesCreated         EventType = "nodes.created"
 	EventRunCompleted         EventType = "run.completed"
@@ -197,18 +198,30 @@ type Candidate struct {
 }
 
 type RunInput struct {
-	RunID              string
-	WorkID             string
-	Prompt             string
-	Target             string
-	TargetNodeID       string
-	TargetNodeType     string
-	TargetNodeRevision int64
-	ProviderID         string
-	ModelID            string
-	ContextNodeIDs     []string
-	ContextNodes       []NodeReference
-	UserResponses      []UserResponse
+	RunID                   string
+	WorkID                  string
+	Prompt                  string
+	Target                  string
+	TargetNodeID            string
+	TargetNodeType          string
+	TargetNodeRevision      int64
+	ProviderID              string
+	ModelID                 string
+	ContextNodeIDs          []string
+	ContextNodes            []NodeReference
+	UserResponses           []UserResponse
+	CollaborativeCandidates []CollaborativeCandidate
+}
+
+// CollaborativeCandidate is the authoritative delivery ledger exposed to the
+// planner on resumed collaborative runs. Candidate content remains available
+// through the accepted canvas node when deeper comparison is needed.
+type CollaborativeCandidate struct {
+	CandidateID    string          `json:"candidateId"`
+	Status         CandidateStatus `json:"status"`
+	Kind           string          `json:"kind"`
+	Title          string          `json:"title"`
+	AcceptedNodeID string          `json:"acceptedNodeId,omitempty"`
 }
 
 type UserResponse struct {
@@ -220,6 +233,7 @@ type UserResponse struct {
 type RunResult struct {
 	Title            string
 	Content          string
+	Message          string
 	Role             AgentRole
 	SkillID          string
 	SkillVersion     string

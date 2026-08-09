@@ -24,6 +24,7 @@ export const agentEventLabels: Record<string, string> = {
   'generation.started': '开始生成',
   'validation.completed': '校验完成',
   'candidate.created': '创建候选',
+  'candidate.decision': '候选已处理',
   'node.updated': '节点已更新',
   'nodes.created': '派生节点已创建',
   'run.completed': '运行完成',

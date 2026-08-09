@@ -13,11 +13,16 @@ import (
 var ErrInvalidCanvasRequest = errors.New("invalid canvas request")
 
 type CanvasService struct {
-	store canvas.Store
+	store                    canvas.Store
+	candidateDecisionHandler func(context.Context, string, string, bool, string) error
 }
 
 func NewCanvasService(store canvas.Store) *CanvasService {
 	return &CanvasService{store: store}
+}
+
+func (s *CanvasService) SetCandidateDecisionHandler(handler func(context.Context, string, string, bool, string) error) {
+	s.candidateDecisionHandler = handler
 }
 
 func (s *CanvasService) CreateNode(ctx context.Context, input canvas.CreateNodeInput) (canvas.Node, error) {
@@ -286,7 +291,16 @@ func (s *CanvasService) AcceptCandidate(ctx context.Context, input canvas.Accept
 	if input.WorkID == "" || input.CandidateID == "" {
 		return canvas.Node{}, ErrInvalidCanvasRequest
 	}
-	return s.store.AcceptCandidate(ctx, input)
+	node, err := s.store.AcceptCandidate(ctx, input)
+	if err != nil {
+		return canvas.Node{}, err
+	}
+	if s.candidateDecisionHandler != nil {
+		if err := s.candidateDecisionHandler(ctx, input.WorkID, input.CandidateID, true, node.ID); err != nil {
+			return canvas.Node{}, err
+		}
+	}
+	return node, nil
 }
 
 func (s *CanvasService) RejectCandidate(ctx context.Context, workID, candidateID string) error {
@@ -295,5 +309,11 @@ func (s *CanvasService) RejectCandidate(ctx context.Context, workID, candidateID
 	if workID == "" || candidateID == "" {
 		return ErrInvalidCanvasRequest
 	}
-	return s.store.RejectCandidate(ctx, workID, candidateID)
+	if err := s.store.RejectCandidate(ctx, workID, candidateID); err != nil {
+		return err
+	}
+	if s.candidateDecisionHandler != nil {
+		return s.candidateDecisionHandler(ctx, workID, candidateID, false, "")
+	}
+	return nil
 }

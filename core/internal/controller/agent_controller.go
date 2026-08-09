@@ -92,6 +92,7 @@ func (c *AgentController) StreamEvents(response http.ResponseWriter, request *ht
 		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "事件游标无效"})
 		return
 	}
+	follow := request.URL.Query().Get("follow") == "true"
 	if _, err := c.service.GetRun(request.PathValue("runID")); errors.Is(err, agent.ErrRunNotFound) {
 		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Agent Run 不存在"})
 		return
@@ -128,7 +129,7 @@ func (c *AgentController) StreamEvents(response http.ResponseWriter, request *ht
 		if err != nil {
 			return
 		}
-		if len(events) == 0 && isStreamComplete(run.Status) {
+		if len(events) == 0 && isStreamComplete(run.Status) && !follow {
 			return
 		}
 		select {

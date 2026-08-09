@@ -1,5 +1,5 @@
-import { BrainCircuit, Plus, Sparkles } from 'lucide-react'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { BrainCircuit, MapPin, Plus, Sparkles } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { type CollaborativeAgentTarget } from '@/apis/canvas-apis'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
@@ -15,20 +15,22 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { CollaborativeAgentPromptInput } from '@/features/canvas/agent-workspace/CollaborativeAgentPromptInput'
 import { CollaborativeAgentProgress } from '@/features/canvas/agent-workspace/CollaborativeAgentProgress'
+import { useAgentStreamText } from '@/features/canvas/agent-workspace/agent-stream-store'
 import {
   createCanvasPromptValueFromText,
   type CanvasPromptValue,
 } from '@/features/canvas/agent-workspace/CanvasPromptEditor'
 import {
-  getCollaborativeResponse,
   useCollaborativeAgentSession,
   type CollaborativeTurn,
 } from '@/features/canvas/agent-workspace/use-collaborative-agent-session'
+import { useAutoFollow } from '@/features/canvas/agent-workspace/use-auto-follow'
 import type { CanvasAgentPromptSubmission } from '@/features/canvas/agent-workspace/types'
 import {
   isCollaborativeContextNodePicker,
   useFlowNodeStore,
 } from '@/features/canvas/flownode/store'
+import { useFocusNode } from '@/features/canvas/flownode/use-focus-node'
 import type { CanvasNode } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
@@ -71,21 +73,16 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
     run,
     turns,
   } = useCollaborativeAgentSession(workId)
+  const focusNode = useFocusNode()
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<CollaborativeAgentTarget>('collaborative-targeted')
   const [prompt, setPrompt] = useState<CanvasPromptValue>(emptyPrompt)
   const [composerVersion, setComposerVersion] = useState(0)
-  const scrollViewportRef = useState<HTMLDivElement | null>(null)
-  const [scrollViewport, setScrollViewport] = scrollViewportRef
+  const setScrollViewport = useAutoFollow(open)
   const contextNodeIds = useMemo(() => new Set(collaborativeContextNodeIds), [collaborativeContextNodeIds])
   const contextNodes = useMemo(() => canvasNodes.filter((node) => contextNodeIds.has(node.id)), [canvasNodes, contextNodeIds])
   const isContextPicking = isCollaborativeContextNodePicker(canvasInteractionMode)
   const canSubmit = model !== null && prompt.requestText.trim() !== '' && activeTurn === undefined && canUseContextAgent
-
-  useLayoutEffect(() => {
-    if (scrollViewport === null || !open) return
-    scrollViewport.scrollTop = scrollViewport.scrollHeight
-  }, [open, scrollViewport, turns])
 
   const updatePrompt = useCallback((value: CanvasPromptValue) => {
     setPrompt(value)
@@ -129,6 +126,10 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
     setPrompt(createCanvasPromptValueFromText(value))
     setComposerVersion((current) => current + 1)
   }, [])
+
+  const locateCandidate = useCallback((candidateId: string) => {
+    focusNode(`candidate:${candidateId}`)
+  }, [focusNode])
 
   const clearConversation = useCallback(() => {
     clear()
@@ -208,7 +209,13 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
             <CollaborativeAgentEmptyState mode={mode} onSelect={selectStarter} />
           ) : (
             <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-space-xl px-space-lg py-space-xl">
-              {turns.map((turn) => <CollaborativeConversationTurn key={turn.clientId} turn={turn} />)}
+              {turns.map((turn) => (
+                <CollaborativeConversationTurn
+                  key={turn.clientId}
+                  onLocateCandidate={locateCandidate}
+                  turn={turn}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -276,8 +283,14 @@ function CollaborativeAgentEmptyState({
   )
 }
 
-function CollaborativeConversationTurn({ turn }: { turn: CollaborativeTurn }) {
-  const response = getCollaborativeResponse(turn.events)
+const CollaborativeConversationTurn = memo(function CollaborativeConversationTurn({
+  onLocateCandidate,
+  turn,
+}: {
+  onLocateCandidate: (candidateId: string) => void
+  turn: CollaborativeTurn
+}) {
+  const candidateEvents = turn.events.filter((event) => event.type === 'candidate.created')
   return (
     <div className="space-y-space-md">
       <Message from="user" className="max-w-[88%]">
@@ -288,11 +301,30 @@ function CollaborativeConversationTurn({ turn }: { turn: CollaborativeTurn }) {
       <Message from="assistant" className="max-w-full">
         <MessageContent className="w-full gap-space-md text-body-md leading-6">
           <CollaborativeAgentProgress turn={turn} />
-          {response === '' ? null : (
-            <MessageResponse className="text-body-md leading-6 text-ink">
-              {formatCollaborativeResponse(response)}
-            </MessageResponse>
-          )}
+          {candidateEvents.map((event) => {
+            const candidateId = typeof event.data?.candidateId === 'string' ? event.data.candidateId : null
+            const meta = event.data?.meta as Record<string, unknown> | undefined
+            const title = typeof meta?.title === 'string' ? meta.title : '新候选节点'
+            const ordinal = typeof meta?.ordinal === 'number' && typeof meta?.total === 'number'
+              ? `（${meta.ordinal}/${meta.total}）`
+              : ''
+            if (candidateId === null) return null
+            return (
+              <div key={event.id} className="flex items-center gap-space-sm border-l border-link/40 pl-space-sm text-body-sm text-body">
+                <span>已生成候选「{title}」{ordinal}</span>
+                <Button
+                  className="ml-auto shrink-0"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onLocateCandidate(candidateId)}
+                >
+                  <MapPin aria-hidden="true" size={13} />
+                  定位
+                </Button>
+              </div>
+            )
+          })}
+          <StreamingCollaborativeResponse messageId={turn.clientId} running={turn.status === 'running'} />
           {turn.error === undefined ? null : (
             <p className="border-l border-error pl-space-sm text-body-sm text-error" role="alert">{turn.error}</p>
           )}
@@ -300,9 +332,33 @@ function CollaborativeConversationTurn({ turn }: { turn: CollaborativeTurn }) {
       </Message>
     </div>
   )
-}
+})
+
+const StreamingCollaborativeResponse = memo(function StreamingCollaborativeResponse({
+  messageId,
+  running,
+}: {
+  messageId: string
+  running: boolean
+}) {
+  const response = useAgentStreamText(messageId)
+  const formattedResponse = useMemo(() => formatCollaborativeResponse(response), [response])
+  if (response === '') return null
+  return (
+    <MessageResponse
+      animated
+      className="text-body-md leading-6 text-ink"
+      isAnimating={running}
+      mode={running ? 'streaming' : 'static'}
+      parseIncompleteMarkdown
+    >
+      {formattedResponse}
+    </MessageResponse>
+  )
+})
 
 function formatCollaborativeResponse(response: string) {
+  if (!response.trimStart().startsWith('{')) return response
   try {
     const proposal = JSON.parse(response) as {
       nodes?: Array<{ content?: string; kind?: string; reason?: string; title?: string }>

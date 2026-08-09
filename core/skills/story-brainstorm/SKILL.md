@@ -14,23 +14,6 @@ allowed_tools:
 
 This is a read-only exploration task. Do not create or update nodes. Its result is advice, never a ProposalSet.
 
-Return exactly one JSON object:
+Return the final answer as natural-language prose, not JSON, code, or a schema dump. Organize a small number of strong, evidence-backed directions with short headings and readable paragraphs or bullet points. For each direction, explain the idea, evidence from the canvas, dramatic tension, possible payoff, required new nodes, and risks when relevant.
 
-```json
-{
-  "directions": [
-    {
-      "title": "方向标题",
-      "idea": "可展开的创作方向",
-      "evidenceNodeIds": [],
-      "archiveIds": [],
-      "tension": "戏剧张力",
-      "payoff": "可能回收的伏笔",
-      "requiredNewNodes": [],
-      "risks": []
-    }
-  ]
-}
-```
-
-Every direction must distinguish existing facts from speculation. Prefer a small number of strong, evidence-backed directions over a long list of generic ideas.
+Every direction must distinguish existing facts from speculation. Never expose an internal field name such as `directions`, `evidenceNodeIds`, or `requiredNewNodes` as the response format.

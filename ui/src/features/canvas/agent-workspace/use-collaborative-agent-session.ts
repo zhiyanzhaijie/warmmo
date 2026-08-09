@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
 
 import {
+  canvasKeys,
   type CollaborativeAgentTarget,
   useCreateCollaborativeAgentRun,
   useRespondToAgentRun,
 } from '@/apis/canvas-apis'
+import {
+  appendAgentStreamDelta,
+  clearAgentStreams,
+  flushAgentStream,
+  getAgentStreamText,
+} from '@/features/canvas/agent-workspace/agent-stream-store'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import type { AgentEvent } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
@@ -32,10 +40,12 @@ export interface CollaborativePendingInput {
 }
 
 export function useCollaborativeAgentSession(workId: string) {
+  const queryClient = useQueryClient()
   const createRun = useCreateCollaborativeAgentRun(workId)
   const respondToRun = useRespondToAgentRun()
   const [turns, setTurns] = useState<CollaborativeTurn[]>([])
   const eventSourcesRef = useRef(new Map<string, EventSource>())
+  const streamMessageIdsRef = useRef(new Set<string>())
   const activeTurn = turns.findLast((turn) =>
     turn.status === 'submitting' || turn.status === 'running' || turn.status === 'waiting_input')
   const pendingInput = useMemo(() => getPendingInput(activeTurn), [activeTurn])
@@ -43,11 +53,15 @@ export function useCollaborativeAgentSession(workId: string) {
   useEffect(() => () => {
     for (const source of eventSourcesRef.current.values()) source.close()
     eventSourcesRef.current.clear()
+    clearAgentStreams(streamMessageIdsRef.current)
+    streamMessageIdsRef.current.clear()
   }, [])
 
-  const streamRun = useCallback((clientId: string, runId: string, afterSequence = 0) => {
+  const streamRun = useCallback((clientId: string, runId: string, afterSequence = 0, follow = false) => {
     eventSourcesRef.current.get(runId)?.close()
-    const source = new EventSource(`/api/v1/agent-runs/${runId}/events?afterSequence=${afterSequence}`)
+    const source = new EventSource(
+      `/api/v1/agent-runs/${runId}/events?afterSequence=${afterSequence}${follow ? '&follow=true' : ''}`,
+    )
     eventSourcesRef.current.set(runId, source)
     const closeSource = () => {
       source.close()
@@ -67,8 +81,17 @@ export function useCollaborativeAgentSession(workId: string) {
         return
       }
 
+      if (event.type === 'message.delta') {
+        const delta = eventString(event, 'delta')
+        if (delta !== undefined) appendAgentStreamDelta(clientId, delta)
+        return
+      }
+      if (event.type === 'approval.required' || isTerminalAgentEvent(event.type)) flushAgentStream(clientId)
       updateTurn(setTurns, clientId, (turn) => appendEvent(turn, event))
       if (event.type === 'run.failed') toast.error(eventString(event, 'message') ?? 'Agent 执行失败')
+      if (event.type === 'candidate.created') {
+        void queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) })
+      }
       if (event.type === 'approval.required') {
         closeSource()
         return
@@ -76,12 +99,16 @@ export function useCollaborativeAgentSession(workId: string) {
       if (!isTerminalAgentEvent(event.type)) return
 
       closeSource()
+      if (event.type === 'run.completed') {
+        void queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) })
+      }
     }
 
     for (const type of streamedAgentEventTypes) source.addEventListener(type, receive as EventListener)
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) return
       closeSource()
+      flushAgentStream(clientId)
       updateTurn(setTurns, clientId, (turn) => ({
         ...turn,
         error: '过程流连接已断开',
@@ -89,7 +116,21 @@ export function useCollaborativeAgentSession(workId: string) {
       }))
       toast.error('过程流连接已断开')
     }
-  }, [workId])
+  }, [queryClient, workId])
+
+  // Candidate accept/reject happens outside the drawer's SSE connection. Keep
+  // a continuation stream open for completed turns so decisions and the next
+  // generation re-enter the same chat timeline.
+  useEffect(() => {
+    const resumableTurns = turns.filter((turn) =>
+      turn.runId !== null && turn.status === 'completed' &&
+      turn.events.some((event) => event.type === 'candidate.created'))
+    for (const turn of resumableTurns) {
+      if (turn.runId === null || eventSourcesRef.current.has(turn.runId)) continue
+      const lastSequence = turn.events.reduce((latest, event) => Math.max(latest, event.sequence), 0)
+      streamRun(turn.clientId, turn.runId, lastSequence, true)
+    }
+  }, [streamRun, turns])
 
   const run = useCallback((input: {
     contextNodeIds: string[]
@@ -99,6 +140,7 @@ export function useCollaborativeAgentSession(workId: string) {
   }) => {
     if (activeTurn !== undefined || !createRun.contextAgentAvailable) return
     const clientId = crypto.randomUUID()
+    streamMessageIdsRef.current.add(clientId)
     const prompt = input.prompt.trim()
     const apiPrompt = buildConversationPrompt(turns, prompt)
     setTurns((current) => [...current, {
@@ -138,8 +180,13 @@ export function useCollaborativeAgentSession(workId: string) {
   }, [pendingInput, respondToRun, streamRun])
 
   const clear = useCallback(() => {
-    if (activeTurn === undefined) setTurns([])
-  }, [activeTurn])
+    if (activeTurn !== undefined) return
+    for (const source of eventSourcesRef.current.values()) source.close()
+    eventSourcesRef.current.clear()
+    clearAgentStreams(turns.map((turn) => turn.clientId))
+    streamMessageIdsRef.current.clear()
+    setTurns([])
+  }, [activeTurn, turns])
 
   return {
     activeTurn,
@@ -152,13 +199,6 @@ export function useCollaborativeAgentSession(workId: string) {
     run,
     turns,
   }
-}
-
-export function getCollaborativeResponse(events: AgentEvent[]) {
-  return events.flatMap((event) => {
-    const delta = event.type === 'message.delta' ? event.data?.delta : undefined
-    return typeof delta === 'string' ? [delta] : []
-  }).join('')
 }
 
 function appendEvent(turn: CollaborativeTurn, event: AgentEvent): CollaborativeTurn {
@@ -207,7 +247,7 @@ function updateTurn(
 
 function buildConversationPrompt(turns: CollaborativeTurn[], request: string) {
   const history = turns.slice(-4).flatMap((turn) => {
-    const response = getCollaborativeResponse(turn.events)
+    const response = getAgentStreamText(turn.clientId)
     return response === '' ? [] : [`用户：${turn.prompt}\nAgent：${response}`]
   }).join('\n\n').slice(-12_000)
   if (history === '') return request

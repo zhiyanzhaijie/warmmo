@@ -92,6 +92,7 @@ func run(logger *slog.Logger) error {
 	agentService := service.NewAgentService(ctx, agentRepository, agentEngine, logger)
 	agentController := controller.NewAgentController(agentService, logger)
 	canvasService := service.NewCanvasService(canvasRepository)
+	canvasService.SetCandidateDecisionHandler(agentService.ResumeAfterCandidateDecision)
 	canvasController := controller.NewCanvasController(canvasService, logger)
 	server := &http.Server{
 		Addr:              "127.0.0.1:8787",

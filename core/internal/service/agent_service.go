@@ -165,6 +165,59 @@ func (s *AgentService) CancelRun(runID string) error {
 	return nil
 }
 
+// ResumeAfterCandidateDecision feeds a canvas review decision back into the
+// same collaborative run so the next generation can account for it.
+func (s *AgentService) ResumeAfterCandidateDecision(ctx context.Context, workID, candidateID string, accepted bool, acceptedNodeID string) error {
+	run, candidate, err := s.repository.GetRunByCandidate(strings.TrimSpace(candidateID), strings.TrimSpace(workID))
+	if err != nil {
+		return err
+	}
+	if !agent.IsCollaborativeTarget(run.Target) || run.Status != agent.RunStatusCompleted {
+		return nil
+	}
+	if !accepted {
+		return s.repository.RequestCandidateDecisionReason(run.ID, candidate.ID, candidate.Title)
+	}
+	requeued, err := s.repository.RequeueAfterCandidateDecision(run.ID, candidate.ID, accepted, acceptedNodeID)
+	if err != nil {
+		if errors.Is(err, agent.ErrRunNotCancellable) {
+			return nil
+		}
+		return err
+	}
+	if !requeued {
+		return nil
+	}
+	candidates, err := s.repository.ListCollaborativeCandidates(run.ID)
+	if err != nil {
+		return err
+	}
+	responses, err := s.repository.ListUserResponses(run.ID)
+	if err != nil {
+		return err
+	}
+	input := agent.RunInput{
+		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
+		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
+		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs), UserResponses: responses,
+		CollaborativeCandidates: candidates,
+	}
+	globalContext, err := s.repository.GetGlobalContextNodeReferences(run.WorkID)
+	if err != nil {
+		return err
+	}
+	input.ContextNodes = append(input.ContextNodes, globalContext...)
+	input.ContextNodeIDs = uniqueNodeIDs(append(input.ContextNodeIDs, nodeReferenceIDs(globalContext)...))
+	if len(input.ContextNodeIDs) > 0 {
+		input.ContextNodes, err = s.repository.GetNodeReferences(run.WorkID, input.ContextNodeIDs)
+		if err != nil {
+			return err
+		}
+	}
+	go s.execute(run, input, true)
+	return nil
+}
+
 func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agent.Run, error) {
 	runID = strings.TrimSpace(runID)
 	approvalEventID = strings.TrimSpace(approvalEventID)
@@ -208,6 +261,10 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 			return agent.Run{}, err
 		}
 		input.UserResponses = append(responses, queuedResponse)
+		input.CollaborativeCandidates, err = s.repository.ListCollaborativeCandidates(run.ID)
+		if err != nil {
+			return agent.Run{}, err
+		}
 		run.Status = agent.RunStatusQueued
 		run.ErrorMessage = ""
 		go s.execute(run, input, true)
@@ -302,7 +359,13 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 	}
 	var completeErr error
 	if agent.IsCollaborativeTarget(input.Target) {
-		completeErr = s.repository.CompleteReadOnly(run, result)
+		if result.Content == "" {
+			completeErr = s.repository.CompleteReadOnly(run, result)
+		} else if result.SkillID == "entity-creator" || result.SkillID == "chapter-creator" {
+			completeErr = s.repository.CompleteCollaborativeProposal(run, result)
+		} else {
+			completeErr = s.repository.CompleteReadOnly(run, result)
+		}
 	} else if agent.IsNodeUpdateTarget(input.Target) {
 		completeErr = s.repository.CompleteNodeUpdate(runCtx, run, input.TargetNodeID, result)
 	} else if input.Target == agent.TargetSectionOutlineBatch || input.Target == agent.TargetChapterSection {

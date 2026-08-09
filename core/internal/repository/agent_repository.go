@@ -26,6 +26,131 @@ type AgentRepository struct {
 	dataDirectory string
 }
 
+func (r *AgentRepository) GetRunByCandidate(candidateID, workID string) (warmagent.Run, warmagent.Candidate, error) {
+	var run warmagent.Run
+	var candidate warmagent.Candidate
+	var targetNodeID, contextJSON, candidateCreatedAt, candidateDecidedAt, runCreatedAt, runUpdatedAt string
+	err := r.database.QueryRow(`
+SELECT c.id,c.run_id,c.work_id,c.skill_id,c.skill_version,c.status,c.kind,c.title,c.content,c.x,c.y,c.accepted_node_id,c.created_at,c.decided_at,
+       r.id,r.work_id,r.status,r.prompt,r.target,r.target_node_id,r.provider_id,r.model_id,r.context_node_ids_json,r.created_at,r.updated_at
+FROM agent_candidates c JOIN agent_runs r ON r.id=c.run_id
+WHERE c.id=? AND c.work_id=?`, candidateID, workID).Scan(
+		&candidate.ID, &candidate.RunID, &candidate.WorkID, &candidate.SkillID, &candidate.SkillVersion,
+		&candidate.Status, &candidate.Kind, &candidate.Title, &candidate.Content, &candidate.X, &candidate.Y,
+		&candidate.AcceptedNodeID, &candidateCreatedAt, &candidateDecidedAt,
+		&run.ID, &run.WorkID, &run.Status, &run.Prompt, &run.Target, &targetNodeID, &run.ProviderID, &run.ModelID, &contextJSON, &runCreatedAt, &runUpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return warmagent.Run{}, warmagent.Candidate{}, canvas.ErrCandidateNotFound
+	}
+	if err != nil {
+		return warmagent.Run{}, warmagent.Candidate{}, fmt.Errorf("read candidate run: %w", err)
+	}
+	run.TargetNodeID = targetNodeID
+	if err := json.Unmarshal([]byte(contextJSON), &run.ContextNodeIDs); err != nil {
+		return warmagent.Run{}, warmagent.Candidate{}, fmt.Errorf("decode candidate context: %w", err)
+	}
+	return run, candidate, nil
+}
+
+func (r *AgentRepository) ListCollaborativeCandidates(runID string) ([]warmagent.CollaborativeCandidate, error) {
+	rows, err := r.database.Query(`
+SELECT id,status,kind,title,accepted_node_id
+FROM agent_candidates
+WHERE run_id=?
+ORDER BY created_at,id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list collaborative candidates: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]warmagent.CollaborativeCandidate, 0)
+	for rows.Next() {
+		var candidate warmagent.CollaborativeCandidate
+		if err := rows.Scan(&candidate.CandidateID, &candidate.Status, &candidate.Kind, &candidate.Title, &candidate.AcceptedNodeID); err != nil {
+			return nil, fmt.Errorf("scan collaborative candidate: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate collaborative candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func (r *AgentRepository) RequeueAfterCandidateDecision(runID, candidateID string, accepted bool, acceptedNodeID string) (bool, error) {
+	tx, err := r.database.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin candidate decision: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	var batchStartedAt string
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(created_at),'') FROM agent_run_events WHERE run_id=? AND type=?`, runID, warmagent.EventRunResumed).Scan(&batchStartedAt); err != nil {
+		return false, fmt.Errorf("read candidate batch start: %w", err)
+	}
+	var pending, rejected int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_candidates WHERE run_id=? AND created_at>? AND status=?`, runID, batchStartedAt, warmagent.CandidateStatusPending).Scan(&pending); err != nil {
+		return false, fmt.Errorf("count pending candidate decisions: %w", err)
+	}
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_candidates WHERE run_id=? AND created_at>? AND status=?`, runID, batchStartedAt, warmagent.CandidateStatusRejected).Scan(&rejected); err != nil {
+		return false, fmt.Errorf("count rejected candidate decisions: %w", err)
+	}
+	// A decision closes the current one-node generation. Continue after either
+	// outcome so the model can decide whether the requested work is complete;
+	// rejected candidates are included in the next prompt for correction.
+	requeued := pending == 0
+	if requeued {
+		result, err := tx.Exec(`UPDATE agent_runs SET status=?,error_message='',updated_at=? WHERE id=? AND status=?`, warmagent.RunStatusQueued, now.Format(time.RFC3339Nano), runID, warmagent.RunStatusCompleted)
+		if err != nil {
+			return false, fmt.Errorf("requeue agent run: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed == 0 {
+			return false, warmagent.ErrRunNotCancellable
+		}
+	}
+	if _, err := appendEvent(tx, runID, warmagent.EventCandidateDecision, map[string]any{
+		"candidateId": candidateID, "accepted": accepted, "acceptedNodeId": acceptedNodeID,
+		"pending": pending, "rejected": rejected,
+	}, now); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return requeued, nil
+}
+
+func (r *AgentRepository) RequestCandidateDecisionReason(runID, candidateID, title string) error {
+	tx, err := r.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin candidate rejection question: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	result, err := tx.Exec(`UPDATE agent_runs SET status=?,error_message='',updated_at=? WHERE id=? AND status=?`,
+		warmagent.RunStatusWaitingInput, now.Format(time.RFC3339Nano), runID, warmagent.RunStatusCompleted)
+	if err != nil {
+		return fmt.Errorf("wait for candidate rejection reason: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	if _, err := appendEvent(tx, runID, warmagent.EventCandidateDecision, map[string]any{
+		"candidateId": candidateID, "accepted": false, "awaitingReason": true,
+	}, now); err != nil {
+		return err
+	}
+	if _, err := appendEvent(tx, runID, warmagent.EventApprovalRequired, map[string]any{
+		"candidateId": candidateID,
+		"question":    fmt.Sprintf("你拒绝了候选节点“%s”。请告诉我拒绝原因，我会据此重新生成。", title),
+		"reason":      "candidate_rejected",
+	}, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func NewAgentRepository(providerRepository *ProviderRepository) *AgentRepository {
 	return &AgentRepository{
 		database:      providerRepository.database,
@@ -628,6 +753,13 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 	if changed == 0 {
 		return warmagent.ErrRunNotCancellable
 	}
+	if strings.TrimSpace(result.Message) != "" {
+		if _, err := appendEvent(transaction, run.ID, warmagent.EventMessageDelta, map[string]string{
+			"delta": strings.TrimSpace(result.Message),
+		}, now); err != nil {
+			return err
+		}
+	}
 	if _, err := appendEvent(transaction, run.ID, warmagent.EventRunCompleted, map[string]any{
 		"mode": "read-only", "role": result.Role, "skillId": result.SkillID,
 	}, now); err != nil {
@@ -635,6 +767,93 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit read-only agent run: %w", err)
+	}
+	return nil
+}
+
+// CompleteCollaborativeProposal persists each proposed new node as an
+// independent pending candidate. The proposal remains reviewable; accepting a
+// candidate is what creates the durable canvas node.
+func (r *AgentRepository) CompleteCollaborativeProposal(run warmagent.Run, result warmagent.RunResult) error {
+	var proposal warmagent.ProposalSet
+	decoder := json.NewDecoder(strings.NewReader(result.Content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&proposal); err != nil {
+		return fmt.Errorf("decode collaborative proposal: %w", err)
+	}
+	if len(proposal.Nodes) == 0 {
+		return fmt.Errorf("decode collaborative proposal: %w", errors.New("proposal has no new nodes"))
+	}
+	if len(proposal.Nodes) > 1 {
+		return fmt.Errorf("decode collaborative proposal: %w", errors.New("proposal has more than one node"))
+	}
+	now := time.Now().UTC()
+	tx, err := r.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete collaborative proposal: %w", err)
+	}
+	defer tx.Rollback()
+	created := make([]map[string]any, 0, len(proposal.Nodes))
+	for index, node := range proposal.Nodes {
+		clientID := strings.TrimSpace(node.ClientID)
+		kind := strings.TrimSpace(node.Kind)
+		title := strings.TrimSpace(node.Title)
+		content := strings.TrimSpace(node.Content)
+		if clientID == "" || kind == "" || title == "" || content == "" {
+			return fmt.Errorf("collaborative proposal node %d is incomplete", index)
+		}
+		candidateID := uuid.NewString()
+		x := 520 + float64(index%8)*36
+		y := 80 + float64(index/8)*220
+		if _, err := tx.Exec(`
+INSERT INTO agent_candidates (id,run_id,work_id,skill_id,skill_version,status,kind,title,content,x,y,accepted_node_id,created_at,decided_at,candidate_type,node_id,base_version_id,reason,change_score)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			candidateID, run.ID, run.WorkID, result.SkillID, result.SkillVersion,
+			warmagent.CandidateStatusPending, kind, title, content, x, y, "",
+			now.Format(time.RFC3339Nano), "", "node", "", "", "", 0); err != nil {
+			return fmt.Errorf("create collaborative candidate: %w", err)
+		}
+		created = append(created, map[string]any{
+			"candidateId": candidateID,
+			"clientId":    clientID,
+			"kind":        kind,
+			"title":       title,
+			"ordinal":     index + 1,
+			"total":       len(proposal.Nodes),
+			"x":           x,
+			"y":           y,
+		})
+	}
+	statusResult, err := tx.Exec(`UPDATE agent_runs SET status=?,updated_at=? WHERE id=? AND status=?`,
+		warmagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, warmagent.RunStatusRunning)
+	if err != nil {
+		return fmt.Errorf("complete collaborative proposal: %w", err)
+	}
+	changed, err := statusResult.RowsAffected()
+	if err != nil || changed == 0 {
+		return warmagent.ErrRunNotCancellable
+	}
+	for _, metadata := range created {
+		if _, err := appendEvent(tx, run.ID, warmagent.EventCandidateCreated, map[string]any{
+			"candidateId": metadata["candidateId"],
+			"meta": map[string]any{
+				"clientId": metadata["clientId"], "kind": metadata["kind"],
+				"title": metadata["title"], "ordinal": metadata["ordinal"], "total": metadata["total"],
+				"position": map[string]any{"x": metadata["x"], "y": metadata["y"]},
+			},
+			"mode": "collaborative-proposal",
+		}, now); err != nil {
+			return err
+		}
+	}
+	if _, err := appendEvent(tx, run.ID, warmagent.EventRunCompleted, map[string]any{
+		"candidateIds": created,
+		"mode":         "collaborative-proposal",
+	}, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit collaborative proposal: %w", err)
 	}
 	return nil
 }

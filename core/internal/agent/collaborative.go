@@ -22,6 +22,33 @@ The run has three logical roles:
 - creator: use the approved plan and its skill to produce the requested artifact with produce_candidate.
 - writer: polish prose only when the plan explicitly requests writerRequired=true.
 
+The creator generates at most one new node per generation. After a candidate is
+reviewed, the run may resume with the user's decision.
+
+Before planning or producing another artifact, evaluate completion using these
+general criteria:
+1. Derive the complete set of requested deliverables and constraints from the original request and authoritative user responses.
+2. Use collaborativeCandidates as the authoritative delivery ledger. Count only entries whose status is accepted as completed deliverables. Inspect their acceptedNodeId with canvas.get_nodes when their content is needed for the comparison.
+3. Treat rejected candidates as unmet deliverables and use the user's rejection reason as a correction constraint.
+4. Choose finish when every requested deliverable is represented by an accepted result and no explicit constraint or blocking question remains unresolved.
+5. Continue only for a concrete unmet deliverable. Never recreate, extend, or replace an accepted result unless the user explicitly requests it.
+6. Never infer delivered counts from prior assistant prose, plans, candidate JSON, or candidate.decision event text. Never claim that an artifact was delivered unless it appears as accepted in collaborativeCandidates.
+
+Both planner and creator may choose finish when these completion criteria are met.
+The finish content is the user-facing closing message. It must briefly report only actually accepted deliverables and may non-blockingly invite another creative goal.
+If a creator is handed a plan whose requested artifact is already represented by an accepted candidate, it must choose finish. It must never emit an empty ProposalSet merely to report that no change is needed.
+
+Convergence rules for planner reasoning:
+- continue_brainstorm is an internal working action, not the final answer. Use it only when a concrete missing question, contradiction, or newly retrieved evidence changes the reasoning.
+- Do not repeat, paraphrase, or expand a direction list merely because the user said “continue” or because more ideas are possible. A finite set of strong directions is sufficient.
+- Once the current evidence supports a coherent set of directions, stop brainstorming: use complete_plan to hand the advice to story-brainstorm, or use finish when the advice is already ready for the user.
+- Before every continue_brainstorm, state internally what new evidence or unresolved decision it will add. If there is none, choose complete_plan or finish.
+- In collaborative-explore, prefer complete_plan so story-brainstorm produces the user-facing advice. A finish decision is control-plane completion only; its content is not the final rendered response.
+
+Role action constraints:
+- planner may use continue_brainstorm, call_tool, ask_user, complete_plan, finish, or fail. It must never use produce_candidate.
+- creator may use continue_brainstorm, call_tool, ask_user, produce_candidate, finish, or fail. It must never use complete_plan or select_skill.
+
 The planner complete_plan content must be exactly one JSON object:
 {"intent":"...","brief":"...","contextQuery":"...","creatorTarget":"collaborative-targeted|collaborative-explore","creatorSkillId":"skill-id","outputKind":"proposal|advice|prose","writerRequired":false,"writerInstruction":""}
 
@@ -79,11 +106,26 @@ func (l *Loop) runCollaborative(ctx context.Context, input RunInput, model TextM
 			}
 		case DecisionCompletePlan:
 			if state.role != RolePlanner {
-				return RunResult{}, errors.New("creator cannot complete another collaboration plan")
+				if err := rejectRoleDecision(&state, decision, "creator must use produce_candidate or finish", emit); err != nil {
+					return RunResult{}, err
+				}
+				continue
 			}
 			plan, err := parseCollaborationPlan(decision.Content, input.Target)
 			if err != nil {
-				return RunResult{}, err
+				state.observations = append(state.observations, Observation{
+					Source:  "plan_validation.error",
+					Summary: err.Error(),
+				})
+				if emitErr := emit(EventDecisionInvalid, map[string]any{
+					"kind":    DecisionCompletePlan,
+					"role":    RolePlanner,
+					"stage":   "plan_validation",
+					"message": err.Error(),
+				}); emitErr != nil {
+					return RunResult{}, emitErr
+				}
+				continue
 			}
 			state.plan = decision.Content
 			state.collaborationPlan = &plan
@@ -101,7 +143,10 @@ func (l *Loop) runCollaborative(ctx context.Context, input RunInput, model TextM
 			}
 		case DecisionSelectSkill:
 			if state.role != RolePlanner {
-				return RunResult{}, errors.New("creator cannot select another skill")
+				if err := rejectRoleDecision(&state, decision, "creator cannot select another skill; use the active skill", emit); err != nil {
+					return RunResult{}, err
+				}
+				continue
 			}
 			if err := l.selectSkill(ctx, &state, decision.SkillID, emit); err != nil {
 				return RunResult{}, err
@@ -140,11 +185,30 @@ func (l *Loop) runCollaborative(ctx context.Context, input RunInput, model TextM
 			return RunResult{}, ErrApprovalRequired
 		case DecisionProduceCandidate:
 			if state.role != RoleCreator {
-				return RunResult{}, errors.New("only creator may produce a collaborative result")
+				if err := rejectRoleDecision(&state, decision, "planner must use finish when complete or complete_plan when work remains", emit); err != nil {
+					return RunResult{}, err
+				}
+				continue
 			}
 			return l.produceCollaborativeResult(ctx, &state, model, emit, l.budget.MaxModelCalls-modelCalls)
 		case DecisionFinish:
-			return RunResult{}, errors.New("collaborative roles must use complete_plan or produce_candidate before finishing")
+			if err := emit(EventRoleCompleted, map[string]any{"role": state.role, "reason": decision.Content}); err != nil {
+				return RunResult{}, err
+			}
+			if input.Target == TargetCollaborativeExplore {
+				if modelCalls >= l.budget.MaxModelCalls {
+					return RunResult{}, fmt.Errorf("model call budget exceeded before collaborative response: %d", l.budget.MaxModelCalls)
+				}
+				response, err := l.streamCollaborativeFinish(ctx, state, decision.Content, model, emit)
+				if err != nil {
+					return RunResult{}, err
+				}
+				return RunResult{
+					Content: response, Role: state.role,
+					SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version,
+				}, nil
+			}
+			return RunResult{Message: strings.TrimSpace(decision.Content), Role: state.role, SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version}, nil
 		case DecisionFail:
 			return RunResult{}, fmt.Errorf("collaborative agent stopped: %s", decision.Reason)
 		default:
@@ -152,6 +216,16 @@ func (l *Loop) runCollaborative(ctx context.Context, input RunInput, model TextM
 		}
 	}
 	return RunResult{}, fmt.Errorf("agent step budget exceeded: %d", l.budget.MaxSteps)
+}
+
+func rejectRoleDecision(state *loopState, decision Decision, correction string, emit Emitter) error {
+	state.observations = append(state.observations, Observation{
+		Source:  "role_guardrail",
+		Summary: correction,
+	})
+	return emit(EventDecisionInvalid, map[string]any{
+		"kind": decision.Kind, "role": state.role, "message": correction,
+	})
 }
 
 func collaborationDecisionSystem(role AgentRole) string {
@@ -261,6 +335,7 @@ func (l *Loop) produceCollaborativeResult(
 		return RunResult{}, err
 	}
 	var response string
+	responseStreamed := false
 	var err error
 	if plan.OutputKind == "proposal" {
 		response, err = requestProposalSet(
@@ -272,6 +347,9 @@ func (l *Loop) produceCollaborativeResult(
 			remainingModelCalls,
 			emit,
 		)
+	} else if plan.OutputKind == "advice" {
+		response, err = l.streamExplorationAdvice(ctx, *state, model, emit)
+		responseStreamed = err == nil
 	} else {
 		response, _, err = model.Complete(ctx, ModelRequest{
 			ModelID: state.input.ModelID,
@@ -286,16 +364,206 @@ func (l *Loop) produceCollaborativeResult(
 	if response == "" {
 		return RunResult{}, errors.New("collaborative creator returned an empty result")
 	}
+	if proposalHasNoChanges(response) && hasAcceptedCollaborativeCandidate(state.input.CollaborativeCandidates) {
+		if err := emit(EventSkillCompleted, map[string]any{"skillId": state.activeSkill.ID, "version": state.activeSkill.Version}); err != nil {
+			return RunResult{}, err
+		}
+		if err := emit(EventValidationCompleted, map[string]any{"valid": true, "noOp": true}); err != nil {
+			return RunResult{}, err
+		}
+		if err := emit(EventRoleCompleted, map[string]any{"role": RoleCreator, "reason": "proposal already satisfied"}); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{
+			Message: "已确认现有候选节点已经覆盖本次目标，本轮未重复创建新的节点。",
+			Role:    state.role, SkillID: state.activeSkill.ID, SkillVersion: state.activeSkill.Version,
+		}, nil
+	}
+	if proposalHasNoChanges(response) {
+		return RunResult{}, errors.New("collaborative creator returned no changes without an accepted candidate")
+	}
 	if err := emit(EventRoleCompleted, map[string]any{"role": RoleCreator}); err != nil {
 		return RunResult{}, err
 	}
 	if !plan.WriterRequired {
-		if err := emit(EventMessageDelta, map[string]string{"delta": response}); err != nil {
-			return RunResult{}, err
+		if plan.OutputKind != "proposal" && !responseStreamed {
+			if err := emit(EventMessageDelta, map[string]string{"delta": response}); err != nil {
+				return RunResult{}, err
+			}
 		}
 		return l.completeContent(ctx, *state, response, emit)
 	}
 	return l.polishCollaborativeResult(ctx, *state, response, model, emit)
+}
+
+func (l *Loop) streamExplorationAdvice(ctx context.Context, state loopState, model TextModel, emit Emitter) (string, error) {
+	request := ModelRequest{
+		ModelID: state.input.ModelID,
+		System:  canvasContextSystemPrompt(state.activeSkill.Instructions),
+		Prompt:  state.candidatePrompt(),
+	}
+	return streamAdviceRequest(ctx, request, state.input.ModelID, model, emit)
+}
+
+func (l *Loop) streamCollaborativeFinish(
+	ctx context.Context,
+	state loopState,
+	decisionContent string,
+	model TextModel,
+	emit Emitter,
+) (string, error) {
+	payload, err := json.Marshal(map[string]any{
+		"request":          state.input.Prompt,
+		"completionReason": decisionContent,
+		"plan":             state.collaborationPlan,
+		"observations":     state.observations,
+		"instruction":      "Answer the user's current request directly with concise, natural-language creative advice. Do not mention agent roles, plans, tools, completion state, or this instruction. Do not output JSON or a schema.",
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode collaborative response: %w", err)
+	}
+	return streamAdviceRequest(ctx, ModelRequest{
+		ModelID: state.input.ModelID,
+		System:  "You are Warmnote's user-facing collaborative writing partner. Return only the final conversational answer in the user's language.",
+		Prompt:  string(payload),
+	}, state.input.ModelID, model, emit)
+}
+
+func streamAdviceRequest(
+	ctx context.Context,
+	request ModelRequest,
+	modelID string,
+	model TextModel,
+	emit Emitter,
+) (string, error) {
+	var raw strings.Builder
+	var visible strings.Builder
+	var prefix strings.Builder
+	var pending strings.Builder
+	decided := false
+	structured := false
+	flush := func() error {
+		if pending.Len() == 0 {
+			return nil
+		}
+		delta := pending.String()
+		pending.Reset()
+		return emit(EventMessageDelta, map[string]string{"delta": delta})
+	}
+	emitDelta := func(delta string) error {
+		if delta == "" {
+			return nil
+		}
+		visible.WriteString(delta)
+		pending.WriteString(delta)
+		if pending.Len() >= 48 || strings.ContainsAny(delta, "\r\n") {
+			return flush()
+		}
+		return nil
+	}
+	_, err := model.Stream(ctx, request, func(delta string) error {
+		raw.WriteString(delta)
+		if decided {
+			if structured {
+				return nil
+			}
+			return emitDelta(delta)
+		}
+		prefix.WriteString(delta)
+		trimmed := strings.TrimSpace(prefix.String())
+		if trimmed == "" {
+			return nil
+		}
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "```") {
+			decided = true
+			structured = true
+			return nil
+		}
+		// A code fence can be split across provider deltas. Hold a partial
+		// prefix until it is distinguishable from ordinary prose.
+		if strings.HasPrefix(trimmed, "`") && len(trimmed) < 3 {
+			return nil
+		}
+		decided = true
+		return emitDelta(prefix.String())
+	})
+	if err != nil {
+		return "", err
+	}
+	if !decided {
+		if err := emitDelta(prefix.String()); err != nil {
+			return "", err
+		}
+	}
+	if !structured {
+		if err := flush(); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(visible.String()), nil
+	}
+	if formatted, ok := formatStructuredExplorationAdvice(raw.String()); ok {
+		if err := emitDelta(formatted); err != nil {
+			return "", err
+		}
+		if err := flush(); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(visible.String()), nil
+	}
+	_, err = model.Stream(ctx, ModelRequest{
+		ModelID: modelID,
+		System:  "你是 Warmnote 的闲聊创作顾问。把输入的内部结构化创作建议改写成自然、简洁、可直接发给用户的中文 prose。不要输出 JSON、代码块、字段名或解释转换过程。",
+		Prompt:  "请将下面内容改写为自然语言建议：\n\n" + raw.String(),
+	}, emitDelta)
+	if err != nil {
+		return "", fmt.Errorf("stream normalized exploration advice: %w", err)
+	}
+	if err := flush(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(visible.String()), nil
+}
+
+func formatStructuredExplorationAdvice(response string) (string, bool) {
+	var payload struct {
+		Directions []struct {
+			Title            string   `json:"title"`
+			Idea             string   `json:"idea"`
+			Tension          string   `json:"tension"`
+			Payoff           string   `json:"payoff"`
+			RequiredNewNodes []string `json:"requiredNewNodes"`
+			Risks            []string `json:"risks"`
+		} `json:"directions"`
+	}
+	cleaned := strings.TrimSpace(response)
+	cleaned = strings.TrimPrefix(cleaned, "```json")
+	cleaned = strings.TrimSuffix(strings.TrimSpace(cleaned), "```")
+	if err := json.Unmarshal([]byte(strings.TrimSpace(cleaned)), &payload); err == nil && len(payload.Directions) > 0 {
+		var builder strings.Builder
+		builder.WriteString("可以从以下几条并行线扩展：\n")
+		for index, direction := range payload.Directions {
+			if strings.TrimSpace(direction.Title) != "" {
+				fmt.Fprintf(&builder, "\n%d. %s\n", index+1, strings.TrimSpace(direction.Title))
+			}
+			if strings.TrimSpace(direction.Idea) != "" {
+				fmt.Fprintf(&builder, "%s\n", strings.TrimSpace(direction.Idea))
+			}
+			if strings.TrimSpace(direction.Tension) != "" {
+				fmt.Fprintf(&builder, "戏剧张力：%s\n", strings.TrimSpace(direction.Tension))
+			}
+			if strings.TrimSpace(direction.Payoff) != "" {
+				fmt.Fprintf(&builder, "可能回收：%s\n", strings.TrimSpace(direction.Payoff))
+			}
+			if len(direction.RequiredNewNodes) > 0 {
+				fmt.Fprintf(&builder, "可继续创建：%s\n", strings.Join(direction.RequiredNewNodes, "、"))
+			}
+			if len(direction.Risks) > 0 {
+				fmt.Fprintf(&builder, "注意：%s\n", strings.Join(direction.Risks, "；"))
+			}
+		}
+		return strings.TrimSpace(builder.String()), true
+	}
+	return "", false
 }
 
 func requestProposalSet(
@@ -326,6 +594,12 @@ func requestProposalSet(
 		if validationErr == nil {
 			return response, nil
 		}
+		// A structurally valid empty ProposalSet is a creator no-op. It means
+		// the approved artifact is already present and must not be retried as a
+		// schema failure or turned into a duplicate candidate.
+		if proposalHasNoChanges(response) {
+			return response, nil
+		}
 		lastErr = validationErr
 		lastResponse = response
 		if err := emit(EventDecisionInvalid, map[string]any{
@@ -347,6 +621,28 @@ func requestProposalSet(
 		lastErr,
 		truncateRunes(lastResponse, maxDecisionDiagnosticRunes),
 	)
+}
+
+func proposalHasNoChanges(value string) bool {
+	var proposal ProposalSet
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(value)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&proposal); err != nil {
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return false
+	}
+	return len(proposal.Nodes) == 0 && len(proposal.Updates) == 0
+}
+
+func hasAcceptedCollaborativeCandidate(candidates []CollaborativeCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate.Status == CandidateStatusAccepted {
+			return true
+		}
+	}
+	return false
 }
 
 func proposalRepairPrompt(originalPrompt, invalidResponse string, validationErr error) string {
@@ -405,6 +701,9 @@ func validateProposalSet(value string) error {
 	}
 	if len(proposal.Nodes) == 0 && len(proposal.Updates) == 0 {
 		return errors.New("proposal set must contain at least one node or update")
+	}
+	if len(proposal.Nodes) > 1 {
+		return errors.New("proposal set must contain at most one node per generation")
 	}
 	for index, node := range proposal.Nodes {
 		if strings.TrimSpace(node.ClientID) == "" || strings.TrimSpace(node.Kind) == "" ||

@@ -21,6 +21,8 @@ Act as the planning brain. Do not write final fiction and do not mutate the canv
 3. Treat world, mechanism, and event entries in `availableContextNodes` as service-injected global context. Read the relevant entries before completing a targeted creation plan.
 4. Include relevant current or archived story-spine evidence. Use archive scope for historical facts and current scope for present-day canvas facts.
 5. Ask the user only when ambiguity would change the artifact, entity identity, world rule, or execution scope.
-6. Finish with exactly one JSON object matching the collaboration plan contract.
+6. On a resumed run, compare the original deliverables with accepted and rejected candidate decisions before making another plan. Finish immediately when all requested deliverables have accepted results and no explicit constraint remains unresolved. Continue only for a specific unmet or rejected deliverable.
+7. In exploration mode, converge after the evidence-backed directions needed to answer the user's question are covered. Do not repeatedly generate larger lists of similar possibilities. `continue_brainstorm` is valid only when a new tool result, contradiction, or unresolved decision materially changes the answer; otherwise hand off to `story-brainstorm` with exactly one JSON object. Treat `finish` as a control decision, never as the rendered user response.
+8. When work remains, finish planning with exactly one JSON object matching the collaboration plan contract.
 
 The `creatorSkillId` must be `chapter-creator`, `entity-creator`, `prose-creator`, or `story-brainstorm` as appropriate. Use `outputKind: "proposal"` with chapter/entity creators, `outputKind: "advice"` with story-brainstorm, and `outputKind: "prose"` with prose-creator. Set `writerRequired` only for prose that needs a Writor pass.
