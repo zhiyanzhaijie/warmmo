@@ -13,16 +13,16 @@ import (
 	"syscall"
 	"time"
 
-	"warmnote/core/internal/agent"
-	"warmnote/core/internal/agent/adkadapter"
-	"warmnote/core/internal/canvas"
-	"warmnote/core/internal/controller"
-	"warmnote/core/internal/embedding"
-	"warmnote/core/internal/model"
-	"warmnote/core/internal/repository"
-	"warmnote/core/internal/service"
-	"warmnote/core/internal/webserver"
-	"warmnote/core/internal/workspace"
+	adk "warmnote/core/internal/agent/adapter/adk"
+	agentcore "warmnote/core/internal/agent/core"
+	agenttools "warmnote/core/internal/agent/tools"
+	agent "warmnote/core/internal/agent/writing"
+	"warmnote/core/internal/ai"
+	"warmnote/core/internal/ai/embedding"
+	aiprovider "warmnote/core/internal/ai/provider"
+	"warmnote/core/internal/application"
+	"warmnote/core/internal/httpapi"
+	"warmnote/core/internal/storage"
 )
 
 const version = "0.1.0"
@@ -39,24 +39,24 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runtimeService := service.NewRuntimeService(version)
-	runtimeController := controller.NewRuntimeController(runtimeService, logger)
+	runtimeService := application.NewRuntimeService(version)
+	runtimeController := httpapi.NewRuntimeController(runtimeService, logger)
 	dataDirectory, err := resolveDataDirectory()
 	if err != nil {
 		return err
 	}
-	providerRepository, err := repository.NewProviderRepository(dataDirectory)
+	providerRepository, err := storage.NewProviderRepository(dataDirectory)
 	if err != nil {
 		return err
 	}
 	defer providerRepository.Close()
 	logger.Info("Warmnote data initialized", "database", providerRepository.DatabasePath())
-	providerService := service.NewProviderService(providerRepository)
-	providerController := controller.NewProviderController(providerService, logger)
-	workRepository := repository.NewWorkRepository(providerRepository)
-	workService := service.NewWorkService(workRepository)
-	workController := controller.NewWorkController(workService, logger)
-	agentRepository := repository.NewAgentRepository(providerRepository)
+	providerService := application.NewProviderService(providerRepository, aiprovider.NewProbe(nil))
+	providerController := httpapi.NewProviderController(providerService, logger)
+	workRepository := storage.NewWorkRepository(providerRepository)
+	workService := application.NewWorkService(workRepository)
+	workController := httpapi.NewWorkController(workService, logger)
+	agentRepository := storage.NewAgentRepository(providerRepository)
 	if err := agentRepository.FailInterruptedRuns(); err != nil {
 		return err
 	}
@@ -69,34 +69,34 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("Warmnote skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
-	canvasRepository := repository.NewCanvasRepository(providerRepository)
-	workFileRepository := repository.NewWorkFileRepository(dataDirectory)
-	contextSearchGateway := repository.NewContextSearchGateway(ctx, func() (*repository.ContextIndex, error) {
+	canvasRepository := storage.NewCanvasRepository(providerRepository)
+	workFileRepository := storage.NewWorkFileRepository(dataDirectory)
+	contextSearchGateway := storage.NewContextSearchGateway(ctx, func() (*storage.ContextIndex, error) {
 		return configureContextIndex(providerRepository, providerService)
 	})
-	toolRegistry := agent.NewToolRegistry(
-		canvas.NewGetNodesTool(canvasRepository),
-		workspace.NewSearchTextTool(workFileRepository),
-		canvas.NewSearchStorySpineTool(workFileRepository, agentRepository),
-		canvas.NewCreateCandidateTool(canvasRepository),
-		canvas.NewSearchContextTool(contextSearchGateway),
+	toolRegistry := agentcore.NewToolRegistry(
+		agenttools.NewGetNodesTool(canvasRepository),
+		agenttools.NewSearchTextTool(workFileRepository),
+		agenttools.NewSearchStorySpineTool(workFileRepository, agentRepository),
+		agenttools.NewCreateCandidateTool(canvasRepository),
+		agenttools.NewSearchContextTool(contextSearchGateway),
 	)
-	agentLoop := agent.NewLoop(skillCatalog, toolRegistry, agent.DefaultBudget())
-	agentEngine := adkadapter.NewEngine(agentLoop, func(_ context.Context, providerID, modelID string) (adkadapter.ModelConfig, error) {
+	agentLoop := agent.NewLoop(skillCatalog, toolRegistry, agentcore.DefaultBudget())
+	agentEngine := adk.NewEngine(agentLoop, func(_ context.Context, providerID, modelID string) (adk.ModelConfig, error) {
 		baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
 		if err != nil {
-			return adkadapter.ModelConfig{}, err
+			return adk.ModelConfig{}, err
 		}
-		return adkadapter.ModelConfig{BaseURL: baseURL, APIKey: apiKey, ModelID: modelID}, nil
+		return adk.ModelConfig{BaseURL: baseURL, APIKey: apiKey, ModelID: modelID}, nil
 	})
-	agentService := service.NewAgentService(ctx, agentRepository, agentEngine, logger)
-	agentController := controller.NewAgentController(agentService, logger)
-	canvasService := service.NewCanvasService(canvasRepository)
+	agentService := application.NewAgentService(ctx, agentRepository, agentEngine, logger)
+	agentController := httpapi.NewAgentController(agentService, logger)
+	canvasService := application.NewCanvasService(canvasRepository)
 	canvasService.SetCandidateDecisionHandler(agentService.ResumeAfterCandidateDecision)
-	canvasController := controller.NewCanvasController(canvasService, logger)
+	canvasController := httpapi.NewCanvasController(canvasService, logger)
 	server := &http.Server{
 		Addr:              "127.0.0.1:8787",
-		Handler:           webserver.NewRouter(runtimeController, providerController, workController, agentController, canvasController),
+		Handler:           httpapi.NewRouter(runtimeController, providerController, workController, agentController, canvasController),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      0,
@@ -122,7 +122,7 @@ func run(logger *slog.Logger) error {
 	}
 }
 
-func configureContextIndex(providerRepository *repository.ProviderRepository, providerService *service.ProviderService) (*repository.ContextIndex, error) {
+func configureContextIndex(providerRepository *storage.ProviderRepository, providerService *application.ProviderService) (*storage.ContextIndex, error) {
 	providerID := strings.TrimSpace(os.Getenv("WARMNOTE_EMBEDDING_PROVIDER_ID"))
 	modelID := strings.TrimSpace(os.Getenv("WARMNOTE_EMBEDDING_MODEL_ID"))
 	if providerID == "" && modelID == "" {
@@ -131,7 +131,7 @@ func configureContextIndex(providerRepository *repository.ProviderRepository, pr
 			return nil, fmt.Errorf("list enabled embedding models: %w", err)
 		}
 		for _, enabledModel := range enabledModels {
-			if enabledModel.Capability != model.ModelCapabilityEmbedding {
+			if enabledModel.Capability != ai.ModelCapabilityEmbedding {
 				continue
 			}
 			providerID = enabledModel.ProviderID
@@ -145,11 +145,11 @@ func configureContextIndex(providerRepository *repository.ProviderRepository, pr
 	if providerID == "" || modelID == "" {
 		return nil, errors.New("WARMNOTE_EMBEDDING_PROVIDER_ID and WARMNOTE_EMBEDDING_MODEL_ID must be configured together")
 	}
-	if providerID != model.CanonicalEmbeddingProviderID {
-		return nil, fmt.Errorf("context search only supports embedding provider %q", model.CanonicalEmbeddingProviderID)
+	if providerID != ai.CanonicalEmbeddingProviderID {
+		return nil, fmt.Errorf("context search only supports embedding provider %q", ai.CanonicalEmbeddingProviderID)
 	}
-	if modelID != model.CanonicalEmbeddingModelID {
-		return nil, fmt.Errorf("context search only supports embedding model %q", model.CanonicalEmbeddingModelID)
+	if modelID != ai.CanonicalEmbeddingModelID {
+		return nil, fmt.Errorf("context search only supports embedding model %q", ai.CanonicalEmbeddingModelID)
 	}
 	baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
 	if err != nil {
@@ -157,12 +157,12 @@ func configureContextIndex(providerRepository *repository.ProviderRepository, pr
 	}
 	embedder, err := embedding.NewOpenAICompatible(embedding.OpenAICompatibleConfig{
 		BaseURL: baseURL, APIKey: apiKey, ModelID: modelID,
-		Dimensions: repository.ContextEmbeddingDimension,
+		Dimensions: storage.ContextEmbeddingDimension,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return repository.NewContextIndex(providerRepository, embedder), nil
+	return storage.NewContextIndex(providerRepository, embedder), nil
 }
 
 func resolveDataDirectory() (string, error) {
