@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	agent "warmmo/core/internal/agent/writing"
+	agent "warmmo/core/internal/application/agent"
 	"warmmo/core/internal/domain/canvas"
 )
 

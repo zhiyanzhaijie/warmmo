@@ -1,12 +1,9 @@
 package canvas
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"time"
-
-	"warmmo/core/internal/shared/pagination"
 )
 
 var (
@@ -242,35 +239,4 @@ type AcceptCandidateInput struct {
 	WorkID      string
 	CandidateID string
 	Title       string
-}
-
-type Store interface {
-	CreateNode(context.Context, CreateNodeInput) (Node, error)
-	ListNodes(context.Context, string) ([]Node, error)
-	GetNode(context.Context, string, string) (Node, error)
-	GetNodes(context.Context, string, []string) ([]Node, error)
-	UpdateNode(context.Context, UpdateNodeInput) (Node, error)
-	UpdateNodePosition(context.Context, string, string, float64, float64) error
-	UpdateNodePositions(context.Context, string, []NodePosition) error
-	LayoutChapter(context.Context, string, string) ([]NodePosition, error)
-	DeleteNodes(context.Context, string, []string) error
-	GetHistoryState(context.Context, string) (HistoryState, error)
-	Undo(context.Context, string) (HistoryState, error)
-	Redo(context.Context, string) (HistoryState, error)
-	ListEdges(context.Context, string) ([]Edge, error)
-	CreateEdge(context.Context, CreateEdgeInput) (Edge, error)
-	DeleteEdges(context.Context, string, []string) error
-	CreateCandidate(context.Context, Candidate) (Candidate, error)
-	ListCandidates(context.Context, string) ([]Candidate, error)
-	UpdateCandidatePosition(context.Context, string, string, float64, float64) error
-	AcceptCandidate(context.Context, AcceptCandidateInput) (Node, error)
-	RejectCandidate(context.Context, string, string) error
-	ListNodeVersions(context.Context, string, string) ([]NodeVersion, error)
-	SwitchNodeVersion(context.Context, string, string, string) (Node, error)
-	ListCurrentChapterArchives(context.Context, string) ([]ChapterArchive, error)
-	ListCurrentChapterArchivesPage(context.Context, string, pagination.Pageable) (pagination.Page[ChapterArchive], error)
-	ListChapterArchiveVisibility(context.Context, string) ([]ChapterArchiveVisibility, error)
-	ListChapterArchiveTimelinePage(context.Context, string, pagination.Pageable) (pagination.Page[ChapterArchiveTimeline], error)
-	ListChapterArchiveHistory(context.Context, string, string) ([]ChapterArchive, error)
-	RetractChapterArchive(context.Context, string, string) error
 }

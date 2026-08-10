@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"testing"
 
-	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/adapter/persistence"
+	agent "warmmo/core/internal/application/agent"
 	"warmmo/core/internal/domain/canvas"
-	"warmmo/core/internal/storage"
 )
 
 func TestPublicAgentErrorForInvalidDecision(t *testing.T) {
@@ -59,7 +59,7 @@ func TestAttachmentPriorityContextNodeIDsDropsRemovedAttachments(t *testing.T) {
 func TestRespondToRunDoesNotQueueWhenContextPreparationFails(t *testing.T) {
 	t.Parallel()
 
-	providerRepository, err := storage.NewProviderRepository(t.TempDir())
+	providerRepository, err := persistence.NewProviderRepository(t.TempDir())
 	if err != nil {
 		t.Fatalf("create provider repository: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestRespondToRunDoesNotQueueWhenContextPreparationFails(t *testing.T) {
 		}
 	})
 
-	agentRepository := storage.NewAgentRepository(providerRepository)
+	agentRepository := persistence.NewAgentRepository(providerRepository)
 	run, err := agentRepository.CreateRun(agent.RunInput{
 		RunID: "waiting-run", WorkID: "work-1", Prompt: "补充设定",
 		Target: agent.NodeUpdateTarget("character"), TargetNodeID: "missing-node",

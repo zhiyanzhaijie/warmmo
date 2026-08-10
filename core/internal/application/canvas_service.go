@@ -5,19 +5,51 @@ import (
 	"errors"
 	"strings"
 
-	agent "warmmo/core/internal/agent/writing"
+	agent "warmmo/core/internal/application/agent"
+	"warmmo/core/internal/application/pagination"
 	"warmmo/core/internal/domain/canvas"
-	"warmmo/core/internal/shared/pagination"
 )
 
 var ErrInvalidCanvasRequest = errors.New("invalid canvas request")
 
+// CanvasStore is the persistence port required by canvas use cases.
+type CanvasStore interface {
+	CreateNode(context.Context, canvas.CreateNodeInput) (canvas.Node, error)
+	ListNodes(context.Context, string) ([]canvas.Node, error)
+	GetNode(context.Context, string, string) (canvas.Node, error)
+	GetNodes(context.Context, string, []string) ([]canvas.Node, error)
+	UpdateNode(context.Context, canvas.UpdateNodeInput) (canvas.Node, error)
+	UpdateNodePosition(context.Context, string, string, float64, float64) error
+	UpdateNodePositions(context.Context, string, []canvas.NodePosition) error
+	LayoutChapter(context.Context, string, string) ([]canvas.NodePosition, error)
+	DeleteNodes(context.Context, string, []string) error
+	GetHistoryState(context.Context, string) (canvas.HistoryState, error)
+	Undo(context.Context, string) (canvas.HistoryState, error)
+	Redo(context.Context, string) (canvas.HistoryState, error)
+	ListEdges(context.Context, string) ([]canvas.Edge, error)
+	CreateEdge(context.Context, canvas.CreateEdgeInput) (canvas.Edge, error)
+	DeleteEdges(context.Context, string, []string) error
+	CreateCandidate(context.Context, canvas.Candidate) (canvas.Candidate, error)
+	ListCandidates(context.Context, string) ([]canvas.Candidate, error)
+	UpdateCandidatePosition(context.Context, string, string, float64, float64) error
+	AcceptCandidate(context.Context, canvas.AcceptCandidateInput) (canvas.Node, error)
+	RejectCandidate(context.Context, string, string) error
+	ListNodeVersions(context.Context, string, string) ([]canvas.NodeVersion, error)
+	SwitchNodeVersion(context.Context, string, string, string) (canvas.Node, error)
+	ListCurrentChapterArchives(context.Context, string) ([]canvas.ChapterArchive, error)
+	ListCurrentChapterArchivesPage(context.Context, string, pagination.Pageable) (pagination.Page[canvas.ChapterArchive], error)
+	ListChapterArchiveVisibility(context.Context, string) ([]canvas.ChapterArchiveVisibility, error)
+	ListChapterArchiveTimelinePage(context.Context, string, pagination.Pageable) (pagination.Page[canvas.ChapterArchiveTimeline], error)
+	ListChapterArchiveHistory(context.Context, string, string) ([]canvas.ChapterArchive, error)
+	RetractChapterArchive(context.Context, string, string) error
+}
+
 type CanvasService struct {
-	store                    canvas.Store
+	store                    CanvasStore
 	candidateDecisionHandler func(context.Context, string, string, bool, string) error
 }
 
-func NewCanvasService(store canvas.Store) *CanvasService {
+func NewCanvasService(store CanvasStore) *CanvasService {
 	return &CanvasService{store: store}
 }
 

@@ -5,14 +5,14 @@ import (
 	"errors"
 	"testing"
 
+	"warmmo/core/internal/adapter/persistence"
 	"warmmo/core/internal/domain/canvas"
-	"warmmo/core/internal/storage"
 )
 
 func TestCanvasServiceRejectsManualCreationOfDerivedNodes(t *testing.T) {
 	t.Parallel()
 
-	providerRepository, err := storage.NewProviderRepository(t.TempDir())
+	providerRepository, err := persistence.NewProviderRepository(t.TempDir())
 	if err != nil {
 		t.Fatalf("create provider repository: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestCanvasServiceRejectsManualCreationOfDerivedNodes(t *testing.T) {
 			t.Errorf("close provider repository: %v", err)
 		}
 	})
-	service := NewCanvasService(storage.NewCanvasRepository(providerRepository))
+	service := NewCanvasService(persistence.NewCanvasRepository(providerRepository))
 
 	for _, kind := range []canvas.NodeKind{canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection, canvas.NodeKindManuscript} {
 		_, err := service.CreateNode(context.Background(), canvas.CreateNodeInput{

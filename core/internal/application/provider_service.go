@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"warmmo/core/internal/ai"
+	"warmmo/core/internal/domain/ai"
 )
 
 var (

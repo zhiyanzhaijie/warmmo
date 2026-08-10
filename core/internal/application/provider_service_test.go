@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"warmmo/core/internal/ai"
-	aiprovider "warmmo/core/internal/ai/provider"
-	"warmmo/core/internal/storage"
+	aiprovider "warmmo/core/internal/adapter/agent/provider"
+	"warmmo/core/internal/adapter/persistence"
+	"warmmo/core/internal/domain/ai"
 )
 
 func TestProviderServiceTestsAPIKey(t *testing.T) {
@@ -26,7 +26,7 @@ func TestProviderServiceTestsAPIKey(t *testing.T) {
 	}))
 	defer providerServer.Close()
 
-	providerRepository, err := storage.NewProviderRepository(t.TempDir())
+	providerRepository, err := persistence.NewProviderRepository(t.TempDir())
 	if err != nil {
 		t.Fatalf("create repository: %v", err)
 	}
