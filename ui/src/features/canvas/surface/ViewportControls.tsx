@@ -88,7 +88,7 @@ export const CanvasViewportControls = memo(function CanvasViewportControls({ nod
         <MiniMap<CanvasFlowNode>
           ariaLabel="画布缩略图"
           bgColor="color-mix(in srgb, var(--color-ink) 9%, var(--color-canvas))"
-          className="warmnote-flow__minimap"
+          className="warmmo-flow__minimap"
           maskColor="color-mix(in srgb, var(--color-canvas) 76%, transparent)"
           nodeBorderRadius={2}
           nodeClassName={getMinimapNodeClassName}
@@ -122,10 +122,10 @@ const CanvasViewportToolbar = memo(function CanvasViewportToolbar({
   const zoom = useStore((state) => state.transform[2])
 
   return (
-    <div aria-label="画布视图控制" className="warmnote-flow__viewport-toolbar nodrag nopan nowheel" role="toolbar">
+    <div aria-label="画布视图控制" className="warmmo-flow__viewport-toolbar nodrag nopan nowheel" role="toolbar">
       <button
         aria-label="放大"
-        className="warmnote-flow__viewport-button"
+        className="warmmo-flow__viewport-button"
         disabled={zoom >= canvasMaxZoom}
         title="放大 · Ctrl/⌘ +"
         type="button"
@@ -135,7 +135,7 @@ const CanvasViewportToolbar = memo(function CanvasViewportToolbar({
       </button>
       <button
         aria-label="缩小"
-        className="warmnote-flow__viewport-button"
+        className="warmmo-flow__viewport-button"
         disabled={zoom <= canvasMinZoom}
         title="缩小 · Ctrl/⌘ -"
         type="button"
@@ -145,7 +145,7 @@ const CanvasViewportToolbar = memo(function CanvasViewportToolbar({
       </button>
       <button
         aria-label="适应画布"
-        className="warmnote-flow__viewport-button"
+        className="warmmo-flow__viewport-button"
         title="适应画布 · Ctrl/⌘ F"
         type="button"
         onClick={onFitCanvas}
@@ -155,7 +155,7 @@ const CanvasViewportToolbar = memo(function CanvasViewportToolbar({
       <button
         aria-label={isMinimapVisible ? '关闭小地图' : '打开小地图'}
         aria-pressed={isMinimapVisible && isMinimapAvailable}
-        className={`warmnote-flow__viewport-button ${isMinimapVisible && isMinimapAvailable ? 'warmnote-flow__viewport-button--active' : ''}`}
+        className={`warmmo-flow__viewport-button ${isMinimapVisible && isMinimapAvailable ? 'warmmo-flow__viewport-button--active' : ''}`}
         disabled={!isMinimapAvailable}
         title={isMinimapAvailable ? '切换小地图 · Ctrl/⌘ M' : '节点过多，无法显示小地图'}
         type="button"
@@ -168,5 +168,5 @@ const CanvasViewportToolbar = memo(function CanvasViewportToolbar({
 })
 
 function getMinimapNodeClassName(node: CanvasFlowNode) {
-  return node.type === 'selection-proxy' ? 'warmnote-flow__minimap-selection-proxy' : ''
+  return node.type === 'selection-proxy' ? 'warmmo-flow__minimap-selection-proxy' : ''
 }

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"warmnote/core/internal/ai"
+	"warmmo/core/internal/ai"
 )
 
 var (

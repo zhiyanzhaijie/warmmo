@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"warmnote/core/internal/domain/canvas"
-	"warmnote/core/internal/storage"
+	"warmmo/core/internal/domain/canvas"
+	"warmmo/core/internal/storage"
 )
 
 func TestCanvasServiceRejectsManualCreationOfDerivedNodes(t *testing.T) {

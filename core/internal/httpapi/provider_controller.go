@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"warmnote/core/internal/ai"
-	"warmnote/core/internal/application"
+	"warmmo/core/internal/ai"
+	"warmmo/core/internal/application"
 )
 
 const maxProviderRequestBody = 64 * 1024

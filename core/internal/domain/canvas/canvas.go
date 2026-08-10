@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"warmnote/core/internal/shared/pagination"
+	"warmmo/core/internal/shared/pagination"
 )
 
 var (

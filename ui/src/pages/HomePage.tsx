@@ -19,7 +19,7 @@ export function HomePage() {
     const title = prompt.length > 16 ? `${prompt.slice(0, 16)}...` : prompt
     createWork({ title, description: prompt, folderId: '' }, {
       onSuccess: (work) => navigate(`/works/${work.id}`),
-      onError: () => setCreationNotice('创建失败，请确认 Warmnote Core 正在运行。'),
+      onError: () => setCreationNotice('创建失败，请确认 Warmmo Core 正在运行。'),
     })
   }, [createWork, navigate])
 

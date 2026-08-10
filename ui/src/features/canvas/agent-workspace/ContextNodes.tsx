@@ -64,7 +64,7 @@ export function CanvasContextNodes({
             id: node.id,
             type: 'source-document',
             sourceId: node.id,
-            mediaType: `application/x-warmnote-${node.kind}`,
+            mediaType: `application/x-warmmo-${node.kind}`,
             title: node.title,
           }
           return (

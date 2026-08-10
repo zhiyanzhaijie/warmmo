@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"warmnote/core/internal/application"
+	"warmmo/core/internal/application"
 )
 
 type RuntimeController struct {

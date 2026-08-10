@@ -16,10 +16,10 @@ export const CanvasModeIndicator = memo(function CanvasModeIndicator({
   const isContextPicker = mode.kind === 'context-node-picker'
 
   return (
-    <Panel className="warmnote-flow__mode-panel nodrag nopan nowheel" position="top-center">
+    <Panel className="warmmo-flow__mode-panel nodrag nopan nowheel" position="top-center">
       <div
         aria-live="polite"
-        className={`warmnote-flow__mode-indicator ${isContextPicker ? 'warmnote-flow__mode-indicator--context-picker' : 'warmnote-flow__mode-indicator--editing'}`}
+        className={`warmmo-flow__mode-indicator ${isContextPicker ? 'warmmo-flow__mode-indicator--context-picker' : 'warmmo-flow__mode-indicator--editing'}`}
         role="status"
       >
         {isContextPicker ? <Crosshair aria-hidden="true" size={14} /> : <Pencil aria-hidden="true" size={14} />}
@@ -27,7 +27,7 @@ export const CanvasModeIndicator = memo(function CanvasModeIndicator({
         {isContextPicker ? (
           <button
             aria-label="退出上下文选择"
-            className="warmnote-flow__mode-exit"
+            className="warmmo-flow__mode-exit"
             title="退出上下文选择"
             type="button"
             onClick={onExitContextPicker}

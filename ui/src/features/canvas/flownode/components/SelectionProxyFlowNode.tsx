@@ -10,7 +10,7 @@ export const SelectionProxyFlowNodeRenderer = memo(function SelectionProxyFlowNo
   return (
     <div
       aria-label={`已选择 ${data.contextNodeIds.length} 个节点`}
-      className="warmnote-flow__selection-proxy"
+      className="warmmo-flow__selection-proxy"
     >
       <ConnectionHandles mode="selection" />
     </div>

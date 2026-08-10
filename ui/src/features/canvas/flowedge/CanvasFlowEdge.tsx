@@ -82,7 +82,7 @@ export const CanvasFlowEdge = memo(function CanvasFlowEdge({
       >
         <BaseEdge
           id={id}
-          className="warmnote-flow__edge-path"
+          className="warmmo-flow__edge-path"
           data-edge-id={id}
           interactionWidth={28}
           markerEnd={markerEnd}
@@ -106,7 +106,7 @@ export const CanvasFlowEdge = memo(function CanvasFlowEdge({
         >
           <button
             aria-label="删除连接"
-            className="warmnote-flow__edge-cut nodrag nopan nowheel"
+            className="warmmo-flow__edge-cut nodrag nopan nowheel"
             title="删除连接"
             type="button"
             onClick={(event) => {

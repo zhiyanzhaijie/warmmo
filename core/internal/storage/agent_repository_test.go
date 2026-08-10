@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	agent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/domain/canvas"
+	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/domain/canvas"
 )
 
 func TestCompleteSectionOutlineBatchCreatesUndoableNodesAndEdges(t *testing.T) {

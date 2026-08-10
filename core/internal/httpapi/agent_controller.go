@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	agent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/application"
+	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/application"
 )
 
 const maxAgentRequestBody = 64 * 1024

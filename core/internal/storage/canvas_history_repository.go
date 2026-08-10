@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"warmnote/core/internal/domain/canvas"
+	"warmmo/core/internal/domain/canvas"
 )
 
 const (

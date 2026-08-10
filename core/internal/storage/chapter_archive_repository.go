@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"warmnote/core/internal/domain/canvas"
-	"warmnote/core/internal/shared/pagination"
+	"warmmo/core/internal/domain/canvas"
+	"warmmo/core/internal/shared/pagination"
 )
 
 type archiveLockQuerier interface {

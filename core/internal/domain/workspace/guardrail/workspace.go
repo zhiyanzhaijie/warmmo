@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"warmnote/core/internal/domain/workspace"
-	"warmnote/core/internal/shared/safepath"
+	"warmmo/core/internal/domain/workspace"
+	"warmmo/core/internal/shared/safepath"
 )
 
 type WorkSearchBoundary struct {

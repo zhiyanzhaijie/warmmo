@@ -12,7 +12,7 @@ import type { CanvasFlowEdge } from '@/features/canvas/flowedge/types'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import type { CanvasFlowNode, SelectionProxyFlowNode, StoryFlowNode } from '@/features/canvas/flownode/types'
 
-const selectionProxyId = '__warmnote-selection-proxy__'
+const selectionProxyId = '__warmmo-selection-proxy__'
 const selectionFramePadding = 12
 const fallbackNodeWidth = 256
 const fallbackNodeHeight = 180
@@ -133,7 +133,7 @@ interface ScreenRect {
 
 function collectEdgesIntersectingSelection(selection: ScreenRect) {
   const selectedEdgeIds = new Set<string>()
-  const paths = document.querySelectorAll<SVGPathElement>('.warmnote-flow__edge-path[data-edge-id]')
+  const paths = document.querySelectorAll<SVGPathElement>('.warmmo-flow__edge-path[data-edge-id]')
   for (const path of paths) {
     const edgeId = path.dataset.edgeId
     const matrix = path.getScreenCTM()

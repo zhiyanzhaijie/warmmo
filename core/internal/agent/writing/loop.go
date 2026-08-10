@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	agentcore "warmnote/core/internal/agent/core"
+	agentcore "warmmo/core/internal/agent/core"
 )
 
 const (
@@ -39,7 +39,7 @@ The selected target is a storage slot whose previous semantic content may be rep
 - Do not preserve, continue, paraphrase, or reuse the previous node's title, identity, or content.
 - Read related nodes only when their actual content is needed to satisfy the request.
 - Return a complete new title and content because the result replaces the stored node fields in full.`
-	decisionInstruction = `You are the decision maker inside Warmnote's explicit novel-writing agent loop.
+	decisionInstruction = `You are the decision maker inside Warmmo's explicit novel-writing agent loop.
 Choose exactly one next action and return exactly one JSON object without markdown or commentary.
 The top-level "kind" field is required and must be one of: continue_brainstorm, complete_plan, select_skill, call_tool, ask_user, produce_candidate, finish, fail.
 The JSON object uses this shape:

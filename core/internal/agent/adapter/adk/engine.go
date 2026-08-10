@@ -12,11 +12,11 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
-	warmagent "warmnote/core/internal/agent/writing"
-	modeladk "warmnote/core/internal/ai/adk"
+	warmagent "warmmo/core/internal/agent/writing"
+	modeladk "warmmo/core/internal/ai/adk"
 )
 
-const appName = "warmnote"
+const appName = "warmmo"
 
 type ModelConfig = modeladk.ModelConfig
 
@@ -48,8 +48,8 @@ func (e *Engine) Run(ctx context.Context, input warmagent.RunInput, emit warmage
 
 	var result warmagent.RunResult
 	customAgent, err := agent.New(agent.Config{
-		Name:        "warmnote_agent",
-		Description: "Runs the explicit Warmnote novel-writing loop.",
+		Name:        "warmmo_agent",
+		Description: "Runs the explicit Warmmo novel-writing loop.",
 		Run: func(invocation agent.InvocationContext) iter.Seq2[*session.Event, error] {
 			return func(yield func(*session.Event, error) bool) {
 				var runErr error

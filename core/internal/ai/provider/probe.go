@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"warmnote/core/internal/ai"
+	"warmmo/core/internal/ai"
 )
 
 type Probe struct {
@@ -55,7 +55,7 @@ func (p *Probe) Test(ctx context.Context, baseURL, apiKey, modelID string, capab
 
 func (p *Probe) testEmbedding(ctx context.Context, baseURL, apiKey, modelID string) (ai.ProviderTestResult, error) {
 	payload, err := json.Marshal(map[string]any{
-		"model": modelID, "input": "Warmnote embedding connection test",
+		"model": modelID, "input": "Warmmo embedding connection test",
 		"dimensions": ai.CanonicalEmbeddingDimensions, "encoding_format": "float",
 	})
 	if err != nil {

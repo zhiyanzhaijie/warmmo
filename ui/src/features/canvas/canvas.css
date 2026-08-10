@@ -1,12 +1,12 @@
-.warmnote-flow .react-flow__node {
+.warmmo-flow .react-flow__node {
   border-radius: var(--radius-sm);
 }
 
-.warmnote-flow:not(.warmnote-flow--multi-selection) .react-flow__nodesselection {
+.warmmo-flow:not(.warmmo-flow--multi-selection) .react-flow__nodesselection {
   display: none;
 }
 
-.warmnote-flow .warmnote-flow__connection-trigger {
+.warmmo-flow .warmmo-flow__connection-trigger {
   position: absolute;
   z-index: 2;
   padding: 0;
@@ -18,7 +18,7 @@
   transition: left 70ms linear, right 70ms linear, top 70ms linear, opacity 120ms ease, scale 140ms ease, background-color 140ms ease;
 }
 
-.warmnote-flow .warmnote-flow__edge-anchor {
+.warmmo-flow .warmmo-flow__edge-anchor {
   width: 1px;
   height: 1px;
   border: 0;
@@ -27,24 +27,24 @@
   pointer-events: none;
 }
 
-.warmnote-flow .warmnote-flow__edge-anchor--target {
+.warmmo-flow .warmmo-flow__edge-anchor--target {
   left: 0;
   transform: translate(-50%, -50%);
 }
 
-.warmnote-flow .warmnote-flow__edge-anchor--source {
+.warmmo-flow .warmmo-flow__edge-anchor--source {
   right: 0;
   transform: translate(50%, -50%);
 }
 
-.warmnote-flow .warmnote-flow__connection-controls {
+.warmmo-flow .warmmo-flow__connection-controls {
   position: absolute;
   inset: 0;
   z-index: 4;
   pointer-events: none;
 }
 
-.warmnote-flow .warmnote-flow__connection-proximity {
+.warmmo-flow .warmmo-flow__connection-proximity {
   position: absolute;
   top: 50%;
   width: 88px;
@@ -54,96 +54,96 @@
   transform: translateY(-50%);
 }
 
-.warmnote-flow .warmnote-flow__connection-proximity--left {
+.warmmo-flow .warmmo-flow__connection-proximity--left {
   left: -64px;
 }
 
-.warmnote-flow .warmnote-flow__connection-proximity--right {
+.warmmo-flow .warmmo-flow__connection-proximity--right {
   right: -64px;
 }
 
-.warmnote-flow .warmnote-flow__connection-trigger[data-active],
-.warmnote-flow .warmnote-flow__connection-trigger:hover,
-.warmnote-flow .warmnote-flow__connection-trigger.connectingfrom,
-.warmnote-flow .warmnote-flow__connection-controls--selection .warmnote-flow__connection-trigger {
+.warmmo-flow .warmmo-flow__connection-trigger[data-active],
+.warmmo-flow .warmmo-flow__connection-trigger:hover,
+.warmmo-flow .warmmo-flow__connection-trigger.connectingfrom,
+.warmmo-flow .warmmo-flow__connection-controls--selection .warmmo-flow__connection-trigger {
   opacity: 1;
 }
 
-.warmnote-flow .warmnote-flow__connection-trigger[data-active],
-.warmnote-flow .warmnote-flow__connection-trigger:hover {
+.warmmo-flow .warmmo-flow__connection-trigger[data-active],
+.warmmo-flow .warmmo-flow__connection-trigger:hover {
   scale: 1.2;
 }
 
-.warmnote-flow .warmnote-flow__connection-trigger:active {
+.warmmo-flow .warmmo-flow__connection-trigger:active {
   scale: 0.95;
 }
 
-.warmnote-flow .warmnote-flow__connection-trigger--target {
+.warmmo-flow .warmmo-flow__connection-trigger--target {
   transform: translate(-50%, -50%);
 }
 
-.warmnote-flow .warmnote-flow__connection-trigger--source {
+.warmmo-flow .warmmo-flow__connection-trigger--source {
   transform: translate(50%, -50%);
 }
 
-.warmnote-flow.warmnote-flow--multi-selection .warmnote-flow__connection-controls--node .warmnote-flow__connection-proximity,
-.warmnote-flow.warmnote-flow--multi-selection .warmnote-flow__connection-controls--node .warmnote-flow__connection-trigger {
+.warmmo-flow.warmmo-flow--multi-selection .warmmo-flow__connection-controls--node .warmmo-flow__connection-proximity,
+.warmmo-flow.warmmo-flow--multi-selection .warmmo-flow__connection-controls--node .warmmo-flow__connection-trigger {
   display: none;
 }
 
-.warmnote-flow .warmnote-flow__selection-proxy {
+.warmmo-flow .warmmo-flow__selection-proxy {
   position: relative;
   width: 100%;
   height: 100%;
   pointer-events: none;
 }
 
-.warmnote-flow .react-flow__node-selection-proxy {
+.warmmo-flow .react-flow__node-selection-proxy {
   pointer-events: none !important;
 }
 
-.warmnote-flow .react-flow__node-selection-proxy .warmnote-flow__connection-proximity,
-.warmnote-flow .react-flow__node-selection-proxy .warmnote-flow__connection-trigger {
+.warmmo-flow .react-flow__node-selection-proxy .warmmo-flow__connection-proximity,
+.warmmo-flow .react-flow__node-selection-proxy .warmmo-flow__connection-trigger {
   pointer-events: all;
 }
 
-.warmnote-flow.warmnote-flow--connecting,
-.warmnote-flow.warmnote-flow--connecting * {
+.warmmo-flow.warmmo-flow--connecting,
+.warmmo-flow.warmmo-flow--connecting * {
   cursor: crosshair !important;
 }
 
-.warmnote-flow .react-flow__pane,
-.warmnote-flow .warmnote-flow__background {
+.warmmo-flow .react-flow__pane,
+.warmmo-flow .warmmo-flow__background {
   transition: background-color 160ms ease, opacity 160ms ease;
 }
 
-.warmnote-flow.warmnote-flow--context-picking .react-flow__pane {
+.warmmo-flow.warmmo-flow--context-picking .react-flow__pane {
   background-color: color-mix(in srgb, var(--color-ink) 5%, transparent);
 }
 
-.warmnote-flow.warmnote-flow--context-picking .warmnote-flow__background {
+.warmmo-flow.warmmo-flow--context-picking .warmmo-flow__background {
   opacity: 0.48;
 }
 
-.warmnote-flow.warmnote-flow--context-picking .react-flow__node-flow-node > * {
+.warmmo-flow.warmmo-flow--context-picking .react-flow__node-flow-node > * {
   pointer-events: none;
 }
 
-.warmnote-flow.warmnote-flow--context-picking .react-flow__node.warmnote-flow__context-unavailable,
-.warmnote-flow.warmnote-flow--context-picking .react-flow__node.warmnote-flow__context-unavailable * {
+.warmmo-flow.warmmo-flow--context-picking .react-flow__node.warmmo-flow__context-unavailable,
+.warmmo-flow.warmmo-flow--context-picking .react-flow__node.warmmo-flow__context-unavailable * {
   cursor: not-allowed !important;
 }
 
-.warmnote-flow.warmnote-flow--context-picking .react-flow__node.warmnote-flow__context-unavailable {
+.warmmo-flow.warmmo-flow--context-picking .react-flow__node.warmmo-flow__context-unavailable {
   filter: grayscale(1);
   opacity: 0.32;
 }
 
-.warmnote-flow__mode-panel {
+.warmmo-flow__mode-panel {
   margin-top: 0.75rem;
 }
 
-.warmnote-flow__mode-indicator {
+.warmmo-flow__mode-indicator {
   display: flex;
   align-items: center;
   min-height: 30px;
@@ -159,21 +159,21 @@
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease;
 }
 
-.warmnote-flow__mode-indicator--editing {
+.warmmo-flow__mode-indicator--editing {
   opacity: 0.68;
 }
 
-.warmnote-flow__mode-indicator--context-picker {
+.warmmo-flow__mode-indicator--context-picker {
   border-color: color-mix(in srgb, var(--color-link) 36%, var(--color-hairline));
   background: color-mix(in srgb, var(--color-link-soft) 46%, var(--color-canvas-elevated));
   color: var(--color-ink);
 }
 
-.warmnote-flow__mode-indicator--context-picker > svg {
+.warmmo-flow__mode-indicator--context-picker > svg {
   color: var(--color-link);
 }
 
-.warmnote-flow__mode-exit {
+.warmmo-flow__mode-exit {
   display: grid;
   width: 24px;
   height: 24px;
@@ -188,28 +188,28 @@
   transition: background-color 120ms ease, color 120ms ease;
 }
 
-.warmnote-flow__mode-exit:hover {
+.warmmo-flow__mode-exit:hover {
   background: var(--color-hairline-soft);
   color: var(--color-ink);
 }
 
-.warmnote-flow__mode-exit:focus-visible {
+.warmmo-flow__mode-exit:focus-visible {
   outline: 2px solid var(--color-link);
   outline-offset: 1px;
 }
 
-.warmnote-flow__temporary-edge {
+.warmmo-flow__temporary-edge {
   stroke: var(--color-link);
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-dasharray: 5 4;
 }
 
-.warmnote-flow__edge-path {
+.warmmo-flow__edge-path {
   transition: stroke 120ms ease, stroke-width 120ms ease;
 }
 
-.warmnote-flow__edge-cut {
+.warmmo-flow__edge-cut {
   display: grid;
   width: 24px;
   height: 24px;
@@ -223,22 +223,22 @@
   transition: color 120ms ease, scale 120ms ease;
 }
 
-.warmnote-flow__edge-cut:hover {
+.warmmo-flow__edge-cut:hover {
   color: var(--color-error);
   scale: 1.04;
 }
 
-.warmnote-flow__edge-cut:active {
+.warmmo-flow__edge-cut:active {
   color: var(--color-error-deep);
   scale: 0.96;
 }
 
-.warmnote-flow__edge-cut:focus-visible {
+.warmmo-flow__edge-cut:focus-visible {
   outline: 2px solid var(--color-link);
   outline-offset: 2px;
 }
 
-.warmnote-flow__viewport-toolbar {
+.warmmo-flow__viewport-toolbar {
   position: absolute;
   left: 1rem;
   bottom: 1rem;
@@ -251,7 +251,7 @@
   background: color-mix(in srgb, var(--color-canvas-elevated) 94%, transparent);
 }
 
-.warmnote-flow__viewport-button {
+.warmmo-flow__viewport-button {
   display: grid;
   place-items: center;
   width: 32px;
@@ -263,36 +263,36 @@
   transition: background-color 150ms ease, color 150ms ease;
 }
 
-.warmnote-flow__viewport-button + .warmnote-flow__viewport-button {
+.warmmo-flow__viewport-button + .warmmo-flow__viewport-button {
   border-left: 1px solid var(--color-hairline);
 }
 
-.warmnote-flow__viewport-button:not(:disabled):hover {
+.warmmo-flow__viewport-button:not(:disabled):hover {
   background: var(--color-hairline-soft);
   color: var(--color-ink);
 }
 
-.warmnote-flow__viewport-button--active {
+.warmmo-flow__viewport-button--active {
   background: var(--color-hairline-soft);
   color: var(--color-ink);
 }
 
-.warmnote-flow__viewport-button:disabled {
+.warmmo-flow__viewport-button:disabled {
   cursor: not-allowed;
   opacity: 0.35;
 }
 
-.warmnote-flow__viewport-button:focus-visible {
+.warmmo-flow__viewport-button:focus-visible {
   outline: 2px solid var(--color-link);
   outline-offset: -2px;
 }
 
-.warmnote-flow__viewport-button svg {
+.warmmo-flow__viewport-button svg {
   fill: none;
   stroke: currentColor;
 }
 
-.warmnote-flow .react-flow__panel.warmnote-flow__minimap {
+.warmmo-flow .react-flow__panel.warmmo-flow__minimap {
   width: 144px;
   height: 96px;
   overflow: hidden;
@@ -303,34 +303,34 @@
   transition: opacity 150ms ease;
 }
 
-.warmnote-flow .warmnote-flow__minimap:hover {
+.warmmo-flow .warmmo-flow__minimap:hover {
   opacity: 1;
 }
 
-.warmnote-flow .warmnote-flow__minimap .react-flow__minimap-svg {
+.warmmo-flow .warmmo-flow__minimap .react-flow__minimap-svg {
   width: 100%;
   height: 100%;
   cursor: grab;
 }
 
-.warmnote-flow .warmnote-flow__minimap .react-flow__minimap-svg:active {
+.warmmo-flow .warmmo-flow__minimap .react-flow__minimap-svg:active {
   cursor: grabbing;
 }
 
-.warmnote-flow .warmnote-flow__minimap .react-flow__minimap-mask {
+.warmmo-flow .warmmo-flow__minimap .react-flow__minimap-mask {
   stroke-linejoin: round;
 }
 
-.warmnote-flow .warmnote-flow__minimap-selection-proxy {
+.warmmo-flow .warmmo-flow__minimap-selection-proxy {
   display: none;
 }
 
-.warmnote-flow .react-flow__selection {
+.warmmo-flow .react-flow__selection {
   border: 1px solid var(--color-link);
   background: color-mix(in srgb, var(--color-link-soft) 45%, transparent);
 }
 
-.warmnote-flow .react-flow__nodesselection-rect {
+.warmmo-flow .react-flow__nodesselection-rect {
   box-sizing: content-box;
   margin: -12px;
   padding: 12px;

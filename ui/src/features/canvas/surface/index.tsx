@@ -110,7 +110,7 @@ export const CanvasSurface = memo(function CanvasSurface({
       contextPickReservations,
       collaborativeContextNodeIdSet,
     )
-      ? { ...node, className: appendNodeClassName(node.className, 'warmnote-flow__context-unavailable') }
+      ? { ...node, className: appendNodeClassName(node.className, 'warmmo-flow__context-unavailable') }
       : node)
   }, [collaborativeContextNodeIdSet, contextNodePickerTarget, contextPickerConnectedNodeIds, contextPickReservations, isContextPicking, renderedNodes])
 
@@ -283,10 +283,10 @@ export const CanvasSurface = memo(function CanvasSurface({
       panOnDrag={canvasPanMouseButtons}
       panOnScroll
       proOptions={reactFlowProOptions}
-      className={`warmnote-flow ${selectedSourceNodeCount > 1 ? 'warmnote-flow--multi-selection' : ''} ${isConnecting ? 'warmnote-flow--connecting' : ''} ${isContextPicking ? 'warmnote-flow--context-picking' : ''}`}
+      className={`warmmo-flow ${selectedSourceNodeCount > 1 ? 'warmmo-flow--multi-selection' : ''} ${isConnecting ? 'warmmo-flow--connecting' : ''} ${isContextPicking ? 'warmmo-flow--context-picking' : ''}`}
     >
       <Background
-        className="warmnote-flow__background"
+        className="warmmo-flow__background"
         color="var(--color-hairline)"
         gap={20}
         size={1}

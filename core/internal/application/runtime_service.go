@@ -16,7 +16,7 @@ func NewRuntimeService(version string) *RuntimeService {
 
 func (s *RuntimeService) GetInfo(_ context.Context, requestID string) RuntimeInfo {
 	return RuntimeInfo{
-		Name:       "Warmnote Core",
+		Name:       "Warmmo Core",
 		Version:    s.version,
 		Status:     "ready",
 		GoVersion:  runtime.Version(),

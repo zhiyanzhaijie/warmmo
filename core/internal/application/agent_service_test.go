@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"testing"
 
-	agent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/domain/canvas"
-	"warmnote/core/internal/storage"
+	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/domain/canvas"
+	"warmmo/core/internal/storage"
 )
 
 func TestPublicAgentErrorForInvalidDecision(t *testing.T) {

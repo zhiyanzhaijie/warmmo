@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"warmnote/core/internal/domain/workspace"
-	"warmnote/core/internal/domain/workspace/guardrail"
+	"warmmo/core/internal/domain/workspace"
+	"warmmo/core/internal/domain/workspace/guardrail"
 )
 
 type WorkFileRepository struct {
@@ -37,7 +37,7 @@ func (r *WorkFileRepository) SearchText(ctx context.Context, workID, scope, quer
 }
 
 func resolveRGPath() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("WARMNOTE_RG_PATH")); configured != "" {
+	if configured := strings.TrimSpace(os.Getenv("WARMMO_RG_PATH")); configured != "" {
 		return configured, nil
 	}
 	return exec.LookPath("rg")

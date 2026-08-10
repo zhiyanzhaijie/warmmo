@@ -16,10 +16,10 @@ import (
 
 	"github.com/google/uuid"
 
-	agenttools "warmnote/core/internal/agent/tools"
-	warmagent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/domain/canvas"
-	"warmnote/core/internal/shared/safepath"
+	agenttools "warmmo/core/internal/agent/tools"
+	warmagent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/domain/canvas"
+	"warmmo/core/internal/shared/safepath"
 )
 
 type AgentRepository struct {

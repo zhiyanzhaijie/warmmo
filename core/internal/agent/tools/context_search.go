@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	agentcore "warmnote/core/internal/agent/core"
+	agentcore "warmmo/core/internal/agent/core"
 )
 
 // ContextSearchInput is the stable contract between Agent orchestration and

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"warmnote/core/internal/shared/pagination"
+	"warmmo/core/internal/shared/pagination"
 )
 
 func parsePagination(request *http.Request) (pagination.Request, error) {

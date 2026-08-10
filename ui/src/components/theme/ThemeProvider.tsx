@@ -21,7 +21,7 @@ interface ThemeProviderProps {
   children: ReactNode
 }
 
-const storageKey = 'warmnote-theme'
+const storageKey = 'warmmo-theme'
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 function getSystemTheme(): ResolvedTheme {

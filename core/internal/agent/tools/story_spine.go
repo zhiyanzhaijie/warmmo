@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	agentcore "warmnote/core/internal/agent/core"
-	"warmnote/core/internal/domain/workspace"
+	agentcore "warmmo/core/internal/agent/core"
+	"warmmo/core/internal/domain/workspace"
 )
 
 const (

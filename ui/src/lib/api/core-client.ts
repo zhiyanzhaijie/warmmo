@@ -18,7 +18,7 @@ export const coreClient = ofetch.create({
 
   onRequestError({ error }) {
     if (isAbortError(error)) throw error
-    throw new CoreApiError('无法连接本地 Warmnote Core', 0, 'CORE_UNREACHABLE', { cause: error })
+    throw new CoreApiError('无法连接本地 Warmmo Core', 0, 'CORE_UNREACHABLE', { cause: error })
   },
 
   onResponse({ response, options }) {

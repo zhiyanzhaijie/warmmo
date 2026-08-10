@@ -120,7 +120,7 @@ function WorkspaceError({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex min-h-64 flex-col items-center justify-center text-center">
       <p className="text-label-sm text-ink">暂时无法读取工作列表</p>
-      <p className="mt-space-xs text-body-sm text-mute">请确认 Warmnote Core 正在运行。</p>
+      <p className="mt-space-xs text-body-sm text-mute">请确认 Warmmo Core 正在运行。</p>
       <button className="mt-space-md flex h-9 cursor-pointer items-center gap-space-xs rounded-sm bg-hairline-soft px-space-sm text-button-md text-ink hover:bg-hairline" type="button" onClick={onRetry}>
         <RotateCcw size={14} aria-hidden="true" /> 重试
       </button>

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	agent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/domain/canvas"
-	"warmnote/core/internal/shared/pagination"
+	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/domain/canvas"
+	"warmmo/core/internal/shared/pagination"
 )
 
 func TestChapterArchiveCandidateCreatesNodeVersion(t *testing.T) {

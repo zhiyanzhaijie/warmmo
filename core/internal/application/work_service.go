@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"warmnote/core/internal/domain/work"
+	"warmmo/core/internal/domain/work"
 )
 
 const defaultWorkTitle = "未命名作品"

@@ -8,7 +8,7 @@ import (
 	"io"
 	"strings"
 
-	agentcore "warmnote/core/internal/agent/core"
+	agentcore "warmmo/core/internal/agent/core"
 )
 
 const (
@@ -415,7 +415,7 @@ func (l *Loop) streamCollaborativeFinish(
 	}
 	return streamAdviceRequest(ctx, ModelRequest{
 		ModelID: state.input.ModelID,
-		System:  "You are Warmnote's user-facing collaborative writing partner. Return only the final conversational answer in the user's language.",
+		System:  "You are Warmmo's user-facing collaborative writing partner. Return only the final conversational answer in the user's language.",
 		Prompt:  string(payload),
 	}, state.input.ModelID, model, emit)
 }
@@ -503,7 +503,7 @@ func streamAdviceRequest(
 	}
 	_, err = model.Stream(ctx, ModelRequest{
 		ModelID: modelID,
-		System:  "你是 Warmnote 的闲聊创作顾问。把输入的内部结构化创作建议改写成自然、简洁、可直接发给用户的中文 prose。不要输出 JSON、代码块、字段名或解释转换过程。",
+		System:  "你是 Warmmo 的闲聊创作顾问。把输入的内部结构化创作建议改写成自然、简洁、可直接发给用户的中文 prose。不要输出 JSON、代码块、字段名或解释转换过程。",
 		Prompt:  "请将下面内容改写为自然语言建议：\n\n" + raw.String(),
 	}, emitDelta)
 	if err != nil {

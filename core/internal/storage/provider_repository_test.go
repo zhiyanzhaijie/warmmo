@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"warmnote/core/internal/ai"
+	"warmmo/core/internal/ai"
 )
 
 func TestProviderRepositoryEncryptsAndPreservesAPIKey(t *testing.T) {

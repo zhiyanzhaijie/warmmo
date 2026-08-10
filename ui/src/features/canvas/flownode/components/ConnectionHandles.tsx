@@ -99,33 +99,33 @@ export const ConnectionHandles = memo(function ConnectionHandles({
 
   return (
     <div
-      className={`warmnote-flow__connection-controls warmnote-flow__connection-controls--${mode}`}
+      className={`warmmo-flow__connection-controls warmmo-flow__connection-controls--${mode}`}
       onPointerLeave={() => setActiveSide(null)}
     >
       {allowIncoming ? (
         <div
           aria-hidden="true"
-          className="warmnote-flow__connection-proximity warmnote-flow__connection-proximity--left nodrag nopan"
+          className="warmmo-flow__connection-proximity warmmo-flow__connection-proximity--left nodrag nopan"
           onPointerMove={(event) => followPointer(event, 'left')}
         />
       ) : null}
       {allowOutgoing ? (
         <div
           aria-hidden="true"
-          className="warmnote-flow__connection-proximity warmnote-flow__connection-proximity--right nodrag nopan"
+          className="warmmo-flow__connection-proximity warmmo-flow__connection-proximity--right nodrag nopan"
           onPointerMove={(event) => followPointer(event, 'right')}
         />
       ) : null}
       <Handle
         id={flowNodeEdgeTargetHandleId}
-        className="warmnote-flow__edge-anchor warmnote-flow__edge-anchor--target"
+        className="warmmo-flow__edge-anchor warmmo-flow__edge-anchor--target"
         isConnectable={false}
         type="target"
         position={Position.Left}
       />
       <Handle
         id={flowNodeEdgeSourceHandleId}
-        className="warmnote-flow__edge-anchor warmnote-flow__edge-anchor--source"
+        className="warmmo-flow__edge-anchor warmmo-flow__edge-anchor--source"
         isConnectable={false}
         type="source"
         position={Position.Right}
@@ -133,7 +133,7 @@ export const ConnectionHandles = memo(function ConnectionHandles({
       {allowIncoming ? (
         <Handle
           id={flowNodeCreateTargetHandleId}
-          className="warmnote-flow__connection-trigger warmnote-flow__connection-trigger--target"
+          className="warmmo-flow__connection-trigger warmmo-flow__connection-trigger--target"
           data-active={activeSide === 'left' || undefined}
           style={targetHandleStyle}
           type="target"
@@ -143,7 +143,7 @@ export const ConnectionHandles = memo(function ConnectionHandles({
       {allowOutgoing ? (
         <Handle
           id={flowNodeCreateSourceHandleId}
-          className="warmnote-flow__connection-trigger warmnote-flow__connection-trigger--source"
+          className="warmmo-flow__connection-trigger warmmo-flow__connection-trigger--source"
           data-active={activeSide === 'right' || undefined}
           style={sourceHandleStyle}
           type="source"

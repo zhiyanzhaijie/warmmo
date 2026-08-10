@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"warmnote/core/internal/application"
-	"warmnote/core/internal/domain/canvas"
+	"warmmo/core/internal/application"
+	"warmmo/core/internal/domain/canvas"
 )
 
 const maxCanvasRequestBody = 1024 * 1024

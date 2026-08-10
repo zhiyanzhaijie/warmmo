@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"warmnote/core/internal/shared/pagination"
+	"warmmo/core/internal/shared/pagination"
 )
 
 func TestParsePaginationUsesDefaults(t *testing.T) {

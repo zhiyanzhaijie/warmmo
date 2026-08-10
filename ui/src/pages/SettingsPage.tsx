@@ -9,7 +9,7 @@ export function SettingsPage() {
       <div className="max-w-2xl">
         <p className="font-mono text-mono-eyebrow uppercase text-mute">Preferences</p>
         <h1 className="mt-space-xs text-heading-lg">设置</h1>
-        <p className="mt-space-sm text-body-lg text-body">管理 Warmnote 的语言、主题和 Agent Provider。</p>
+        <p className="mt-space-sm text-body-lg text-body">管理 Warmmo 的语言、主题和 Agent Provider。</p>
       </div>
       <div className="mt-space-2xl grid grid-cols-[13rem_minmax(0,1fr)] gap-space-2xl">
         <nav aria-label="设置分类" className="space-y-1">

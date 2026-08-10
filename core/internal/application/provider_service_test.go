@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"warmnote/core/internal/ai"
-	aiprovider "warmnote/core/internal/ai/provider"
-	"warmnote/core/internal/storage"
+	"warmmo/core/internal/ai"
+	aiprovider "warmmo/core/internal/ai/provider"
+	"warmmo/core/internal/storage"
 )
 
 func TestProviderServiceTestsAPIKey(t *testing.T) {

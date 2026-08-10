@@ -84,7 +84,7 @@ export const CanvasNodeCreationOverlay = memo(function CanvasNodeCreationOverlay
           height="1"
         >
           <path
-            className="warmnote-flow__temporary-edge"
+            className="warmmo-flow__temporary-edge"
             d={temporaryPath}
             fill="none"
             vectorEffect="non-scaling-stroke"

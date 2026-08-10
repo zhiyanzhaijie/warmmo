@@ -16,11 +16,11 @@ import (
 	_ "modernc.org/sqlite"
 	_ "modernc.org/sqlite/vec"
 
-	"warmnote/core/internal/ai"
+	"warmmo/core/internal/ai"
 )
 
 const (
-	databaseFileName     = "warmnote.db"
+	databaseFileName     = "warmmo.db"
 	masterKeySize        = 32
 	currentSchemaVersion = 16
 	providerSchemaSQL    = `

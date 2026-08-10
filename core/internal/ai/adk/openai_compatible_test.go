@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	agentcore "warmnote/core/internal/agent/core"
+	agentcore "warmmo/core/internal/agent/core"
 )
 
 func TestCompletePropagatesJSONResponseFormat(t *testing.T) {

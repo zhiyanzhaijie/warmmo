@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"warmnote/core/internal/domain/work"
+	"warmmo/core/internal/domain/work"
 )
 
 const workPreviewLimit = 6

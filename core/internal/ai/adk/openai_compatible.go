@@ -15,7 +15,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
 
-	agentcore "warmnote/core/internal/agent/core"
+	agentcore "warmmo/core/internal/agent/core"
 )
 
 type ModelConfig struct {
@@ -44,7 +44,7 @@ func (m *compatibleLLM) Name() string {
 func (m *compatibleLLM) GenerateContent(ctx context.Context, request *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		if !stream {
-			yield(nil, errors.New("Warmnote requires streaming model calls"))
+			yield(nil, errors.New("Warmmo requires streaming model calls"))
 			return
 		}
 		messages := make([]chatMessage, 0, len(request.Contents))

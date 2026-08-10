@@ -31,9 +31,9 @@ export function AppHeader() {
   return (
     <header className="sticky top-0 z-20 bg-canvas">
       <div className="relative mx-auto grid h-16 max-w-app grid-cols-[1fr_auto_1fr] items-center px-space-lg">
-        <Link className="flex w-fit items-center gap-space-xs text-label-sm text-ink no-underline transition-opacity hover:opacity-70" to="/" aria-label="Warmnote 首页">
+        <Link className="flex w-fit items-center gap-space-xs text-label-sm text-ink no-underline transition-opacity hover:opacity-70" to="/" aria-label="Warmmo 首页">
           <Waypoints size={19} aria-hidden="true" />
-          <span className="hidden sm:inline">Warmnote</span>
+          <span className="hidden sm:inline">Warmmo</span>
         </Link>
 
         <nav className="flex h-full items-center gap-space-xs" aria-label="主导航">

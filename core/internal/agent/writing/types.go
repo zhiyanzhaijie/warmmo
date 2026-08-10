@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	agentcore "warmnote/core/internal/agent/core"
-	"warmnote/core/internal/domain/canvas"
+	agentcore "warmmo/core/internal/agent/core"
+	"warmmo/core/internal/domain/canvas"
 )
 
 func NodeUpdateTarget(nodeKind string) string {

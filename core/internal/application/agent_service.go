@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	agent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/domain/canvas"
+	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/domain/canvas"
 )
 
 var ErrInvalidAgentRun = errors.New("invalid agent run")

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"warmnote/core/internal/application"
-	"warmnote/core/internal/domain/work"
+	"warmmo/core/internal/application"
+	"warmmo/core/internal/domain/work"
 )
 
 const maxWorkRequestBody = 16 * 1024

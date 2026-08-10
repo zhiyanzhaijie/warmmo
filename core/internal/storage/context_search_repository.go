@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	agenttools "warmnote/core/internal/agent/tools"
-	"warmnote/core/internal/ai"
-	"warmnote/core/internal/domain/canvas"
+	agenttools "warmmo/core/internal/agent/tools"
+	"warmmo/core/internal/ai"
+	"warmmo/core/internal/domain/canvas"
 )
 
 const (

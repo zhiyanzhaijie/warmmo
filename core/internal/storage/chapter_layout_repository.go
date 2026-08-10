@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"warmnote/core/internal/domain/canvas"
+	"warmmo/core/internal/domain/canvas"
 )
 
 const (

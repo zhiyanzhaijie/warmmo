@@ -18,11 +18,11 @@ export function RuntimePage() {
     <main className="min-h-dvh bg-canvas">
       <header className="border-b border-hairline bg-canvas">
         <div className="mx-auto flex h-16 max-w-app items-center justify-between px-space-md sm:px-space-lg">
-          <a className="flex items-center gap-space-sm text-label-sm text-ink no-underline" href="/" aria-label="Warmnote 首页">
+          <a className="flex items-center gap-space-sm text-label-sm text-ink no-underline" href="/" aria-label="Warmmo 首页">
             <span className="grid size-8 place-items-center rounded-sm bg-primary text-on-primary">
               <Waypoints size={17} aria-hidden="true" />
             </span>
-            <span>Warmnote</span>
+            <span>Warmmo</span>
           </a>
           <span className="font-mono text-mono-eyebrow uppercase text-mute">Local Runtime</span>
         </div>
@@ -32,7 +32,7 @@ export function RuntimePage() {
         <div className="mb-space-xl max-w-2xl">
           <p className="mb-space-xs font-mono text-mono-eyebrow uppercase text-mute">Connection</p>
           <h1 id="page-title" className="m-0 text-heading-lg text-ink">本地服务连接</h1>
-          <p className="mt-space-sm text-body-lg text-body">Warmnote Core 的实时运行状态与 I/O 响应。</p>
+          <p className="mt-space-sm text-body-lg text-body">Warmmo Core 的实时运行状态与 I/O 响应。</p>
         </div>
 
         <div className="overflow-hidden rounded-md border border-hairline bg-canvas-elevated shadow-whisper">

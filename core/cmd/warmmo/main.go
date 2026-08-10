@@ -13,16 +13,16 @@ import (
 	"syscall"
 	"time"
 
-	adk "warmnote/core/internal/agent/adapter/adk"
-	agentcore "warmnote/core/internal/agent/core"
-	agenttools "warmnote/core/internal/agent/tools"
-	agent "warmnote/core/internal/agent/writing"
-	"warmnote/core/internal/ai"
-	"warmnote/core/internal/ai/embedding"
-	aiprovider "warmnote/core/internal/ai/provider"
-	"warmnote/core/internal/application"
-	"warmnote/core/internal/httpapi"
-	"warmnote/core/internal/storage"
+	adk "warmmo/core/internal/agent/adapter/adk"
+	agentcore "warmmo/core/internal/agent/core"
+	agenttools "warmmo/core/internal/agent/tools"
+	agent "warmmo/core/internal/agent/writing"
+	"warmmo/core/internal/ai"
+	"warmmo/core/internal/ai/embedding"
+	aiprovider "warmmo/core/internal/ai/provider"
+	"warmmo/core/internal/application"
+	"warmmo/core/internal/httpapi"
+	"warmmo/core/internal/storage"
 )
 
 const version = "0.1.0"
@@ -50,7 +50,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer providerRepository.Close()
-	logger.Info("Warmnote data initialized", "database", providerRepository.DatabasePath())
+	logger.Info("Warmmo data initialized", "database", providerRepository.DatabasePath())
 	providerService := application.NewProviderService(providerRepository, aiprovider.NewProbe(nil))
 	providerController := httpapi.NewProviderController(providerService, logger)
 	workRepository := storage.NewWorkRepository(providerRepository)
@@ -68,7 +68,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("Warmnote skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
+	logger.Info("Warmmo skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
 	canvasRepository := storage.NewCanvasRepository(providerRepository)
 	workFileRepository := storage.NewWorkFileRepository(dataDirectory)
 	contextSearchGateway := storage.NewContextSearchGateway(ctx, func() (*storage.ContextIndex, error) {
@@ -105,7 +105,7 @@ func run(logger *slog.Logger) error {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("Warmnote Core is listening", "address", "http://"+server.Addr)
+		logger.Info("Warmmo Core is listening", "address", "http://"+server.Addr)
 		serverErrors <- server.ListenAndServe()
 	}()
 
@@ -123,8 +123,8 @@ func run(logger *slog.Logger) error {
 }
 
 func configureContextIndex(providerRepository *storage.ProviderRepository, providerService *application.ProviderService) (*storage.ContextIndex, error) {
-	providerID := strings.TrimSpace(os.Getenv("WARMNOTE_EMBEDDING_PROVIDER_ID"))
-	modelID := strings.TrimSpace(os.Getenv("WARMNOTE_EMBEDDING_MODEL_ID"))
+	providerID := strings.TrimSpace(os.Getenv("WARMMO_EMBEDDING_PROVIDER_ID"))
+	modelID := strings.TrimSpace(os.Getenv("WARMMO_EMBEDDING_MODEL_ID"))
 	if providerID == "" && modelID == "" {
 		enabledModels, err := providerService.EnabledModels()
 		if err != nil {
@@ -143,7 +143,7 @@ func configureContextIndex(providerRepository *storage.ProviderRepository, provi
 		}
 	}
 	if providerID == "" || modelID == "" {
-		return nil, errors.New("WARMNOTE_EMBEDDING_PROVIDER_ID and WARMNOTE_EMBEDDING_MODEL_ID must be configured together")
+		return nil, errors.New("WARMMO_EMBEDDING_PROVIDER_ID and WARMMO_EMBEDDING_MODEL_ID must be configured together")
 	}
 	if providerID != ai.CanonicalEmbeddingProviderID {
 		return nil, fmt.Errorf("context search only supports embedding provider %q", ai.CanonicalEmbeddingProviderID)
@@ -166,7 +166,7 @@ func configureContextIndex(providerRepository *storage.ProviderRepository, provi
 }
 
 func resolveDataDirectory() (string, error) {
-	if configured := os.Getenv("WARMNOTE_DATA_DIR"); configured != "" {
+	if configured := os.Getenv("WARMMO_DATA_DIR"); configured != "" {
 		return filepath.Abs(configured)
 	}
 
@@ -185,11 +185,11 @@ func resolveDataDirectory() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDirectory, "warmnote"), nil
+	return filepath.Join(configDirectory, "warmmo"), nil
 }
 
 func resolveSkillsDirectory() (string, error) {
-	if configured := os.Getenv("WARMNOTE_SKILLS_DIR"); configured != "" {
+	if configured := os.Getenv("WARMMO_SKILLS_DIR"); configured != "" {
 		return filepath.Abs(configured)
 	}
 	workingDirectory, err := os.Getwd()
@@ -202,7 +202,7 @@ func resolveSkillsDirectory() (string, error) {
 	if fileExists(filepath.Join(workingDirectory, "go.mod")) && filepath.Base(workingDirectory) == "core" {
 		return filepath.Join(workingDirectory, "skills"), nil
 	}
-	return "", errors.New("cannot locate built-in skills; set WARMNOTE_SKILLS_DIR")
+	return "", errors.New("cannot locate built-in skills; set WARMMO_SKILLS_DIR")
 }
 
 func fileExists(path string) bool {
