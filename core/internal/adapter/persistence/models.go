@@ -48,21 +48,22 @@ type workModel struct {
 func (workModel) TableName() string { return "works" }
 
 type agentRunModel struct {
-	ID             string                `gorm:"primaryKey"`
-	WorkID         string                `gorm:"index:idx_agent_run_work_created,priority:1;not null"`
-	Status         string                `gorm:"index;not null"`
-	Prompt         string                `gorm:"not null"`
-	Target         string                `gorm:"not null"`
-	TargetNodeID   string                `gorm:"not null;default:''"`
-	ProviderID     string                `gorm:"not null"`
-	ModelID        string                `gorm:"not null"`
-	ContextNodeIDs []string              `gorm:"column:context_node_ids_json;serializer:json;not null"`
-	ErrorMessage   string                `gorm:"not null;default:''"`
-	CreatedAt      time.Time             `gorm:"index:idx_agent_run_work_created,priority:2,sort:desc;not null"`
-	UpdatedAt      time.Time             `gorm:"not null"`
-	Events         []agentRunEventModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	Responses      []agentResponseModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	Candidates     []agentCandidateModel `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	ID                 string                `gorm:"primaryKey"`
+	WorkID             string                `gorm:"index:idx_agent_run_work_created,priority:1;not null"`
+	Status             string                `gorm:"index;not null"`
+	Prompt             string                `gorm:"not null"`
+	Target             string                `gorm:"not null"`
+	TargetNodeID       string                `gorm:"not null;default:''"`
+	TargetNodeRevision int64                 `gorm:"not null;default:0"`
+	ProviderID         string                `gorm:"not null"`
+	ModelID            string                `gorm:"not null"`
+	ContextNodeIDs     []string              `gorm:"column:context_node_ids_json;serializer:json;not null"`
+	ErrorMessage       string                `gorm:"not null;default:''"`
+	CreatedAt          time.Time             `gorm:"index:idx_agent_run_work_created,priority:2,sort:desc;not null"`
+	UpdatedAt          time.Time             `gorm:"not null"`
+	Events             []agentRunEventModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	Responses          []agentResponseModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	Candidates         []agentCandidateModel `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
 }
 
 func (agentRunModel) TableName() string { return "agent_runs" }
@@ -77,6 +78,150 @@ type agentRunEventModel struct {
 }
 
 func (agentRunEventModel) TableName() string { return "agent_run_events" }
+
+type agentSessionModel struct {
+	ID        string         `gorm:"primaryKey"`
+	AppName   string         `gorm:"primaryKey;index:idx_agent_session_owner_updated,priority:1;not null"`
+	UserID    string         `gorm:"primaryKey;index:idx_agent_session_owner_updated,priority:2;not null"`
+	State     map[string]any `gorm:"column:state_json;serializer:json;not null"`
+	CreatedAt time.Time      `gorm:"not null"`
+	UpdatedAt time.Time      `gorm:"index:idx_agent_session_owner_updated,priority:3,sort:desc;not null"`
+}
+
+func (agentSessionModel) TableName() string { return "agent_sessions" }
+
+type agentSessionEventModel struct {
+	ID           string    `gorm:"primaryKey"`
+	AppName      string    `gorm:"uniqueIndex:idx_agent_session_event_sequence,priority:1;index:idx_agent_session_event_lookup,priority:1;not null"`
+	UserID       string    `gorm:"uniqueIndex:idx_agent_session_event_sequence,priority:2;index:idx_agent_session_event_lookup,priority:2;not null"`
+	SessionID    string    `gorm:"uniqueIndex:idx_agent_session_event_sequence,priority:3;index:idx_agent_session_event_lookup,priority:3;not null"`
+	Sequence     int64     `gorm:"uniqueIndex:idx_agent_session_event_sequence,priority:4;index:idx_agent_session_event_lookup,priority:4;not null"`
+	InvocationID string    `gorm:"index;not null;default:''"`
+	Author       string    `gorm:"not null;default:''"`
+	Branch       string    `gorm:"not null;default:''"`
+	EventJSON    string    `gorm:"column:event_json;not null"`
+	CreatedAt    time.Time `gorm:"index;not null"`
+}
+
+func (agentSessionEventModel) TableName() string { return "agent_session_events" }
+
+type agentSessionScopedStateModel struct {
+	Scope     string         `gorm:"primaryKey;size:16"`
+	AppName   string         `gorm:"primaryKey"`
+	UserID    string         `gorm:"primaryKey"`
+	State     map[string]any `gorm:"column:state_json;serializer:json;not null"`
+	UpdatedAt time.Time      `gorm:"not null"`
+}
+
+func (agentSessionScopedStateModel) TableName() string { return "agent_session_scoped_states" }
+
+type agentTurnCheckpointModel struct {
+	TurnID                 string    `gorm:"primaryKey"`
+	RunID                  string    `gorm:"index;not null"`
+	SessionID              string    `gorm:"index;not null"`
+	AgentID                string    `gorm:"index;not null"`
+	DefinitionVersion      string    `gorm:"not null;default:''"`
+	DefinitionHash         string    `gorm:"not null;default:''"`
+	PromptHash             string    `gorm:"not null;default:''"`
+	ToolsetHash            string    `gorm:"not null;default:''"`
+	Status                 string    `gorm:"index;not null"`
+	StopReason             string    `gorm:"not null"`
+	FinalJSON              string    `gorm:"not null;default:'null'"`
+	PendingJSON            string    `gorm:"not null;default:'null'"`
+	ArtifactJSON           string    `gorm:"not null;default:'null'"`
+	SnapshotJSON           string    `gorm:"not null;default:'null'"`
+	InputTokens            int64     `gorm:"not null;default:0"`
+	CachedInputTokens      int64     `gorm:"not null;default:0"`
+	OutputTokens           int64     `gorm:"not null;default:0"`
+	ModelCalls             int       `gorm:"not null;default:0"`
+	ToolCalls              int       `gorm:"not null;default:0"`
+	SideEffectCalls        int       `gorm:"not null;default:0"`
+	ChildRunIDs            []string  `gorm:"column:child_run_ids_json;serializer:json;not null"`
+	CompactionManifestJSON string    `gorm:"not null;default:'null'"`
+	LastCanonicalEventID   string    `gorm:"index;not null;default:''"`
+	Version                int64     `gorm:"not null"`
+	UpdatedAt              time.Time `gorm:"not null"`
+}
+
+func (agentTurnCheckpointModel) TableName() string { return "agent_turn_checkpoints" }
+
+type agentArtifactModel struct {
+	ID            string    `gorm:"primaryKey"`
+	RunID         string    `gorm:"index;not null"`
+	TurnID        string    `gorm:"index;not null"`
+	AgentID       string    `gorm:"index;not null"`
+	Kind          string    `gorm:"index;not null"`
+	SchemaVersion string    `gorm:"not null"`
+	PayloadJSON   string    `gorm:"not null"`
+	CreatedAt     time.Time `gorm:"not null"`
+}
+
+func (agentArtifactModel) TableName() string { return "agent_artifacts" }
+
+type agentProductProjectionModel struct {
+	ArtifactID       string    `gorm:"primaryKey"`
+	RunID            string    `gorm:"index:idx_agent_projection_run_status,priority:1;not null"`
+	ArtifactKind     string    `gorm:"not null"`
+	Target           string    `gorm:"not null"`
+	TargetNodeID     string    `gorm:"not null;default:''"`
+	ExpectedRevision int64     `gorm:"not null;default:0"`
+	PayloadHash      string    `gorm:"not null"`
+	Status           string    `gorm:"index:idx_agent_projection_run_status,priority:2;not null"`
+	Attempts         int       `gorm:"not null;default:0"`
+	LastError        string    `gorm:"not null;default:''"`
+	CreatedAt        time.Time `gorm:"not null"`
+	UpdatedAt        time.Time `gorm:"not null"`
+	CompletedAt      *time.Time
+}
+
+func (agentProductProjectionModel) TableName() string { return "agent_product_projections" }
+
+type agentToolCallModel struct {
+	CallID     string    `gorm:"primaryKey"`
+	RunID      string    `gorm:"index;not null"`
+	TurnID     string    `gorm:"index;not null"`
+	ToolName   string    `gorm:"index;not null"`
+	ArgsHash   string    `gorm:"not null"`
+	SideEffect string    `gorm:"not null"`
+	Status     string    `gorm:"index;not null"`
+	ResultJSON string    `gorm:"not null;default:'null'"`
+	CreatedAt  time.Time `gorm:"not null"`
+	UpdatedAt  time.Time `gorm:"not null"`
+}
+
+func (agentToolCallModel) TableName() string { return "agent_tool_calls" }
+
+type agentChildRunModel struct {
+	ID            string    `gorm:"primaryKey"`
+	RunID         string    `gorm:"index;not null"`
+	ParentTurnID  string    `gorm:"index;not null"`
+	ParentAgentID string    `gorm:"index;not null"`
+	ChildTurnID   string    `gorm:"uniqueIndex;not null"`
+	ChildAgentID  string    `gorm:"index;not null"`
+	SessionID     string    `gorm:"index;not null"`
+	Status        string    `gorm:"index;not null"`
+	StopReason    string    `gorm:"not null;default:''"`
+	ArtifactJSON  string    `gorm:"not null;default:'null'"`
+	PendingJSON   string    `gorm:"not null;default:'null'"`
+	CreatedAt     time.Time `gorm:"not null"`
+	UpdatedAt     time.Time `gorm:"not null"`
+}
+
+func (agentChildRunModel) TableName() string { return "agent_child_runs" }
+
+type agentMemoryModel struct {
+	ID               string    `gorm:"primaryKey"`
+	WorkID           string    `gorm:"uniqueIndex:idx_agent_memory_work_hash,priority:1;index:idx_agent_memory_recent,priority:1;not null"`
+	Kind             string    `gorm:"index;not null"`
+	Content          string    `gorm:"not null"`
+	SourceRunID      string    `gorm:"index;not null;default:''"`
+	SourceArtifactID string    `gorm:"index;not null;default:''"`
+	ContentHash      string    `gorm:"uniqueIndex:idx_agent_memory_work_hash,priority:2;not null"`
+	CreatedAt        time.Time `gorm:"not null"`
+	UpdatedAt        time.Time `gorm:"index:idx_agent_memory_recent,priority:2,sort:desc;not null"`
+}
+
+func (agentMemoryModel) TableName() string { return "agent_memories" }
 
 type agentResponseModel struct {
 	ID              string    `gorm:"primaryKey"`

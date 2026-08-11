@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -19,12 +20,17 @@ var ErrInvalidAgentRun = errors.New("invalid agent run")
 type AgentStore interface {
 	CreateRun(agent.RunInput) (agent.Run, error)
 	GetRun(string) (agent.Run, error)
+	ListInterruptedRuns() ([]agent.Run, error)
 	ListEvents(string, int64) ([]agent.Event, error)
 	AppendEvent(string, agent.EventType, any) (agent.Event, error)
 	Cancel(string) error
 	MarkStarted(string) error
 	MarkResumed(string) error
+	MarkRecovered(string) error
 	Fail(string, string) error
+	PrepareProductProjection(agent.Run, agent.RunResult) (agent.ProductProjection, error)
+	RecordProductProjectionError(string, string, agent.ProductProjectionStatus, string) error
+	RequeueProductProjection(string, string, int, time.Duration) error
 
 	GetRunByCandidate(string, string) (agent.Run, agent.Candidate, error)
 	RequestCandidateDecisionReason(string, string, string) error
@@ -56,6 +62,14 @@ type AgentService struct {
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 }
+
+type executionMode uint8
+
+const (
+	executionFresh executionMode = iota
+	executionResume
+	executionRecover
+)
 
 func NewAgentService(ctx context.Context, store AgentStore, engine agent.Engine, logger *slog.Logger) *AgentService {
 	return &AgentService{ctx: ctx, store: store, engine: engine, logger: logger, cancels: make(map[string]context.CancelFunc)}
@@ -102,7 +116,7 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 		if err != nil {
 			return agent.Run{}, err
 		}
-		go s.execute(run, input, false)
+		go s.execute(run, input, executionFresh, "")
 		return run, nil
 	}
 	if input.Target == agent.TargetNodeUpdate && !containsNodeID(input.ContextNodeIDs, input.TargetNodeID) {
@@ -167,7 +181,7 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	if err != nil {
 		return agent.Run{}, err
 	}
-	go s.execute(run, input, false)
+	go s.execute(run, input, executionFresh, "")
 	return run, nil
 }
 
@@ -245,7 +259,7 @@ func (s *AgentService) ResumeAfterCandidateDecision(ctx context.Context, workID,
 			return err
 		}
 	}
-	go s.execute(run, input, true)
+	go s.execute(run, input, executionResume, "")
 	return nil
 }
 
@@ -298,7 +312,11 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 		}
 		run.Status = agent.RunStatusQueued
 		run.ErrorMessage = ""
-		go s.execute(run, input, true)
+		resumeAnswer := queuedResponse.Answer
+		if queuedResponse.Reason == "candidate_rejected" {
+			resumeAnswer = ""
+		}
+		go s.execute(run, input, executionResume, resumeAnswer)
 		return run, nil
 	}
 	nodeKind, targetNodeRevision, err := s.store.GetCanvasNodeMetadata(run.WorkID, run.TargetNodeID)
@@ -306,7 +324,10 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 		return agent.Run{}, err
 	}
 	input.TargetNodeType = string(nodeKind)
-	input.TargetNodeRevision = targetNodeRevision
+	input.TargetNodeRevision = run.TargetNodeRevision
+	if input.TargetNodeRevision == 0 {
+		input.TargetNodeRevision = targetNodeRevision
+	}
 	if agent.IsNodeUpdateTarget(run.Target) || run.Target == agent.TargetNodeUpdate {
 		input.Target = agent.NodeUpdateTarget(string(nodeKind))
 		attachmentNodes, err := s.store.GetNodeAttachments(run.WorkID, run.TargetNodeID)
@@ -332,7 +353,7 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 	input.UserResponses = append(responses, queuedResponse)
 	run.Status = agent.RunStatusQueued
 	run.ErrorMessage = ""
-	go s.execute(run, input, true)
+	go s.execute(run, input, executionResume, queuedResponse.Answer)
 	return run, nil
 }
 
@@ -346,7 +367,7 @@ func nodeReferenceIDs(references []agent.NodeReference) []string {
 	return ids
 }
 
-func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool) {
+func (s *AgentService) execute(run agent.Run, input agent.RunInput, mode executionMode, resumeAnswer string) {
 	runCtx, cancel := context.WithCancel(s.ctx)
 	s.mu.Lock()
 	s.cancels[run.ID] = cancel
@@ -359,9 +380,12 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 	}()
 
 	var startErr error
-	if resumed {
+	switch mode {
+	case executionResume:
 		startErr = s.store.MarkResumed(run.ID)
-	} else {
+	case executionRecover:
+		startErr = s.store.MarkRecovered(run.ID)
+	default:
 		startErr = s.store.MarkStarted(run.ID)
 	}
 	if startErr != nil {
@@ -374,7 +398,25 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 		_, err := s.store.AppendEvent(run.ID, eventType, data)
 		return err
 	}
-	result, err := s.engine.Run(runCtx, input, emit)
+	var result agent.RunResult
+	var err error
+	if mode == executionRecover {
+		recoverable, ok := s.engine.(agent.RecoverableEngine)
+		if !ok {
+			err = errors.New("agent engine does not support durable recovery")
+		} else {
+			result, err = recoverable.Recover(runCtx, input, emit)
+		}
+	} else if resumeAnswer != "" {
+		resumable, ok := s.engine.(agent.ResumableEngine)
+		if !ok {
+			err = errors.New("agent engine does not support durable resume")
+		} else {
+			result, err = resumable.Resume(runCtx, input, resumeAnswer, emit)
+		}
+	} else {
+		result, err = s.engine.Run(runCtx, input, emit)
+	}
 	if err != nil {
 		if errors.Is(runCtx.Err(), context.Canceled) {
 			return
@@ -388,31 +430,170 @@ func (s *AgentService) execute(run agent.Run, input agent.RunInput, resumed bool
 		s.logger.Warn("agent run failed", "runId", run.ID, "error", err)
 		return
 	}
-	var completeErr error
+	projection, projectionErr := s.store.PrepareProductProjection(run, result)
+	if projectionErr != nil {
+		if errors.Is(projectionErr, agent.ErrRunNotCancellable) {
+			return
+		}
+		if errors.Is(projectionErr, agent.ErrProjectionConflict) {
+			s.failProjection(run, result, agent.ProductProjectionConflict, projectionErr)
+			return
+		}
+		s.logger.Error("prepare agent product projection", "runId", run.ID, "artifactId", result.ArtifactID, "error", projectionErr)
+		s.scheduleProjectionRetry(run, input, result, 1, projectionErr)
+		return
+	}
+	if projection.Status == agent.ProductProjectionCompleted {
+		return
+	}
+	if projection.Status == agent.ProductProjectionConflict || projection.Status == agent.ProductProjectionFailed {
+		s.failProjection(run, result, projection.Status, agent.ErrProjectionTerminal)
+		return
+	}
+	completeErr := s.completeProductResult(runCtx, run, input, result)
+	if completeErr == nil {
+		return
+	}
+	if errors.Is(completeErr, agent.ErrRunNotCancellable) || errors.Is(runCtx.Err(), context.Canceled) {
+		_ = s.store.RecordProductProjectionError(run.ID, result.ArtifactID, agent.ProductProjectionFailed, "run cancelled before product projection completed")
+		return
+	}
+	status, retryable := productProjectionErrorDisposition(completeErr)
+	if retryable {
+		s.scheduleProjectionRetry(run, input, result, projection.Attempts, completeErr)
+		return
+	}
+	s.failProjection(run, result, status, completeErr)
+}
+
+func (s *AgentService) completeProductResult(ctx context.Context, run agent.Run, input agent.RunInput, result agent.RunResult) error {
 	if agent.IsCollaborativeTarget(input.Target) {
 		if result.Content == "" {
-			completeErr = s.store.CompleteReadOnly(run, result)
+			return s.store.CompleteReadOnly(run, result)
 		} else if result.SkillID == "entity-creator" || result.SkillID == "chapter-creator" {
-			completeErr = s.store.CompleteCollaborativeProposal(run, result)
+			return s.store.CompleteCollaborativeProposal(run, result)
 		} else {
-			completeErr = s.store.CompleteReadOnly(run, result)
+			return s.store.CompleteReadOnly(run, result)
 		}
 	} else if agent.IsNodeUpdateTarget(input.Target) {
-		completeErr = s.store.CompleteNodeUpdate(runCtx, run, input.TargetNodeID, result)
+		return s.store.CompleteNodeUpdate(ctx, run, input.TargetNodeID, result)
 	} else if input.Target == agent.TargetSectionOutlineBatch || input.Target == agent.TargetChapterSection {
-		completeErr = s.store.CompleteDerivation(runCtx, run, input.TargetNodeID, result)
+		return s.store.CompleteDerivation(ctx, run, input.TargetNodeID, result)
 	} else if input.Target == agent.TargetChapterArchive {
-		completeErr = s.store.CompleteChapterArchive(runCtx, run, result)
-	} else {
-		_, completeErr = s.store.Complete(run, result)
+		return s.store.CompleteChapterArchive(ctx, run, result)
 	}
-	if completeErr != nil && !errors.Is(completeErr, agent.ErrRunNotCancellable) {
-		message := publicAgentError(completeErr)
-		if failErr := s.store.Fail(run.ID, message); failErr != nil && !errors.Is(failErr, agent.ErrRunNotCancellable) {
-			s.logger.Error("fail incomplete agent run", "runId", run.ID, "error", failErr)
+	_, err := s.store.Complete(run, result)
+	return err
+}
+
+func (s *AgentService) failProjection(run agent.Run, result agent.RunResult, status agent.ProductProjectionStatus, projectionErr error) {
+	message := publicAgentError(projectionErr)
+	if err := s.store.RecordProductProjectionError(run.ID, result.ArtifactID, status, message); err != nil && !errors.Is(err, agent.ErrProjectionTerminal) {
+		s.logger.Error("record terminal product projection", "runId", run.ID, "artifactId", result.ArtifactID, "error", err)
+	}
+	if err := s.store.Fail(run.ID, message); err != nil && !errors.Is(err, agent.ErrRunNotCancellable) {
+		s.logger.Error("fail incomplete agent run", "runId", run.ID, "error", err)
+	}
+	s.logger.Error("complete agent product projection", "runId", run.ID, "artifactId", result.ArtifactID, "error", projectionErr)
+}
+
+func (s *AgentService) scheduleProjectionRetry(run agent.Run, input agent.RunInput, result agent.RunResult, attempt int, projectionErr error) {
+	delay := projectionRetryDelay(attempt)
+	if err := s.store.RecordProductProjectionError(run.ID, result.ArtifactID, agent.ProductProjectionPending, publicAgentError(projectionErr)); err != nil && !errors.Is(err, agent.ErrProjectionTerminal) {
+		s.logger.Error("record retryable product projection", "runId", run.ID, "artifactId", result.ArtifactID, "error", err)
+	}
+	if err := s.store.RequeueProductProjection(run.ID, result.ArtifactID, attempt, delay); err != nil {
+		if !errors.Is(err, agent.ErrRunNotCancellable) {
+			s.logger.Error("requeue product projection", "runId", run.ID, "artifactId", result.ArtifactID, "error", err)
 		}
-		s.logger.Error("complete agent run", "runId", run.ID, "error", completeErr)
+		return
 	}
+	run.Status = agent.RunStatusQueued
+	s.logger.Warn("agent product projection scheduled for retry", "runId", run.ID, "artifactId", result.ArtifactID, "attempt", attempt, "retryAfter", delay, "error", projectionErr)
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-timer.C:
+			s.execute(run, input, executionRecover, "")
+		}
+	}()
+}
+
+func (s *AgentService) RecoverInterruptedRuns() error {
+	runs, err := s.store.ListInterruptedRuns()
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		input, inputErr := s.recoveryInput(run)
+		if inputErr != nil {
+			s.logger.Error("prepare interrupted agent run recovery", "runId", run.ID, "error", inputErr)
+			_ = s.store.Fail(run.ID, publicAgentError(inputErr))
+			continue
+		}
+		go s.execute(run, input, executionRecover, "")
+	}
+	return nil
+}
+
+func (s *AgentService) recoveryInput(run agent.Run) (agent.RunInput, error) {
+	input := agent.RunInput{
+		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
+		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
+		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs),
+	}
+	if !agent.IsCollaborativeTarget(run.Target) {
+		nodeKind, revision, err := s.store.GetCanvasNodeMetadata(run.WorkID, run.TargetNodeID)
+		if err != nil {
+			return agent.RunInput{}, err
+		}
+		input.TargetNodeType, input.TargetNodeRevision = string(nodeKind), run.TargetNodeRevision
+		if input.TargetNodeRevision == 0 {
+			input.TargetNodeRevision = revision
+		}
+		if agent.IsNodeUpdateTarget(run.Target) || run.Target == agent.TargetNodeUpdate {
+			input.Target = agent.NodeUpdateTarget(string(nodeKind))
+			input.ContextNodes, err = s.store.GetNodeAttachments(run.WorkID, run.TargetNodeID)
+			if err != nil {
+				return agent.RunInput{}, err
+			}
+			input.ContextNodeIDs = attachmentPriorityContextNodeIDs(input.ContextNodeIDs, run.TargetNodeID, input.ContextNodes)
+		} else {
+			input.ContextNodes, err = s.store.GetNodeReferences(run.WorkID, withoutNodeID(input.ContextNodeIDs, run.TargetNodeID))
+			if err != nil {
+				return agent.RunInput{}, err
+			}
+		}
+		input.UserResponses, err = s.store.ListUserResponses(run.ID)
+		if err != nil {
+			return agent.RunInput{}, err
+		}
+		return input, nil
+	}
+	globalContext, err := s.store.GetGlobalContextNodeReferences(run.WorkID)
+	if err != nil {
+		return agent.RunInput{}, err
+	}
+	input.ContextNodes = append(input.ContextNodes, globalContext...)
+	input.ContextNodeIDs = uniqueNodeIDs(append(input.ContextNodeIDs, nodeReferenceIDs(globalContext)...))
+	if len(input.ContextNodeIDs) > 0 {
+		input.ContextNodes, err = s.store.GetNodeReferences(run.WorkID, input.ContextNodeIDs)
+		if err != nil {
+			return agent.RunInput{}, err
+		}
+	}
+	input.UserResponses, err = s.store.ListUserResponses(run.ID)
+	if err != nil {
+		return agent.RunInput{}, err
+	}
+	input.CollaborativeCandidates, err = s.store.ListCollaborativeCandidates(run.ID)
+	if err != nil {
+		return agent.RunInput{}, err
+	}
+	return input, nil
 }
 
 func containsNodeID(nodeIDs []string, targetNodeID string) bool {
@@ -499,9 +680,6 @@ func publicAgentError(err error) string {
 	if errors.Is(err, agent.ErrCanvasUnavailable) {
 		return "画布上下文读取尚未接入，请暂时不选择节点后重试"
 	}
-	if errors.Is(err, agent.ErrInvalidDecision) {
-		return "模型未返回有效的 Agent 决策，请重试或切换模型"
-	}
 	if errors.Is(err, canvas.ErrRevisionConflict) {
 		return "节点在生成期间已被修改，本次 Agent 结果未覆盖现有内容"
 	}
@@ -520,5 +698,32 @@ func publicAgentError(err error) string {
 	if errors.Is(err, canvas.ErrArchivedNodeLocked) {
 		return "章节已归档并锁定，不能再次修改或归档"
 	}
+	if errors.Is(err, agent.ErrProjectionTerminal) {
+		return "模型产物无法投影到画布，请重试或切换模型"
+	}
 	return "Agent 执行失败，请重试或查看 Core 日志"
+}
+
+func productProjectionErrorDisposition(err error) (agent.ProductProjectionStatus, bool) {
+	if errors.Is(err, canvas.ErrRevisionConflict) || errors.Is(err, canvas.ErrDerivationExists) ||
+		errors.Is(err, canvas.ErrArchivedNodeLocked) || errors.Is(err, canvas.ErrNodeNotFound) ||
+		errors.Is(err, agent.ErrProjectionConflict) {
+		return agent.ProductProjectionConflict, false
+	}
+	if errors.Is(err, canvas.ErrInvalidNode) || errors.Is(err, canvas.ErrInvalidSectionOutline) ||
+		errors.Is(err, canvas.ErrInvalidChapterArchive) || errors.Is(err, canvas.ErrChapterArchiveIncomplete) ||
+		errors.Is(err, agent.ErrProjectionTerminal) {
+		return agent.ProductProjectionFailed, false
+	}
+	return agent.ProductProjectionPending, true
+}
+
+func projectionRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 6 {
+		attempt = 6
+	}
+	return time.Duration(1<<uint(attempt-1)) * time.Second
 }

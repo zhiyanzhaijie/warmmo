@@ -3,10 +3,13 @@ module warmmo/core
 go 1.26.0
 
 require (
+	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	google.golang.org/adk v1.5.1
 	google.golang.org/genai v1.57.0
 	gopkg.in/yaml.v3 v3.0.1
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.2
 	modernc.org/sqlite v1.55.0
 )
 
@@ -45,8 +48,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260511170946-3700d4141b60 // indirect
 	google.golang.org/grpc v1.81.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gorm.io/driver/sqlite v1.6.0 // indirect
-	gorm.io/gorm v1.31.2 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

@@ -30,7 +30,19 @@ func NewGetNodesTool(store NodeReader) *GetNodesTool {
 
 func (t *GetNodesTool) Spec() agentcore.ToolSpec {
 	return agentcore.ToolSpec{
-		Name: "canvas.get_nodes", Description: `Read up to 64 canvas nodes from the current work. Batch all currently required IDs into one call instead of calling once per node. Arguments: {"nodeIds":["node-id-1","node-id-2"]}.`, ModelCallable: true,
+		Name: "canvas.get_nodes", Description: `Read up to 64 canvas nodes from the current work. Batch all currently required IDs into one call instead of calling once per node.`, ModelCallable: true,
+		SideEffect: agentcore.SideEffectRead, Approval: agentcore.ApprovalNever, MaxResultBytes: 64 * 1024,
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"nodeIds": map[string]any{
+					"type": "array", "items": map[string]any{"type": "string"},
+					"minItems": 1, "maxItems": 64,
+				},
+			},
+			"required": []string{"nodeIds"}, "additionalProperties": false,
+		},
+		OutputSchema: arrayToolResultSchema(),
 	}
 }
 
@@ -46,7 +58,7 @@ func (t *GetNodesTool) Call(ctx context.Context, invocation agentcore.ToolInvoca
 		input.NodeIDs = input.IDs
 	}
 	if len(input.NodeIDs) == 0 {
-		return nil, errors.New("nodeIds is required")
+		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, errors.New("nodeIds is required"))
 	}
 	return t.store.GetNodes(ctx, invocation.WorkID, input.NodeIDs)
 }
@@ -62,6 +74,8 @@ func NewCreateCandidateTool(store CandidateCreator) *CreateCandidateTool {
 func (t *CreateCandidateTool) Spec() agentcore.ToolSpec {
 	return agentcore.ToolSpec{
 		Name: "canvas.create_candidate", Description: "Create a candidate canvas revision without overwriting accepted content.",
+		SideEffect: agentcore.SideEffectWrite, Approval: agentcore.ApprovalAlways, MaxResultBytes: 16 * 1024,
+		OutputSchema: objectToolResultSchema(),
 	}
 }
 
@@ -74,7 +88,7 @@ func (t *CreateCandidateTool) Call(ctx context.Context, invocation agentcore.Too
 	}
 	input.Content = strings.TrimSpace(input.Content)
 	if input.Content == "" {
-		return nil, errors.New("candidate content is required")
+		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, errors.New("candidate content is required"))
 	}
 	candidate := canvas.Candidate{
 		RunID: invocation.RunID, WorkID: invocation.WorkID,
@@ -91,7 +105,29 @@ func decodeToolArgs(data json.RawMessage, target any) error {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode tool arguments: %w", err)
+		return agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("decode tool arguments: %w", err))
 	}
 	return nil
+}
+
+func arrayToolResultSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"result": map[string]any{
+				"type": "array", "items": map[string]any{"type": "object"},
+			},
+		},
+		"required": []string{"result"}, "additionalProperties": false,
+	}
+}
+
+func objectToolResultSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"result": map[string]any{"type": "object"},
+		},
+		"required": []string{"result"}, "additionalProperties": false,
+	}
 }

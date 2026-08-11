@@ -9,7 +9,6 @@ var (
 	ErrInvalidUserResponse = appagent.ErrInvalidUserResponse
 	ErrCanvasUnavailable   = appagent.ErrCanvasUnavailable
 	ErrApprovalRequired    = appagent.ErrApprovalRequired
-	ErrInvalidDecision     = appagent.ErrInvalidDecision
 )
 
 const (
@@ -39,6 +38,7 @@ const (
 
 	EventRunQueued            = appagent.EventRunQueued
 	EventRunStarted           = appagent.EventRunStarted
+	EventRunRecovered         = appagent.EventRunRecovered
 	EventContextPreparing     = appagent.EventContextPreparing
 	EventContextReady         = appagent.EventContextReady
 	EventBrainstormStarted    = appagent.EventBrainstormStarted
@@ -49,7 +49,6 @@ const (
 	EventSkillMatched         = appagent.EventSkillMatched
 	EventSkillLoaded          = appagent.EventSkillLoaded
 	EventSkillCompleted       = appagent.EventSkillCompleted
-	EventDecisionInvalid      = appagent.EventDecisionInvalid
 	EventToolRequested        = appagent.EventToolRequested
 	EventToolStarted          = appagent.EventToolStarted
 	EventToolCompleted        = appagent.EventToolCompleted
@@ -70,9 +69,8 @@ const (
 	EventRoleStarted          = appagent.EventRoleStarted
 	EventRoleHandoff          = appagent.EventRoleHandoff
 	EventRoleCompleted        = appagent.EventRoleCompleted
-
-	ModelResponseFormatText       = appagent.ModelResponseFormatText
-	ModelResponseFormatJSONObject = appagent.ModelResponseFormatJSONObject
+	EventProjectionPending    = appagent.EventProjectionPending
+	EventProjectionRetry      = appagent.EventProjectionRetry
 )
 
 var (
@@ -98,9 +96,7 @@ type CollaborativeCandidate = appagent.CollaborativeCandidate
 type UserResponse = appagent.UserResponse
 type RunResult = appagent.RunResult
 type NodeReference = appagent.NodeReference
-type ModelResponseFormat = appagent.ModelResponseFormat
-type ModelRequest = appagent.ModelRequest
-type ModelUsage = appagent.ModelUsage
-type TextModel = appagent.TextModel
 type Emitter = appagent.Emitter
 type Engine = appagent.Engine
+type ResumableEngine = appagent.ResumableEngine
+type RecoverableEngine = appagent.RecoverableEngine

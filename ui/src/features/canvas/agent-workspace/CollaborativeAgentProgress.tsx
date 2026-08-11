@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { BrainCircuit, Check, Compass, Feather, LoaderCircle, RefreshCw, Search, Wrench } from 'lucide-react'
+import { BrainCircuit, Check, Compass, Feather, LoaderCircle, Search, Wrench } from 'lucide-react'
 import { memo, useMemo } from 'react'
 
 import {
@@ -102,18 +102,6 @@ function buildSteps(turn: CollaborativeTurn) {
       label: toolLabel(name),
       description: name,
       status: completed ? 'complete' : 'active',
-    })
-  }
-
-  const repairEvents = turn.events.filter((event) =>
-    event.type === 'decision.invalid' && eventString(event, 'stage') === 'proposal_validation')
-  for (const event of repairEvents) {
-    steps.push({
-      id: `repair:${event.sequence}`,
-      icon: RefreshCw,
-      label: '修复提案结构',
-      description: eventString(event, 'message'),
-      status: 'complete',
     })
   }
 

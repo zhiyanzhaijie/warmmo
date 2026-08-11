@@ -110,10 +110,14 @@ func (d *Database) initialize() error {
 			return fmt.Errorf("configure sqlite database: %w", err)
 		}
 	}
+	if err := d.migrateArtifactTurnIndex(); err != nil {
+		return err
+	}
 	if err := d.AutoMigrate(
 		&schemaMetadataModel{}, &providerConfigurationModel{},
 		&workFolderModel{}, &workModel{},
 		&agentRunModel{}, &agentRunEventModel{}, &agentResponseModel{}, &agentCandidateModel{},
+		&agentSessionModel{}, &agentSessionEventModel{}, &agentSessionScopedStateModel{}, &agentTurnCheckpointModel{}, &agentArtifactModel{}, &agentProductProjectionModel{}, &agentToolCallModel{}, &agentChildRunModel{}, &agentMemoryModel{},
 		&canvasNodeModel{}, &canvasNodeVersionModel{}, &canvasEdgeModel{},
 		&canvasActionModel{}, &canvasHistoryStateModel{},
 		&chapterArchiveModel{}, &chapterArchiveSectionModel{},
@@ -130,6 +134,26 @@ func (d *Database) initialize() error {
 	}
 	if err := os.Chmod(d.path, 0o600); err != nil {
 		return fmt.Errorf("secure sqlite database: %w", err)
+	}
+	return nil
+}
+
+func (d *Database) migrateArtifactTurnIndex() error {
+	var indexes []struct {
+		Name   string `gorm:"column:name"`
+		Unique int    `gorm:"column:unique"`
+	}
+	if err := d.Raw("PRAGMA index_list('agent_artifacts')").Scan(&indexes).Error; err != nil {
+		return fmt.Errorf("inspect agent artifact indexes: %w", err)
+	}
+	for _, index := range indexes {
+		if index.Name != "idx_agent_artifacts_turn_id" || index.Unique == 0 {
+			continue
+		}
+		if err := d.Exec("DROP INDEX IF EXISTS idx_agent_artifacts_turn_id").Error; err != nil {
+			return fmt.Errorf("migrate agent artifact turn index: %w", err)
+		}
+		break
 	}
 	return nil
 }

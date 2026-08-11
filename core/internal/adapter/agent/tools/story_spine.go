@@ -32,8 +32,18 @@ func NewSearchStorySpineTool(files workspace.TextSearcher, database StorySpineDa
 
 func (t *SearchStorySpineTool) Spec() agentcore.ToolSpec {
 	return agentcore.ToolSpec{
-		Name:          "story_spine.context",
-		Description:   `Retrieve compact archived story context. Arguments: {"query":"optional keywords","limit":8}. Uses the sandboxed workspace text search first and queries the story-spine database only after zero file matches.`,
+		Name:        "story_spine.context",
+		Description: `Retrieve compact archived story context. Uses the sandboxed workspace text search first and queries the story-spine database only after zero file matches.`,
+		SideEffect:  agentcore.SideEffectRead, Approval: agentcore.ApprovalNever, MaxResultBytes: 32 * 1024,
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxStorySpineSearchLimit},
+			},
+			"additionalProperties": false,
+		},
+		OutputSchema:  arrayToolResultSchema(),
 		ModelCallable: true,
 	}
 }
@@ -54,7 +64,7 @@ func (t *SearchStorySpineTool) Call(ctx context.Context, invocation agentcore.To
 		input.Limit = defaultStorySpineSearchLimit
 	}
 	if input.Limit < 1 || input.Limit > maxStorySpineSearchLimit {
-		return nil, fmt.Errorf("limit must be between 1 and %d", maxStorySpineSearchLimit)
+		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("limit must be between 1 and %d", maxStorySpineSearchLimit))
 	}
 	fileResults, err := t.files.SearchText(ctx, invocation.WorkID, workspace.ScopeStorySpine, input.Query, input.Limit)
 	if err == nil && len(fileResults) > 0 {

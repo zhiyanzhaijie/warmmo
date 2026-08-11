@@ -14,6 +14,7 @@ import (
 	"time"
 
 	adk "warmmo/core/internal/adapter/agent/adk"
+	"warmmo/core/internal/adapter/agent/collaboration"
 	agentcore "warmmo/core/internal/adapter/agent/core"
 	"warmmo/core/internal/adapter/agent/embedding"
 	aiprovider "warmmo/core/internal/adapter/agent/provider"
@@ -49,9 +50,6 @@ func Run(logger *slog.Logger, version string) error {
 	workService := application.NewWorkService(workRepository)
 	workController := httpapi.NewWorkController(workService, logger)
 	agentRepository := persistence.NewAgentRepositoryWithDatabase(database)
-	if err := agentRepository.FailInterruptedRuns(); err != nil {
-		return err
-	}
 	skillsDirectory, err := resolveSkillsDirectory()
 	if err != nil {
 		return err
@@ -73,15 +71,58 @@ func Run(logger *slog.Logger, version string) error {
 		agenttools.NewCreateCandidateTool(canvasRepository),
 		agenttools.NewSearchContextTool(contextSearchGateway),
 	)
-	agentLoop := agent.NewLoop(skillCatalog, toolRegistry, agentcore.DefaultBudget())
-	agentEngine := adk.NewEngine(agentLoop, func(_ context.Context, providerID, modelID string) (adk.ModelConfig, error) {
+	modelResolver := func(_ context.Context, providerID, modelID string) (adk.ModelConfig, error) {
 		baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
 		if err != nil {
 			return adk.ModelConfig{}, err
 		}
 		return adk.ModelConfig{BaseURL: baseURL, APIKey: apiKey, ModelID: modelID}, nil
-	})
+	}
+	agentSessionService := persistence.NewAgentSessionService(database)
+	agentCheckpointStore := persistence.NewAgentCheckpointStore(database)
+	agentArtifactStore := persistence.NewAgentArtifactStore(database)
+	agentToolCallStore := persistence.NewAgentToolCallStore(database)
+	agentMemoryStore := persistence.NewAgentMemoryStore(database)
+	turnExecutor := adk.NewLLMTurnExecutor(
+		toolRegistry, modelResolver, agentSessionService, agentCheckpointStore, agentArtifactStore, agentToolCallStore,
+		agentMemoryStore,
+	)
+	definitionRegistry, err := collaboration.NewDefinitionRegistry()
+	if err != nil {
+		return err
+	}
+	for _, definition := range collaboration.Definitions() {
+		if _, err := toolRegistry.StrictSnapshot(definition.Tools); err != nil {
+			return fmt.Errorf("validate tools for agent definition %q: %w", definition.ID, err)
+		}
+	}
+	agentChildRunStore := persistence.NewAgentChildRunStore(database)
+	durableTurnRunner, err := collaboration.NewDurableChildRunner(
+		turnExecutor, definitionRegistry, agentCheckpointStore, agentChildRunStore,
+	)
+	if err != nil {
+		return err
+	}
+	writingChain, err := collaboration.NewWritingCollaborationChain(
+		definitionRegistry, durableTurnRunner, agentArtifactStore, agentCheckpointStore, skillCatalog,
+	)
+	if err != nil {
+		return err
+	}
+	nonCollaborativeChain, err := collaboration.NewNonCollaborativeChain(
+		definitionRegistry, durableTurnRunner, agentArtifactStore, agentCheckpointStore, skillCatalog,
+	)
+	if err != nil {
+		return err
+	}
+	agentEngine, err := collaboration.NewEngine(writingChain, nonCollaborativeChain)
+	if err != nil {
+		return err
+	}
 	agentService := application.NewAgentService(ctx, agentRepository, agentEngine, logger)
+	if err := agentService.RecoverInterruptedRuns(); err != nil {
+		logger.Error("recover interrupted agent runs", "error", err)
+	}
 	agentController := httpapi.NewAgentController(agentService, logger)
 	canvasService := application.NewCanvasService(canvasRepository)
 	canvasService.SetCandidateDecisionHandler(agentService.ResumeAfterCandidateDecision)

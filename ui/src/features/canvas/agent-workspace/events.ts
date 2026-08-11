@@ -13,7 +13,6 @@ export const agentEventLabels: Record<string, string> = {
   'skill.matched': '命中 Skill',
   'skill.loaded': '加载 Skill',
   'skill.completed': 'Skill 完成',
-  'decision.invalid': '修复决策格式',
   'tool.requested': '请求 Tool',
   'tool.started': '调用 Tool',
   'tool.completed': 'Tool 完成',
@@ -33,6 +32,8 @@ export const agentEventLabels: Record<string, string> = {
   'role.started': 'Agent 开始工作',
   'role.handoff': 'Agent 交接',
   'role.completed': 'Agent 完成工作',
+  'projection.pending': '准备写入画布',
+  'projection.retry_scheduled': '等待重试写入',
 }
 
 export const streamedAgentEventTypes = [...Object.keys(agentEventLabels), 'message.delta']
@@ -44,6 +45,6 @@ export function isTerminalAgentEvent(type: string) {
 
 export function getAgentEventSummary(event: AgentEvent) {
   if (event.data === null) return `#${event.sequence}`
-  const value = event.data.nodeId ?? event.data.candidateId ?? event.data.skillId ?? event.data.name ?? event.data.snapshotId
+  const value = event.data.nodeId ?? event.data.candidateId ?? event.data.artifactId ?? event.data.skillId ?? event.data.name ?? event.data.snapshotId
   return typeof value === 'string' ? value : `#${event.sequence}`
 }

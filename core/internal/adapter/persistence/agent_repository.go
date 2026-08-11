@@ -324,7 +324,7 @@ func (r *AgentRepository) CreateRun(input appagent.RunInput) (appagent.Run, erro
 	now := time.Now().UTC()
 	run := appagent.Run{
 		ID: input.RunID, WorkID: input.WorkID, Status: appagent.RunStatusQueued,
-		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, ProviderID: input.ProviderID, ModelID: input.ModelID,
+		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, TargetNodeRevision: input.TargetNodeRevision, ProviderID: input.ProviderID, ModelID: input.ModelID,
 		ContextNodeIDs: append([]string{}, input.ContextNodeIDs...), CreatedAt: now, UpdatedAt: now,
 	}
 	model := runModelFromDomain(run)
@@ -346,6 +346,18 @@ func (r *AgentRepository) GetRun(runID string) (appagent.Run, error) {
 		return appagent.Run{}, err
 	}
 	return runFromModel(model), nil
+}
+
+func (r *AgentRepository) ListInterruptedRuns() ([]appagent.Run, error) {
+	var models []agentRunModel
+	if err := r.database.Where("status IN ?", []appagent.RunStatus{appagent.RunStatusQueued, appagent.RunStatusRunning}).Order("created_at, id").Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("list interrupted agent runs: %w", err)
+	}
+	runs := make([]appagent.Run, len(models))
+	for index, model := range models {
+		runs[index] = runFromModel(model)
+	}
+	return runs, nil
 }
 
 func (r *AgentRepository) ListEvents(runID string, afterSequence int64) ([]appagent.Event, error) {
@@ -409,11 +421,14 @@ func (r *AgentRepository) QueueResponse(runID, approvalEventID, answer string) (
 		}
 		var approval struct {
 			Question string `json:"question"`
+			Reason   string `json:"reason"`
 		}
 		if err := json.Unmarshal([]byte(event.DataJSON), &approval); err != nil {
 			return fmt.Errorf("decode pending agent question: %w", err)
 		}
-		response = appagent.UserResponse{ApprovalEventID: approvalEventID, Question: approval.Question, Answer: answer}
+		response = appagent.UserResponse{
+			ApprovalEventID: approvalEventID, Question: approval.Question, Answer: answer, Reason: approval.Reason,
+		}
 		now := time.Now().UTC()
 		if _, err := appendEvent(tx, runID, appagent.EventUserResponseReceived, response, now); err != nil {
 			return err
@@ -432,6 +447,10 @@ func (r *AgentRepository) QueueResponse(runID, approvalEventID, answer string) (
 
 func (r *AgentRepository) MarkResumed(runID string) error {
 	return r.transitionRun(runID, appagent.RunStatusQueued, appagent.RunStatusRunning, appagent.EventRunResumed)
+}
+
+func (r *AgentRepository) MarkRecovered(runID string) error {
+	return r.transitionRunFromStatuses(runID, []appagent.RunStatus{appagent.RunStatusQueued, appagent.RunStatusRunning}, appagent.RunStatusRunning, appagent.EventRunRecovered)
 }
 
 func (r *AgentRepository) ListUserResponses(runID string) ([]appagent.UserResponse, error) {
@@ -460,10 +479,17 @@ func (r *AgentRepository) Complete(run appagent.Run, result appagent.RunResult) 
 		SkillID: result.SkillID, SkillVersion: result.SkillVersion, Content: result.Content, CreatedAt: now,
 	}
 	err := r.database.Transaction(func(tx *gorm.DB) error {
+		completed, err := productProjectionCompleted(tx, run.ID, result)
+		if err != nil || completed {
+			return err
+		}
 		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
 		}
-		_, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"candidateId": candidate.ID}, now)
+		if err := completeProductProjection(tx, run.ID, result, now); err != nil {
+			return err
+		}
+		_, err = appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"candidateId": candidate.ID}, now)
 		return err
 	})
 	return candidate, err
@@ -475,7 +501,14 @@ func (r *AgentRepository) Complete(run appagent.Run, result appagent.RunResult) 
 func (r *AgentRepository) CompleteReadOnly(run appagent.Run, result appagent.RunResult) error {
 	now := time.Now().UTC()
 	return r.database.Transaction(func(tx *gorm.DB) error {
+		completed, err := productProjectionCompleted(tx, run.ID, result)
+		if err != nil || completed {
+			return err
+		}
 		if err := completeRun(tx, run.ID, now); err != nil {
+			return err
+		}
+		if err := completeProductProjection(tx, run.ID, result, now); err != nil {
 			return err
 		}
 		if message := strings.TrimSpace(result.Message); message != "" {
@@ -483,7 +516,7 @@ func (r *AgentRepository) CompleteReadOnly(run appagent.Run, result appagent.Run
 				return err
 			}
 		}
-		_, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"mode": "read-only", "role": result.Role, "skillId": result.SkillID}, now)
+		_, err = appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"mode": "read-only", "role": result.Role, "skillId": result.SkillID}, now)
 		return err
 	})
 }
@@ -496,23 +529,27 @@ func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result
 	decoder := json.NewDecoder(strings.NewReader(result.Content))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&proposal); err != nil {
-		return fmt.Errorf("decode collaborative proposal: %w", err)
+		return fmt.Errorf("%w: decode collaborative proposal: %v", appagent.ErrProjectionTerminal, err)
 	}
 	if len(proposal.Nodes) == 0 {
-		return fmt.Errorf("decode collaborative proposal: %w", errors.New("proposal has no new nodes"))
+		return fmt.Errorf("%w: collaborative proposal has no new nodes", appagent.ErrProjectionTerminal)
 	}
 	if len(proposal.Nodes) > 1 {
-		return fmt.Errorf("decode collaborative proposal: %w", errors.New("proposal has more than one node"))
+		return fmt.Errorf("%w: collaborative proposal has more than one node", appagent.ErrProjectionTerminal)
 	}
 	now := time.Now().UTC()
 	return r.database.Transaction(func(tx *gorm.DB) error {
+		completed, err := productProjectionCompleted(tx, run.ID, result)
+		if err != nil || completed {
+			return err
+		}
 		created := make([]map[string]any, 0, len(proposal.Nodes))
 		models := make([]agentCandidateModel, 0, len(proposal.Nodes))
 		for index, node := range proposal.Nodes {
 			clientID, kind := strings.TrimSpace(node.ClientID), strings.TrimSpace(node.Kind)
 			title, content := strings.TrimSpace(node.Title), strings.TrimSpace(node.Content)
 			if clientID == "" || kind == "" || title == "" || content == "" {
-				return fmt.Errorf("collaborative proposal node %d is incomplete", index)
+				return fmt.Errorf("%w: collaborative proposal node %d is incomplete", appagent.ErrProjectionTerminal, index)
 			}
 			candidateID := uuid.NewString()
 			x := 520 + float64(index%8)*36
@@ -526,12 +563,15 @@ func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result
 		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
 		}
+		if err := completeProductProjection(tx, run.ID, result, now); err != nil {
+			return err
+		}
 		for _, metadata := range created {
 			if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateId": metadata["candidateId"], "meta": map[string]any{"clientId": metadata["clientId"], "kind": metadata["kind"], "title": metadata["title"], "ordinal": metadata["ordinal"], "total": metadata["total"], "position": map[string]any{"x": metadata["x"], "y": metadata["y"]}}, "mode": "collaborative-proposal"}, now); err != nil {
 				return err
 			}
 		}
-		_, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"candidateIds": created, "mode": "collaborative-proposal"}, now)
+		_, err = appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"candidateIds": created, "mode": "collaborative-proposal"}, now)
 		return err
 	})
 }
@@ -579,7 +619,7 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run appage
 	decoder := json.NewDecoder(strings.NewReader(result.Content))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&decoded); err != nil {
-		return fmt.Errorf("decode chapter archive result: %w", err)
+		return fmt.Errorf("%w: decode chapter archive result: %v", appagent.ErrProjectionTerminal, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: archive result must contain one JSON object", canvas.ErrInvalidChapterArchive)
@@ -591,7 +631,16 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run appage
 	now := time.Now().UTC()
 	archiveID := uuid.NewString()
 	var archive chapterArchiveModel
+	alreadyProjected := false
 	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		completed, err := productProjectionCompleted(tx, run.ID, result)
+		if err != nil {
+			return err
+		}
+		if completed {
+			alreadyProjected = true
+			return nil
+		}
 		locked, err := isNodeArchiveLocked(tx, run.WorkID, run.TargetNodeID)
 		if err != nil {
 			return err
@@ -664,6 +713,9 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run appage
 		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
 		}
+		if err := completeProductProjection(tx, run.ID, result, now); err != nil {
+			return err
+		}
 		if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateIds": created, "candidateType": "version"}, now); err != nil {
 			return err
 		}
@@ -677,6 +729,9 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run appage
 	})
 	if err != nil {
 		return err
+	}
+	if alreadyProjected {
+		return nil
 	}
 	archiveDomain := chapterArchiveFromModel(archive)
 	projectionStatus := "ready"
@@ -840,6 +895,10 @@ func (r *AgentRepository) CompleteNodeUpdate(
 ) error {
 	now := time.Now().UTC()
 	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		completed, err := productProjectionCompleted(tx, run.ID, result)
+		if err != nil || completed {
+			return err
+		}
 		locked, err := isNodeArchiveLocked(tx, run.WorkID, nodeID)
 		if err != nil {
 			return err
@@ -869,6 +928,9 @@ func (r *AgentRepository) CompleteNodeUpdate(
 		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
 		}
+		if err := completeProductProjection(tx, run.ID, result, now); err != nil {
+			return err
+		}
 		if _, err := appendEvent(tx, run.ID, appagent.EventNodeUpdated, map[string]any{"nodeId": nodeID}, now); err != nil {
 			return err
 		}
@@ -885,6 +947,10 @@ func (r *AgentRepository) CompleteDerivation(
 ) error {
 	now := time.Now().UTC()
 	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		completed, err := productProjectionCompleted(tx, run.ID, result)
+		if err != nil || completed {
+			return err
+		}
 		parentModel, err := getCanvasNode(tx, run.WorkID, parentNodeID)
 		if err != nil {
 			return err
@@ -944,6 +1010,9 @@ func (r *AgentRepository) CompleteDerivation(
 			return err
 		}
 		if err := completeRun(tx, run.ID, now); err != nil {
+			return err
+		}
+		if err := completeProductProjection(tx, run.ID, result, now); err != nil {
 			return err
 		}
 		ids := make([]string, len(nodeModels))
@@ -1038,22 +1107,17 @@ func (r *AgentRepository) Cancel(runID string) error {
 		if result.RowsAffected == 0 {
 			return runMutationError(tx, runID)
 		}
+		if err := tx.Model(&agentProductProjectionModel{}).
+			Where("run_id = ? AND status = ?", runID, appagent.ProductProjectionPending).
+			Updates(map[string]any{
+				"status": appagent.ProductProjectionFailed, "last_error": "run cancelled",
+				"updated_at": now,
+			}).Error; err != nil {
+			return fmt.Errorf("cancel pending agent product projections: %w", err)
+		}
 		_, err := appendEvent(tx, runID, appagent.EventRunCancelled, nil, now)
 		return err
 	})
-}
-
-func (r *AgentRepository) FailInterruptedRuns() error {
-	var models []agentRunModel
-	if err := r.database.Select("id").Where("status IN ?", []appagent.RunStatus{appagent.RunStatusQueued, appagent.RunStatusRunning}).Find(&models).Error; err != nil {
-		return fmt.Errorf("query interrupted agent runs: %w", err)
-	}
-	for _, model := range models {
-		if err := r.Fail(model.ID, "Core restarted before this run completed"); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (r *AgentRepository) setStatusWithEvent(runID string, status appagent.RunStatus, message string, eventType appagent.EventType, data any) error {
@@ -1066,6 +1130,16 @@ func (r *AgentRepository) setStatusWithEvent(runID string, status appagent.RunSt
 		if result.RowsAffected == 0 {
 			return runMutationError(tx, runID)
 		}
+		if status == appagent.RunStatusFailed {
+			if err := tx.Model(&agentProductProjectionModel{}).
+				Where("run_id = ? AND status = ?", runID, appagent.ProductProjectionPending).
+				Updates(map[string]any{
+					"status": appagent.ProductProjectionFailed, "last_error": message,
+					"updated_at": now,
+				}).Error; err != nil {
+				return fmt.Errorf("fail pending agent product projections: %w", err)
+			}
+		}
 		_, err := appendEvent(tx, runID, eventType, data, now)
 		return err
 	})
@@ -1075,6 +1149,21 @@ func (r *AgentRepository) transitionRun(runID string, from, to appagent.RunStatu
 	return r.database.Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, from).Updates(map[string]any{"status": to, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return appagent.ErrRunNotCancellable
+		}
+		_, err := appendEvent(tx, runID, eventType, nil, now)
+		return err
+	})
+}
+
+func (r *AgentRepository) transitionRunFromStatuses(runID string, from []appagent.RunStatus, to appagent.RunStatus, eventType appagent.EventType) error {
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		result := tx.Model(&agentRunModel{}).Where("id = ? AND status IN ?", runID, from).Updates(map[string]any{"status": to, "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -1125,11 +1214,11 @@ func appendEvent(tx *gorm.DB, runID string, eventType appagent.EventType, data a
 }
 
 func runFromModel(model agentRunModel) appagent.Run {
-	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, ProviderID: model.ProviderID, ModelID: model.ModelID, ContextNodeIDs: append([]string{}, model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
+	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, TargetNodeRevision: model.TargetNodeRevision, ProviderID: model.ProviderID, ModelID: model.ModelID, ContextNodeIDs: append([]string{}, model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
 }
 
 func runModelFromDomain(run appagent.Run) agentRunModel {
-	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ContextNodeIDs: append([]string{}, run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
+	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, TargetNodeRevision: run.TargetNodeRevision, ProviderID: run.ProviderID, ModelID: run.ModelID, ContextNodeIDs: append([]string{}, run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
 }
 
 func eventFromModel(model agentRunEventModel) appagent.Event {

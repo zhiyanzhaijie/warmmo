@@ -27,7 +27,6 @@ type RunStatus string
 type CandidateStatus = canvas.CandidateStatus
 type AgentRole string
 type EventType string
-type ModelResponseFormat string
 
 const (
 	TargetNodeUpdate            = "node-update"
@@ -56,6 +55,7 @@ const (
 
 	EventRunQueued            EventType = "run.queued"
 	EventRunStarted           EventType = "run.started"
+	EventRunRecovered         EventType = "run.recovered"
 	EventContextPreparing     EventType = "context.preparing"
 	EventContextReady         EventType = "context.ready"
 	EventBrainstormStarted    EventType = "brainstorm.started"
@@ -66,7 +66,6 @@ const (
 	EventSkillMatched         EventType = "skill.matched"
 	EventSkillLoaded          EventType = "skill.loaded"
 	EventSkillCompleted       EventType = "skill.completed"
-	EventDecisionInvalid      EventType = "decision.invalid"
 	EventToolRequested        EventType = "tool.requested"
 	EventToolStarted          EventType = "tool.started"
 	EventToolCompleted        EventType = "tool.completed"
@@ -87,9 +86,8 @@ const (
 	EventRoleStarted          EventType = "role.started"
 	EventRoleHandoff          EventType = "role.handoff"
 	EventRoleCompleted        EventType = "role.completed"
-
-	ModelResponseFormatText       ModelResponseFormat = ""
-	ModelResponseFormatJSONObject ModelResponseFormat = "json_object"
+	EventProjectionPending    EventType = "projection.pending"
+	EventProjectionRetry      EventType = "projection.retry_scheduled"
 )
 
 var (
@@ -99,7 +97,8 @@ var (
 	ErrInvalidUserResponse = errors.New("invalid agent user response")
 	ErrCanvasUnavailable   = errors.New("canvas context is not available")
 	ErrApprovalRequired    = errors.New("agent requires user input")
-	ErrInvalidDecision     = errors.New("invalid agent decision")
+	ErrProjectionConflict  = errors.New("agent product projection conflict")
+	ErrProjectionTerminal  = errors.New("agent product projection is terminal")
 )
 
 type CollaborationPlan struct {
@@ -141,18 +140,19 @@ type ProposalEdge struct {
 }
 
 type Run struct {
-	ID             string    `json:"id"`
-	WorkID         string    `json:"workId"`
-	Status         RunStatus `json:"status"`
-	Prompt         string    `json:"prompt"`
-	Target         string    `json:"target"`
-	TargetNodeID   string    `json:"targetNodeId,omitempty"`
-	ProviderID     string    `json:"providerId"`
-	ModelID        string    `json:"modelId"`
-	ContextNodeIDs []string  `json:"contextNodeIds"`
-	ErrorMessage   string    `json:"errorMessage,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID                 string    `json:"id"`
+	WorkID             string    `json:"workId"`
+	Status             RunStatus `json:"status"`
+	Prompt             string    `json:"prompt"`
+	Target             string    `json:"target"`
+	TargetNodeID       string    `json:"targetNodeId,omitempty"`
+	TargetNodeRevision int64     `json:"targetNodeRevision,omitempty"`
+	ProviderID         string    `json:"providerId"`
+	ModelID            string    `json:"modelId"`
+	ContextNodeIDs     []string  `json:"contextNodeIds"`
+	ErrorMessage       string    `json:"errorMessage,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type Event struct {
@@ -192,6 +192,7 @@ type UserResponse struct {
 	ApprovalEventID string `json:"approvalEventId"`
 	Question        string `json:"question"`
 	Answer          string `json:"answer"`
+	Reason          string `json:"reason,omitempty"`
 }
 type RunResult struct {
 	Title            string
@@ -202,6 +203,25 @@ type RunResult struct {
 	SkillVersion     string
 	CandidateID      string
 	ExpectedRevision int64
+	ArtifactID       string
+	ArtifactKind     string
+}
+
+type ProductProjectionStatus string
+
+const (
+	ProductProjectionPending   ProductProjectionStatus = "pending"
+	ProductProjectionCompleted ProductProjectionStatus = "completed"
+	ProductProjectionConflict  ProductProjectionStatus = "conflict"
+	ProductProjectionFailed    ProductProjectionStatus = "failed"
+)
+
+type ProductProjection struct {
+	RunID      string
+	ArtifactID string
+	Status     ProductProjectionStatus
+	Attempts   int
+	LastError  string
 }
 type NodeReference struct {
 	ID   string `json:"id"`
@@ -242,21 +262,15 @@ type ContextSearchResult struct {
 	Evidence  []string `json:"evidence,omitempty"`
 }
 
-type ModelRequest struct {
-	ModelID        string
-	System         string
-	Prompt         string
-	ResponseFormat ModelResponseFormat
-}
-type ModelUsage struct {
-	InputTokens  int64
-	OutputTokens int64
-}
-type TextModel interface {
-	Complete(context.Context, ModelRequest) (string, ModelUsage, error)
-	Stream(context.Context, ModelRequest, func(string) error) (ModelUsage, error)
-}
 type Emitter func(EventType, any) error
 type Engine interface {
 	Run(context.Context, RunInput, Emitter) (RunResult, error)
+}
+
+type ResumableEngine interface {
+	Resume(context.Context, RunInput, string, Emitter) (RunResult, error)
+}
+
+type RecoverableEngine interface {
+	Recover(context.Context, RunInput, Emitter) (RunResult, error)
 }
