@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	appagent "warmmo/core/internal/application/agent"
 	"warmmo/core/internal/application/safepath"
@@ -22,179 +23,126 @@ import (
 )
 
 type AgentRepository struct {
-	database      *sql.DB
+	database      *gorm.DB
 	dataDirectory string
 }
 
 func (r *AgentRepository) GetRunByCandidate(candidateID, workID string) (appagent.Run, appagent.Candidate, error) {
-	var run appagent.Run
-	var candidate appagent.Candidate
-	var targetNodeID, contextJSON, candidateCreatedAt, candidateDecidedAt, runCreatedAt, runUpdatedAt string
-	err := r.database.QueryRow(`
-SELECT c.id,c.run_id,c.work_id,c.skill_id,c.skill_version,c.status,c.kind,c.title,c.content,c.x,c.y,c.accepted_node_id,c.created_at,c.decided_at,
-       r.id,r.work_id,r.status,r.prompt,r.target,r.target_node_id,r.provider_id,r.model_id,r.context_node_ids_json,r.created_at,r.updated_at
-FROM agent_candidates c JOIN agent_runs r ON r.id=c.run_id
-WHERE c.id=? AND c.work_id=?`, candidateID, workID).Scan(
-		&candidate.ID, &candidate.RunID, &candidate.WorkID, &candidate.SkillID, &candidate.SkillVersion,
-		&candidate.Status, &candidate.Kind, &candidate.Title, &candidate.Content, &candidate.X, &candidate.Y,
-		&candidate.AcceptedNodeID, &candidateCreatedAt, &candidateDecidedAt,
-		&run.ID, &run.WorkID, &run.Status, &run.Prompt, &run.Target, &targetNodeID, &run.ProviderID, &run.ModelID, &contextJSON, &runCreatedAt, &runUpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	db := r.database
+	var candidateModel agentCandidateModel
+	if err := db.Where("id = ? AND work_id = ?", candidateID, workID).First(&candidateModel).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return appagent.Run{}, appagent.Candidate{}, canvas.ErrCandidateNotFound
-	}
-	if err != nil {
+	} else if err != nil {
 		return appagent.Run{}, appagent.Candidate{}, fmt.Errorf("read candidate run: %w", err)
 	}
-	run.TargetNodeID = targetNodeID
-	if err := json.Unmarshal([]byte(contextJSON), &run.ContextNodeIDs); err != nil {
-		return appagent.Run{}, appagent.Candidate{}, fmt.Errorf("decode candidate context: %w", err)
+	var runModel agentRunModel
+	if err := db.First(&runModel, "id = ?", candidateModel.RunID).Error; err != nil {
+		return appagent.Run{}, appagent.Candidate{}, fmt.Errorf("read candidate run: %w", err)
 	}
-	return run, candidate, nil
+	return runFromModel(runModel), candidateFromStoredModel(candidateModel, runModel.ContextNodeIDs), nil
 }
 
 func (r *AgentRepository) ListCollaborativeCandidates(runID string) ([]appagent.CollaborativeCandidate, error) {
-	rows, err := r.database.Query(`
-SELECT id,status,kind,title,accepted_node_id
-FROM agent_candidates
-WHERE run_id=?
-ORDER BY created_at,id`, runID)
-	if err != nil {
+	var models []agentCandidateModel
+	if err := r.database.Select("id", "status", "kind", "title", "accepted_node_id").Where("run_id = ?", runID).Order("created_at, id").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list collaborative candidates: %w", err)
 	}
-	defer rows.Close()
-	candidates := make([]appagent.CollaborativeCandidate, 0)
-	for rows.Next() {
-		var candidate appagent.CollaborativeCandidate
-		if err := rows.Scan(&candidate.CandidateID, &candidate.Status, &candidate.Kind, &candidate.Title, &candidate.AcceptedNodeID); err != nil {
-			return nil, fmt.Errorf("scan collaborative candidate: %w", err)
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate collaborative candidates: %w", err)
+	candidates := make([]appagent.CollaborativeCandidate, len(models))
+	for i, model := range models {
+		candidates[i] = appagent.CollaborativeCandidate{CandidateID: model.ID, Status: appagent.CandidateStatus(model.Status), Kind: model.Kind, Title: model.Title, AcceptedNodeID: model.AcceptedNodeID}
 	}
 	return candidates, nil
 }
 
 func (r *AgentRepository) RequeueAfterCandidateDecision(runID, candidateID string, accepted bool, acceptedNodeID string) (bool, error) {
-	tx, err := r.database.Begin()
-	if err != nil {
-		return false, fmt.Errorf("begin candidate decision: %w", err)
-	}
-	defer tx.Rollback()
-	now := time.Now().UTC()
-	var batchStartedAt string
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(created_at),'') FROM agent_run_events WHERE run_id=? AND type=?`, runID, appagent.EventRunResumed).Scan(&batchStartedAt); err != nil {
-		return false, fmt.Errorf("read candidate batch start: %w", err)
-	}
-	var pending, rejected int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_candidates WHERE run_id=? AND created_at>? AND status=?`, runID, batchStartedAt, appagent.CandidateStatusPending).Scan(&pending); err != nil {
-		return false, fmt.Errorf("count pending candidate decisions: %w", err)
-	}
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_candidates WHERE run_id=? AND created_at>? AND status=?`, runID, batchStartedAt, appagent.CandidateStatusRejected).Scan(&rejected); err != nil {
-		return false, fmt.Errorf("count rejected candidate decisions: %w", err)
-	}
-	// A decision closes the current one-node generation. Continue after either
-	// outcome so the model can decide whether the requested work is complete;
-	// rejected candidates are included in the next prompt for correction.
-	requeued := pending == 0
-	if requeued {
-		result, err := tx.Exec(`UPDATE agent_runs SET status=?,error_message='',updated_at=? WHERE id=? AND status=?`, appagent.RunStatusQueued, now.Format(time.RFC3339Nano), runID, appagent.RunStatusCompleted)
-		if err != nil {
-			return false, fmt.Errorf("requeue agent run: %w", err)
+	requeued := false
+	err := r.database.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		var lastResume agentRunEventModel
+		batchStartedAt := time.Time{}
+		if err := tx.Where("run_id = ? AND type = ?", runID, appagent.EventRunResumed).Order("created_at DESC").First(&lastResume).Error; err == nil {
+			batchStartedAt = lastResume.CreatedAt
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("read candidate batch start: %w", err)
 		}
-		changed, err := result.RowsAffected()
-		if err != nil || changed == 0 {
-			return false, appagent.ErrRunNotCancellable
+		var pending, rejected int64
+		base := tx.Model(&agentCandidateModel{}).Where("run_id = ? AND created_at > ?", runID, batchStartedAt)
+		if err := base.Where("status = ?", appagent.CandidateStatusPending).Count(&pending).Error; err != nil {
+			return err
 		}
-	}
-	if _, err := appendEvent(tx, runID, appagent.EventCandidateDecision, map[string]any{
-		"candidateId": candidateID, "accepted": accepted, "acceptedNodeId": acceptedNodeID,
-		"pending": pending, "rejected": rejected,
-	}, now); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return requeued, nil
+		if err := base.Where("status = ?", appagent.CandidateStatusRejected).Count(&rejected).Error; err != nil {
+			return err
+		}
+		requeued = pending == 0
+		if requeued {
+			result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, appagent.RunStatusCompleted).Updates(map[string]any{"status": appagent.RunStatusQueued, "error_message": "", "updated_at": now})
+			if result.Error != nil {
+				return fmt.Errorf("requeue agent run: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return appagent.ErrRunNotCancellable
+			}
+		}
+		_, err := appendEvent(tx, runID, appagent.EventCandidateDecision, map[string]any{"candidateId": candidateID, "accepted": accepted, "acceptedNodeId": acceptedNodeID, "pending": pending, "rejected": rejected}, now)
+		return err
+	})
+	return requeued, err
 }
 
 func (r *AgentRepository) RequestCandidateDecisionReason(runID, candidateID, title string) error {
-	tx, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin candidate rejection question: %w", err)
-	}
-	defer tx.Rollback()
-	now := time.Now().UTC()
-	result, err := tx.Exec(`UPDATE agent_runs SET status=?,error_message='',updated_at=? WHERE id=? AND status=?`,
-		appagent.RunStatusWaitingInput, now.Format(time.RFC3339Nano), runID, appagent.RunStatusCompleted)
-	if err != nil {
-		return fmt.Errorf("wait for candidate rejection reason: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil || changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(tx, runID, appagent.EventCandidateDecision, map[string]any{
-		"candidateId": candidateID, "accepted": false, "awaitingReason": true,
-	}, now); err != nil {
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, appagent.RunStatusCompleted).Updates(map[string]any{"status": appagent.RunStatusWaitingInput, "error_message": "", "updated_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("wait for candidate rejection reason: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return appagent.ErrRunNotCancellable
+		}
+		if _, err := appendEvent(tx, runID, appagent.EventCandidateDecision, map[string]any{"candidateId": candidateID, "accepted": false, "awaitingReason": true}, now); err != nil {
+			return err
+		}
+		_, err := appendEvent(tx, runID, appagent.EventApprovalRequired, map[string]any{"candidateId": candidateID, "question": fmt.Sprintf("你拒绝了候选节点“%s”。请告诉我拒绝原因，我会据此重新生成。", title), "reason": "candidate_rejected"}, now)
 		return err
-	}
-	if _, err := appendEvent(tx, runID, appagent.EventApprovalRequired, map[string]any{
-		"candidateId": candidateID,
-		"question":    fmt.Sprintf("你拒绝了候选节点“%s”。请告诉我拒绝原因，我会据此重新生成。", title),
-		"reason":      "candidate_rejected",
-	}, now); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 func NewAgentRepository(providerRepository *ProviderRepository) *AgentRepository {
-	return &AgentRepository{
-		database:      providerRepository.database,
-		dataDirectory: filepath.Dir(providerRepository.databasePath),
-	}
+	return NewAgentRepositoryWithDatabase(providerRepository.databaseHost)
+}
+
+func NewAgentRepositoryWithDatabase(database *Database) *AgentRepository {
+	return &AgentRepository{database: database.DB, dataDirectory: database.DataDirectory()}
 }
 
 func (r *AgentRepository) GetCanvasNodeMetadata(workID, nodeID string) (canvas.NodeKind, int64, error) {
-	var kind canvas.NodeKind
-	var revision int64
-	err := r.database.QueryRow(`SELECT kind, revision FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).Scan(&kind, &revision)
-	if errors.Is(err, sql.ErrNoRows) {
+	var model canvasNodeModel
+	if err := r.database.Select("kind", "revision").Where("work_id = ? AND id = ?", workID, nodeID).First(&model).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", 0, canvas.ErrNodeNotFound
-	}
-	if err != nil {
+	} else if err != nil {
 		return "", 0, fmt.Errorf("read target canvas node metadata: %w", err)
 	}
-	return kind, revision, nil
+	return canvas.NodeKind(model.Kind), model.Revision, nil
 }
 
 func (r *AgentRepository) GetNodeAttachments(workID, targetNodeID string) ([]appagent.NodeReference, error) {
-	rows, err := r.database.Query(`
-SELECT source.id, source.kind
-FROM canvas_edges edge
-JOIN canvas_nodes source ON source.work_id = edge.work_id AND source.id = edge.source_node_id
-WHERE edge.work_id = ? AND edge.target_node_id = ? AND edge.kind = 'generated_from'
-ORDER BY edge.created_at, edge.source_node_id`, workID, targetNodeID)
-	if err != nil {
+	var edges []canvasEdgeModel
+	if err := r.database.Where("work_id = ? AND target_node_id = ? AND kind = ?", workID, targetNodeID, "generated_from").Order("created_at, source_node_id").Find(&edges).Error; err != nil {
 		return nil, fmt.Errorf("read node attachments: %w", err)
 	}
-	defer rows.Close()
+	ids := make([]string, len(edges))
+	for i, edge := range edges {
+		ids[i] = edge.SourceNodeID
+	}
+	return r.GetNodeReferences(workID, ids)
+}
 
-	attachments := make([]appagent.NodeReference, 0)
-	for rows.Next() {
-		var attachment appagent.NodeReference
-		if err := rows.Scan(&attachment.ID, &attachment.Type); err != nil {
-			return nil, fmt.Errorf("scan node attachment: %w", err)
-		}
-		attachments = append(attachments, attachment)
+func nodeReferencesFromModels(models []canvasNodeModel) map[string]appagent.NodeReference {
+	result := make(map[string]appagent.NodeReference, len(models))
+	for _, model := range models {
+		result[model.ID] = appagent.NodeReference{ID: model.ID, Type: model.Kind}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate node attachments: %w", err)
-	}
-	return attachments, nil
+	return result
 }
 
 func (r *AgentRepository) GetNodeReferences(workID string, nodeIDs []string) ([]appagent.NodeReference, error) {
@@ -202,32 +150,11 @@ func (r *AgentRepository) GetNodeReferences(workID string, nodeIDs []string) ([]
 	if len(nodeIDs) == 0 {
 		return []appagent.NodeReference{}, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(nodeIDs)), ",")
-	arguments := make([]any, 0, len(nodeIDs)+1)
-	arguments = append(arguments, workID)
-	for _, nodeID := range nodeIDs {
-		arguments = append(arguments, nodeID)
-	}
-	rows, err := r.database.Query(`
-SELECT id, kind
-FROM canvas_nodes
-WHERE work_id = ? AND id IN (`+placeholders+`)`, arguments...)
-	if err != nil {
+	var models []canvasNodeModel
+	if err := r.database.Select("id", "kind").Where("work_id = ? AND id IN ?", workID, nodeIDs).Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("read canvas node references: %w", err)
 	}
-	defer rows.Close()
-
-	referencesByID := make(map[string]appagent.NodeReference, len(nodeIDs))
-	for rows.Next() {
-		var reference appagent.NodeReference
-		if err := rows.Scan(&reference.ID, &reference.Type); err != nil {
-			return nil, fmt.Errorf("scan canvas node reference: %w", err)
-		}
-		referencesByID[reference.ID] = reference
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate canvas node references: %w", err)
-	}
+	referencesByID := nodeReferencesFromModels(models)
 	references := make([]appagent.NodeReference, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		reference, exists := referencesByID[nodeID]
@@ -243,32 +170,13 @@ WHERE work_id = ? AND id IN (`+placeholders+`)`, arguments...)
 // authoritative for every collaborative creation. The agent receives only
 // routing metadata and must read content through canvas.get_nodes.
 func (r *AgentRepository) GetGlobalContextNodeReferences(workID string) ([]appagent.NodeReference, error) {
-	rows, err := r.database.Query(`
-SELECT id, kind
-FROM canvas_nodes
-WHERE work_id = ? AND kind IN (?, ?, ?)
-ORDER BY CASE kind
-    WHEN ? THEN 1
-    WHEN ? THEN 2
-    WHEN ? THEN 3
-    ELSE 4
-END, created_at, id`, workID,
-		canvas.NodeKindWorld, canvas.NodeKindMechanism, canvas.NodeKindEvent,
-		canvas.NodeKindWorld, canvas.NodeKindMechanism, canvas.NodeKindEvent)
-	if err != nil {
+	var models []canvasNodeModel
+	if err := r.database.Select("id", "kind").Where("work_id = ? AND kind IN ?", workID, []canvas.NodeKind{canvas.NodeKindWorld, canvas.NodeKindMechanism, canvas.NodeKindEvent}).Order("CASE kind WHEN 'world' THEN 1 WHEN 'mechanism' THEN 2 WHEN 'event' THEN 3 ELSE 4 END, created_at, id").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("read global context node references: %w", err)
 	}
-	defer rows.Close()
-	global := make([]appagent.NodeReference, 0)
-	for rows.Next() {
-		var reference appagent.NodeReference
-		if err := rows.Scan(&reference.ID, &reference.Type); err != nil {
-			return nil, fmt.Errorf("scan global context node reference: %w", err)
-		}
-		global = append(global, reference)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate global context node references: %w", err)
+	global := make([]appagent.NodeReference, len(models))
+	for i, model := range models {
+		global[i] = appagent.NodeReference{ID: model.ID, Type: model.Kind}
 	}
 	return global, nil
 }
@@ -283,7 +191,7 @@ func (r *AgentRepository) SearchStorySpineDatabase(ctx context.Context, workID, 
 	}
 	statement += ` ORDER BY archive.created_at DESC,archive.revision DESC,archive.id DESC LIMIT ?`
 	arguments = append(arguments, limit)
-	rows, err := r.database.QueryContext(ctx, statement, arguments...)
+	rows, err := r.database.WithContext(ctx).Raw(statement, arguments...).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("search story spine database: %w", err)
 	}
@@ -323,359 +231,207 @@ func truncateStorySpineDatabaseContext(content string, limit int) string {
 
 func (r *AgentRepository) GetChapterSectionContext(workID, sectionOutlineNodeID string) ([]string, error) {
 	contextNodeIDs := []string{sectionOutlineNodeID}
-	rows, err := r.database.Query(`
-SELECT e.source_node_id
-FROM canvas_edges e
-JOIN canvas_nodes source ON source.work_id = e.work_id AND source.id = e.source_node_id
-WHERE e.work_id = ? AND e.target_node_id = ? AND e.kind = 'generated_from'
-  AND source.kind = ?
-ORDER BY e.created_at`, workID, sectionOutlineNodeID, canvas.NodeKindChapterOutline)
-	if err != nil {
-		return nil, fmt.Errorf("read section outline chapter context: %w", err)
+	var incoming []canvasEdgeModel
+	if err := r.database.Where("work_id = ? AND target_node_id = ? AND kind = ?", workID, sectionOutlineNodeID, "generated_from").Order("created_at").Find(&incoming).Error; err != nil {
+		return nil, err
 	}
-	chapterOutlineNodeIDs := make([]string, 0, 1)
-	for rows.Next() {
-		var nodeID string
-		if err := rows.Scan(&nodeID); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan section outline chapter context: %w", err)
+	sourceIDs := make([]string, len(incoming))
+	for i, edge := range incoming {
+		sourceIDs[i] = edge.SourceNodeID
+	}
+	var chapters []canvasNodeModel
+	if len(sourceIDs) > 0 {
+		if err := r.database.Select("id").Where("work_id = ? AND id IN ? AND kind = ?", workID, sourceIDs, canvas.NodeKindChapterOutline).Find(&chapters).Error; err != nil {
+			return nil, err
 		}
-		chapterOutlineNodeIDs = append(chapterOutlineNodeIDs, nodeID)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close section outline chapter context: %w", err)
+	chapterSet := make(map[string]struct{}, len(chapters))
+	for _, chapter := range chapters {
+		chapterSet[chapter.ID] = struct{}{}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate section outline chapter context: %w", err)
+	chapterOutlineNodeIDs := make([]string, 0, len(chapters))
+	for _, id := range sourceIDs {
+		if _, ok := chapterSet[id]; ok {
+			chapterOutlineNodeIDs = append(chapterOutlineNodeIDs, id)
+		}
 	}
 	if len(chapterOutlineNodeIDs) == 0 {
 		return nil, fmt.Errorf("%w: section outline has no chapter outline parent", canvas.ErrInvalidNode)
 	}
 	contextNodeIDs = append(contextNodeIDs, chapterOutlineNodeIDs...)
-	for _, chapterOutlineNodeID := range chapterOutlineNodeIDs {
-		chapterContextRows, err := r.database.Query(`
-SELECT source_node_id
-FROM canvas_edges
-WHERE work_id = ? AND target_node_id = ? AND kind = 'generated_from'
-ORDER BY created_at`, workID, chapterOutlineNodeID)
-		if err != nil {
-			return nil, fmt.Errorf("read chapter outline inherited context: %w", err)
-		}
-		for chapterContextRows.Next() {
-			var nodeID string
-			if err := chapterContextRows.Scan(&nodeID); err != nil {
-				chapterContextRows.Close()
-				return nil, fmt.Errorf("scan chapter outline inherited context: %w", err)
-			}
-			contextNodeIDs = append(contextNodeIDs, nodeID)
-		}
-		if err := chapterContextRows.Close(); err != nil {
-			return nil, fmt.Errorf("close chapter outline inherited context: %w", err)
-		}
-		if err := chapterContextRows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate chapter outline inherited context: %w", err)
-		}
+	var inherited []canvasEdgeModel
+	if err := r.database.Select("source_node_id").Where("work_id = ? AND target_node_id IN ? AND kind = ?", workID, chapterOutlineNodeIDs, "generated_from").Order("created_at").Find(&inherited).Error; err != nil {
+		return nil, err
+	}
+	for _, edge := range inherited {
+		contextNodeIDs = append(contextNodeIDs, edge.SourceNodeID)
 	}
 	return uniqueStrings(contextNodeIDs), nil
 }
 
 func (r *AgentRepository) GetChapterArchiveContext(workID, chapterOutlineNodeID string) ([]string, error) {
 	contextNodeIDs := []string{chapterOutlineNodeID}
-	rows, err := r.database.Query(`
-SELECT source_node_id
-FROM canvas_edges
-WHERE work_id=? AND target_node_id=? AND kind='generated_from'
-ORDER BY created_at`, workID, chapterOutlineNodeID)
-	if err != nil {
-		return nil, fmt.Errorf("read chapter archive context: %w", err)
+	var inherited, childEdges []canvasEdgeModel
+	if err := r.database.Where("work_id = ? AND target_node_id = ? AND kind = ?", workID, chapterOutlineNodeID, "generated_from").Order("created_at").Find(&inherited).Error; err != nil {
+		return nil, err
 	}
-	inheritedNodeIDs := make([]string, 0)
-	for rows.Next() {
-		var nodeID string
-		if err := rows.Scan(&nodeID); err != nil {
-			rows.Close()
+	for _, edge := range inherited {
+		contextNodeIDs = append(contextNodeIDs, edge.SourceNodeID)
+	}
+	if err := r.database.Where("work_id = ? AND source_node_id = ? AND kind = ?", workID, chapterOutlineNodeID, "generated_from").Order("created_at").Find(&childEdges).Error; err != nil {
+		return nil, err
+	}
+	childIDs := make([]string, len(childEdges))
+	for i, edge := range childEdges {
+		childIDs[i] = edge.TargetNodeID
+	}
+	var children []canvasNodeModel
+	if len(childIDs) > 0 {
+		if err := r.database.Select("id", "kind").Where("work_id = ? AND id IN ? AND kind IN ?", workID, childIDs, []canvas.NodeKind{canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection}).Find(&children).Error; err != nil {
 			return nil, err
 		}
-		inheritedNodeIDs = append(inheritedNodeIDs, nodeID)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
+	sectionIDs := make([]string, 0)
+	for _, child := range children {
+		contextNodeIDs = append(contextNodeIDs, child.ID)
+		if canvas.NodeKind(child.Kind) == canvas.NodeKindSectionOutline {
+			sectionIDs = append(sectionIDs, child.ID)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	contextNodeIDs = append(contextNodeIDs, inheritedNodeIDs...)
-
-	sectionRows, err := r.database.Query(`
-SELECT n.id, n.kind
-FROM canvas_edges e
-JOIN canvas_nodes n ON n.work_id=e.work_id AND n.id=e.target_node_id
-WHERE e.work_id=? AND e.source_node_id=? AND e.kind='generated_from'
-  AND n.kind IN (?, ?)
-ORDER BY n.created_at`, workID, chapterOutlineNodeID, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection)
-	if err != nil {
-		return nil, fmt.Errorf("read archived chapter children: %w", err)
-	}
-	sectionOutlineNodeIDs := make([]string, 0)
-	for sectionRows.Next() {
-		var nodeID string
-		var kind canvas.NodeKind
-		if err := sectionRows.Scan(&nodeID, &kind); err != nil {
-			sectionRows.Close()
+	if len(sectionIDs) > 0 {
+		var sectionEdges []canvasEdgeModel
+		if err := r.database.Where("work_id = ? AND source_node_id IN ? AND kind = ?", workID, sectionIDs, "generated_from").Find(&sectionEdges).Error; err != nil {
 			return nil, err
 		}
-		contextNodeIDs = append(contextNodeIDs, nodeID)
-		if kind == canvas.NodeKindSectionOutline {
-			sectionOutlineNodeIDs = append(sectionOutlineNodeIDs, nodeID)
+		ids := make([]string, len(sectionEdges))
+		for i, edge := range sectionEdges {
+			ids[i] = edge.TargetNodeID
 		}
-	}
-	if err := sectionRows.Close(); err != nil {
-		return nil, err
-	}
-	if err := sectionRows.Err(); err != nil {
-		return nil, err
-	}
-
-	for _, sectionOutlineNodeID := range sectionOutlineNodeIDs {
-		chapterSectionRows, err := r.database.Query(`
-SELECT n.id
-FROM canvas_edges e
-JOIN canvas_nodes n ON n.work_id=e.work_id AND n.id=e.target_node_id
-WHERE e.work_id=? AND e.source_node_id=? AND e.kind='generated_from' AND n.kind=?
-ORDER BY n.created_at`, workID, sectionOutlineNodeID, canvas.NodeKindChapterSection)
-		if err != nil {
-			return nil, fmt.Errorf("read archived chapter sections: %w", err)
-		}
-		for chapterSectionRows.Next() {
-			var nodeID string
-			if err := chapterSectionRows.Scan(&nodeID); err != nil {
-				chapterSectionRows.Close()
+		var sections []canvasNodeModel
+		if len(ids) > 0 {
+			if err := r.database.Select("id").Where("work_id = ? AND id IN ? AND kind = ?", workID, ids, canvas.NodeKindChapterSection).Find(&sections).Error; err != nil {
 				return nil, err
 			}
-			contextNodeIDs = append(contextNodeIDs, nodeID)
 		}
-		if err := chapterSectionRows.Close(); err != nil {
-			return nil, err
-		}
-		if err := chapterSectionRows.Err(); err != nil {
-			return nil, err
+		for _, section := range sections {
+			contextNodeIDs = append(contextNodeIDs, section.ID)
 		}
 	}
 	return uniqueStrings(contextNodeIDs), nil
 }
 
 func (r *AgentRepository) CreateRun(input appagent.RunInput) (appagent.Run, error) {
-	contextNodeIDs, err := json.Marshal(input.ContextNodeIDs)
-	if err != nil {
-		return appagent.Run{}, fmt.Errorf("encode context node ids: %w", err)
-	}
 	now := time.Now().UTC()
 	run := appagent.Run{
 		ID: input.RunID, WorkID: input.WorkID, Status: appagent.RunStatusQueued,
 		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, ProviderID: input.ProviderID, ModelID: input.ModelID,
 		ContextNodeIDs: append([]string(nil), input.ContextNodeIDs...), CreatedAt: now, UpdatedAt: now,
 	}
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return appagent.Run{}, fmt.Errorf("begin create agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	_, err = transaction.Exec(`
-INSERT INTO agent_runs (
-    id, work_id, status, prompt, target, target_node_id, provider_id, model_id, context_node_ids_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.WorkID, run.Status, run.Prompt, run.Target, run.TargetNodeID, run.ProviderID, run.ModelID,
-		string(contextNodeIDs), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
-	if err != nil {
-		return appagent.Run{}, fmt.Errorf("insert agent run: %w", err)
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventRunQueued, map[string]any{"status": run.Status}, now); err != nil {
-		return appagent.Run{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return appagent.Run{}, fmt.Errorf("commit agent run: %w", err)
-	}
-	return run, nil
+	model := runModelFromDomain(run)
+	err := r.database.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&model).Error; err != nil {
+			return fmt.Errorf("insert agent run: %w", err)
+		}
+		_, err := appendEvent(tx, run.ID, appagent.EventRunQueued, map[string]any{"status": run.Status}, now)
+		return err
+	})
+	return run, err
 }
 
 func (r *AgentRepository) GetRun(runID string) (appagent.Run, error) {
-	return scanRun(r.database.QueryRow(`
-SELECT id, work_id, status, prompt, target, target_node_id, provider_id, model_id, context_node_ids_json,
-       error_message, created_at, updated_at
-FROM agent_runs WHERE id = ?`, runID))
+	var model agentRunModel
+	if err := r.database.First(&model, "id = ?", runID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return appagent.Run{}, appagent.ErrRunNotFound
+	} else if err != nil {
+		return appagent.Run{}, err
+	}
+	return runFromModel(model), nil
 }
 
 func (r *AgentRepository) ListEvents(runID string, afterSequence int64) ([]appagent.Event, error) {
-	rows, err := r.database.Query(`
-SELECT id, run_id, sequence, type, data_json, created_at
-FROM agent_run_events
-WHERE run_id = ? AND sequence > ?
-ORDER BY sequence`, runID, afterSequence)
-	if err != nil {
+	var models []agentRunEventModel
+	if err := r.database.Where("run_id = ? AND sequence > ?", runID, afterSequence).Order("sequence").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("query agent events: %w", err)
 	}
-	defer rows.Close()
-	events := make([]appagent.Event, 0)
-	for rows.Next() {
-		var event appagent.Event
-		var dataJSON, createdAt string
-		if err := rows.Scan(&event.ID, &event.RunID, &event.Sequence, &event.Type, &dataJSON, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan agent event: %w", err)
-		}
-		event.Data = json.RawMessage(dataJSON)
-		event.Timestamp, err = time.Parse(time.RFC3339Nano, createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse agent event time: %w", err)
-		}
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate agent events: %w", err)
+	events := make([]appagent.Event, len(models))
+	for i, model := range models {
+		events[i] = eventFromModel(model)
 	}
 	return events, nil
 }
 
 func (r *AgentRepository) AppendEvent(runID string, eventType appagent.EventType, data any) (appagent.Event, error) {
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return appagent.Event{}, fmt.Errorf("begin append agent event: %w", err)
-	}
-	defer transaction.Rollback()
-	event, err := appendEvent(transaction, runID, eventType, data, time.Now().UTC())
-	if err != nil {
-		return appagent.Event{}, err
-	}
-	if eventType == appagent.EventApprovalRequired {
-		result, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, error_message = '', updated_at = ?
-WHERE id = ? AND status = ?`, appagent.RunStatusWaitingInput, event.Timestamp.Format(time.RFC3339Nano), runID, appagent.RunStatusRunning)
+	var event appagent.Event
+	err := r.database.Transaction(func(tx *gorm.DB) error {
+		var err error
+		event, err = appendEvent(tx, runID, eventType, data, time.Now().UTC())
 		if err != nil {
-			return appagent.Event{}, fmt.Errorf("wait for agent input: %w", err)
+			return err
 		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return appagent.Event{}, fmt.Errorf("read waiting agent run: %w", err)
+		if eventType == appagent.EventApprovalRequired {
+			result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, appagent.RunStatusRunning).Updates(map[string]any{"status": appagent.RunStatusWaitingInput, "error_message": "", "updated_at": event.Timestamp})
+			if result.Error != nil {
+				return fmt.Errorf("wait for agent input: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return appagent.ErrRunNotCancellable
+			}
 		}
-		if changed == 0 {
-			return appagent.Event{}, appagent.ErrRunNotCancellable
-		}
-	}
-	if err := transaction.Commit(); err != nil {
-		return appagent.Event{}, fmt.Errorf("commit agent event: %w", err)
-	}
-	return event, nil
+		return nil
+	})
+	return event, err
 }
 
 func (r *AgentRepository) MarkStarted(runID string) error {
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin start agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	now := time.Now().UTC()
-	result, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		appagent.RunStatusRunning, now.Format(time.RFC3339Nano), runID, appagent.RunStatusQueued)
-	if err != nil {
-		return fmt.Errorf("start agent run: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read started agent run: %w", err)
-	}
-	if changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(transaction, runID, appagent.EventRunStarted, nil, now); err != nil {
-		return err
-	}
-	return transaction.Commit()
+	return r.transitionRun(runID, appagent.RunStatusQueued, appagent.RunStatusRunning, appagent.EventRunStarted)
 }
 
 func (r *AgentRepository) QueueResponse(runID, approvalEventID, answer string) (appagent.UserResponse, error) {
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return appagent.UserResponse{}, fmt.Errorf("begin queue agent response: %w", err)
-	}
-	defer transaction.Rollback()
-	var status appagent.RunStatus
-	if err := transaction.QueryRow(`SELECT status FROM agent_runs WHERE id = ?`, runID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
-		return appagent.UserResponse{}, appagent.ErrRunNotFound
-	} else if err != nil {
-		return appagent.UserResponse{}, fmt.Errorf("read agent response status: %w", err)
-	}
-	if status != appagent.RunStatusWaitingInput {
-		return appagent.UserResponse{}, appagent.ErrRunNotWaitingInput
-	}
-	var latestID, dataJSON string
-	if err := transaction.QueryRow(`
-SELECT id, data_json FROM agent_run_events
-	WHERE run_id = ? AND type = ? ORDER BY sequence DESC LIMIT 1`, runID, appagent.EventApprovalRequired).Scan(&latestID, &dataJSON); errors.Is(err, sql.ErrNoRows) {
-		return appagent.UserResponse{}, appagent.ErrInvalidUserResponse
-	} else if err != nil {
-		return appagent.UserResponse{}, fmt.Errorf("read pending agent question: %w", err)
-	}
-	if latestID != approvalEventID {
-		return appagent.UserResponse{}, appagent.ErrInvalidUserResponse
-	}
-	var approval struct {
-		Question string `json:"question"`
-	}
-	if err := json.Unmarshal([]byte(dataJSON), &approval); err != nil {
-		return appagent.UserResponse{}, fmt.Errorf("decode pending agent question: %w", err)
-	}
-	queuedResponse := appagent.UserResponse{
-		ApprovalEventID: approvalEventID,
-		Question:        approval.Question,
-		Answer:          answer,
-	}
-	now := time.Now().UTC()
-	if _, err := appendEvent(transaction, runID, appagent.EventUserResponseReceived, queuedResponse, now); err != nil {
-		return appagent.UserResponse{}, err
-	}
-	result, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, error_message = '', updated_at = ?
-	WHERE id = ? AND status = ?`, appagent.RunStatusQueued, now.Format(time.RFC3339Nano), runID, appagent.RunStatusWaitingInput)
-	if err != nil {
-		return appagent.UserResponse{}, fmt.Errorf("queue agent response: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return appagent.UserResponse{}, fmt.Errorf("read queued agent response: %w", err)
-	}
-	if changed == 0 {
-		return appagent.UserResponse{}, appagent.ErrRunNotWaitingInput
-	}
-	if err := transaction.Commit(); err != nil {
-		return appagent.UserResponse{}, err
-	}
-	return queuedResponse, nil
+	var response appagent.UserResponse
+	err := r.database.Transaction(func(tx *gorm.DB) error {
+		var run agentRunModel
+		if err := tx.Select("status").First(&run, "id = ?", runID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return appagent.ErrRunNotFound
+		} else if err != nil {
+			return err
+		}
+		if appagent.RunStatus(run.Status) != appagent.RunStatusWaitingInput {
+			return appagent.ErrRunNotWaitingInput
+		}
+		var event agentRunEventModel
+		if err := tx.Where("run_id = ? AND type = ?", runID, appagent.EventApprovalRequired).Order("sequence DESC").First(&event).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return appagent.ErrInvalidUserResponse
+		} else if err != nil {
+			return err
+		}
+		if event.ID != approvalEventID {
+			return appagent.ErrInvalidUserResponse
+		}
+		var approval struct {
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal([]byte(event.DataJSON), &approval); err != nil {
+			return fmt.Errorf("decode pending agent question: %w", err)
+		}
+		response = appagent.UserResponse{ApprovalEventID: approvalEventID, Question: approval.Question, Answer: answer}
+		now := time.Now().UTC()
+		if _, err := appendEvent(tx, runID, appagent.EventUserResponseReceived, response, now); err != nil {
+			return err
+		}
+		result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, appagent.RunStatusWaitingInput).Updates(map[string]any{"status": appagent.RunStatusQueued, "error_message": "", "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return appagent.ErrRunNotWaitingInput
+		}
+		return nil
+	})
+	return response, err
 }
 
 func (r *AgentRepository) MarkResumed(runID string) error {
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin resume agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	now := time.Now().UTC()
-	result, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		appagent.RunStatusRunning, now.Format(time.RFC3339Nano), runID, appagent.RunStatusQueued)
-	if err != nil {
-		return fmt.Errorf("resume agent run: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read resumed agent run: %w", err)
-	}
-	if changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(transaction, runID, appagent.EventRunResumed, nil, now); err != nil {
-		return err
-	}
-	return transaction.Commit()
+	return r.transitionRun(runID, appagent.RunStatusQueued, appagent.RunStatusRunning, appagent.EventRunResumed)
 }
 
 func (r *AgentRepository) ListUserResponses(runID string) ([]appagent.UserResponse, error) {
@@ -703,31 +459,14 @@ func (r *AgentRepository) Complete(run appagent.Run, result appagent.RunResult) 
 		ID: result.CandidateID, RunID: run.ID, WorkID: run.WorkID,
 		SkillID: result.SkillID, SkillVersion: result.SkillVersion, Content: result.Content, CreatedAt: now,
 	}
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return appagent.Candidate{}, fmt.Errorf("begin complete agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	statusResult, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		appagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, appagent.RunStatusRunning)
-	if err != nil {
-		return appagent.Candidate{}, fmt.Errorf("complete agent run: %w", err)
-	}
-	changed, err := statusResult.RowsAffected()
-	if err != nil {
-		return appagent.Candidate{}, fmt.Errorf("read completed agent run: %w", err)
-	}
-	if changed == 0 {
-		return appagent.Candidate{}, appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventRunCompleted, map[string]any{"candidateId": candidate.ID}, now); err != nil {
-		return appagent.Candidate{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return appagent.Candidate{}, fmt.Errorf("commit completed agent run: %w", err)
-	}
-	return candidate, nil
+	err := r.database.Transaction(func(tx *gorm.DB) error {
+		if err := completeRun(tx, run.ID, now); err != nil {
+			return err
+		}
+		_, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"candidateId": candidate.ID}, now)
+		return err
+	})
+	return candidate, err
 }
 
 // CompleteReadOnly finishes a work-level exploration without creating a
@@ -735,40 +474,18 @@ UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 // event only closes the durable run lifecycle.
 func (r *AgentRepository) CompleteReadOnly(run appagent.Run, result appagent.RunResult) error {
 	now := time.Now().UTC()
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin complete read-only agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	statusResult, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		appagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, appagent.RunStatusRunning)
-	if err != nil {
-		return fmt.Errorf("complete read-only agent run: %w", err)
-	}
-	changed, err := statusResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read completed read-only agent run: %w", err)
-	}
-	if changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	if strings.TrimSpace(result.Message) != "" {
-		if _, err := appendEvent(transaction, run.ID, appagent.EventMessageDelta, map[string]string{
-			"delta": strings.TrimSpace(result.Message),
-		}, now); err != nil {
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
 		}
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventRunCompleted, map[string]any{
-		"mode": "read-only", "role": result.Role, "skillId": result.SkillID,
-	}, now); err != nil {
+		if message := strings.TrimSpace(result.Message); message != "" {
+			if _, err := appendEvent(tx, run.ID, appagent.EventMessageDelta, map[string]string{"delta": message}, now); err != nil {
+				return err
+			}
+		}
+		_, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"mode": "read-only", "role": result.Role, "skillId": result.SkillID}, now)
 		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit read-only agent run: %w", err)
-	}
-	return nil
+	})
 }
 
 // CompleteCollaborativeProposal persists each proposed new node as an
@@ -788,74 +505,35 @@ func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result
 		return fmt.Errorf("decode collaborative proposal: %w", errors.New("proposal has more than one node"))
 	}
 	now := time.Now().UTC()
-	tx, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin complete collaborative proposal: %w", err)
-	}
-	defer tx.Rollback()
-	created := make([]map[string]any, 0, len(proposal.Nodes))
-	for index, node := range proposal.Nodes {
-		clientID := strings.TrimSpace(node.ClientID)
-		kind := strings.TrimSpace(node.Kind)
-		title := strings.TrimSpace(node.Title)
-		content := strings.TrimSpace(node.Content)
-		if clientID == "" || kind == "" || title == "" || content == "" {
-			return fmt.Errorf("collaborative proposal node %d is incomplete", index)
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		created := make([]map[string]any, 0, len(proposal.Nodes))
+		models := make([]agentCandidateModel, 0, len(proposal.Nodes))
+		for index, node := range proposal.Nodes {
+			clientID, kind := strings.TrimSpace(node.ClientID), strings.TrimSpace(node.Kind)
+			title, content := strings.TrimSpace(node.Title), strings.TrimSpace(node.Content)
+			if clientID == "" || kind == "" || title == "" || content == "" {
+				return fmt.Errorf("collaborative proposal node %d is incomplete", index)
+			}
+			candidateID := uuid.NewString()
+			x := 520 + float64(index%8)*36
+			y := 80 + float64(index/8)*220
+			models = append(models, agentCandidateModel{ID: candidateID, RunID: run.ID, WorkID: run.WorkID, SkillID: result.SkillID, SkillVersion: result.SkillVersion, Status: string(appagent.CandidateStatusPending), Kind: kind, Title: title, Content: content, X: x, Y: y, CreatedAt: now, CandidateType: "node"})
+			created = append(created, map[string]any{"candidateId": candidateID, "clientId": clientID, "kind": kind, "title": title, "ordinal": index + 1, "total": len(proposal.Nodes), "x": x, "y": y})
 		}
-		candidateID := uuid.NewString()
-		x := 520 + float64(index%8)*36
-		y := 80 + float64(index/8)*220
-		if _, err := tx.Exec(`
-INSERT INTO agent_candidates (id,run_id,work_id,skill_id,skill_version,status,kind,title,content,x,y,accepted_node_id,created_at,decided_at,candidate_type,node_id,base_version_id,reason,change_score)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			candidateID, run.ID, run.WorkID, result.SkillID, result.SkillVersion,
-			appagent.CandidateStatusPending, kind, title, content, x, y, "",
-			now.Format(time.RFC3339Nano), "", "node", "", "", "", 0); err != nil {
-			return fmt.Errorf("create collaborative candidate: %w", err)
+		if err := tx.Create(&models).Error; err != nil {
+			return fmt.Errorf("create collaborative candidates: %w", err)
 		}
-		created = append(created, map[string]any{
-			"candidateId": candidateID,
-			"clientId":    clientID,
-			"kind":        kind,
-			"title":       title,
-			"ordinal":     index + 1,
-			"total":       len(proposal.Nodes),
-			"x":           x,
-			"y":           y,
-		})
-	}
-	statusResult, err := tx.Exec(`UPDATE agent_runs SET status=?,updated_at=? WHERE id=? AND status=?`,
-		appagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, appagent.RunStatusRunning)
-	if err != nil {
-		return fmt.Errorf("complete collaborative proposal: %w", err)
-	}
-	changed, err := statusResult.RowsAffected()
-	if err != nil || changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	for _, metadata := range created {
-		if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{
-			"candidateId": metadata["candidateId"],
-			"meta": map[string]any{
-				"clientId": metadata["clientId"], "kind": metadata["kind"],
-				"title": metadata["title"], "ordinal": metadata["ordinal"], "total": metadata["total"],
-				"position": map[string]any{"x": metadata["x"], "y": metadata["y"]},
-			},
-			"mode": "collaborative-proposal",
-		}, now); err != nil {
+		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
 		}
-	}
-	if _, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{
-		"candidateIds": created,
-		"mode":         "collaborative-proposal",
-	}, now); err != nil {
+		for _, metadata := range created {
+			if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateId": metadata["candidateId"], "meta": map[string]any{"clientId": metadata["clientId"], "kind": metadata["kind"], "title": metadata["title"], "ordinal": metadata["ordinal"], "total": metadata["total"], "position": map[string]any{"x": metadata["x"], "y": metadata["y"]}}, "mode": "collaborative-proposal"}, now); err != nil {
+				return err
+			}
+		}
+		_, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"candidateIds": created, "mode": "collaborative-proposal"}, now)
 		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit collaborative proposal: %w", err)
-	}
-	return nil
+	})
 }
 
 type archiveProposal struct {
@@ -911,146 +589,106 @@ func (r *AgentRepository) CompleteChapterArchive(ctx context.Context, run appage
 		return fmt.Errorf("%w: archive summary is required", canvas.ErrInvalidChapterArchive)
 	}
 	now := time.Now().UTC()
-	tx, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	locked, err := isNodeArchiveLocked(ctx, tx, run.WorkID, run.TargetNodeID)
-	if err != nil {
-		return err
-	}
-	if locked {
-		return canvas.ErrArchivedNodeLocked
-	}
-	var chapterKind canvas.NodeKind
-	var outlineVersionID, outlineTitle, outlineContent string
-	var outlineRevision int64
-	if err := tx.QueryRowContext(ctx, `SELECT kind,current_version_id,revision,title,content FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, run.TargetNodeID).Scan(&chapterKind, &outlineVersionID, &outlineRevision, &outlineTitle, &outlineContent); err != nil {
-		return err
-	}
-	if chapterKind != canvas.NodeKindChapterOutline {
-		return canvas.ErrInvalidNode
-	}
-	if outlineRevision != result.ExpectedRevision {
-		return fmt.Errorf("%w: chapter outline changed before archive completion", canvas.ErrRevisionConflict)
-	}
-	sections, err := readChapterArchiveSections(ctx, tx, run.WorkID, run.TargetNodeID, decoded.Archive.Sections)
-	if err != nil {
-		return err
-	}
-	var archiveRevision int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0)+1 FROM chapter_archives WHERE work_id=? AND chapter_outline_node_id=?`, run.WorkID, run.TargetNodeID).Scan(&archiveRevision); err != nil {
-		return err
-	}
 	archiveID := uuid.NewString()
-	sourceDigest := chapterArchiveDigest(run.TargetNodeID, outlineRevision, outlineContent, sections)
-	if _, err := tx.ExecContext(ctx, `UPDATE chapter_archives SET is_current=0,superseded_at=? WHERE work_id=? AND chapter_outline_node_id=? AND is_current=1`, now.Format(time.RFC3339Nano), run.WorkID, run.TargetNodeID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO chapter_archives (id,work_id,chapter_outline_node_id,revision,run_id,outline_version_id,outline_revision,outline_title,outline_content,summary,source_digest,is_current,projection_status,created_at,superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, archiveID, run.WorkID, run.TargetNodeID, archiveRevision, run.ID, outlineVersionID, outlineRevision, outlineTitle, outlineContent, decoded.Archive.Summary, sourceDigest, 1, "pending", now.Format(time.RFC3339Nano), ""); err != nil {
-		return fmt.Errorf("create chapter archive: %w", err)
-	}
-	archiveSections := make([]canvas.ChapterArchiveSection, 0, len(sections))
-	for _, section := range sections {
-		contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(section.Content)))
-		if _, err := tx.ExecContext(ctx, `INSERT INTO chapter_archive_sections (archive_id,work_id,ordinal,section_outline_node_id,chapter_section_node_id,chapter_section_version_id,node_revision,title,summary,content,content_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, archiveID, run.WorkID, section.Ordinal, section.SectionOutlineNodeID, section.ChapterSectionNodeID, section.ChapterSectionVersionID, section.NodeRevision, section.Title, section.Summary, section.Content, contentHash); err != nil {
-			return fmt.Errorf("create chapter archive section: %w", err)
-		}
-		archiveSections = append(archiveSections, canvas.ChapterArchiveSection{
-			ArchiveID: archiveID, Ordinal: section.Ordinal, SectionOutlineNodeID: section.SectionOutlineNodeID,
-			ChapterSectionNodeID: section.ChapterSectionNodeID, ChapterSectionVersionID: section.ChapterSectionVersionID,
-			NodeRevision: section.NodeRevision, Title: section.Title, Summary: section.Summary,
-			Content: section.Content, ContentHash: contentHash,
-		})
-	}
-	layoutSections := make([]chapterLayoutSection, len(sections))
-	for index, section := range sections {
-		layoutSections[index] = chapterLayoutSection{
-			SectionOutlineNodeID: section.SectionOutlineNodeID,
-			ChapterSectionNodeID: section.ChapterSectionNodeID,
-		}
-	}
-	layoutPositions, _, err := layoutChapterNodes(ctx, tx, run.WorkID, run.TargetNodeID, layoutSections)
-	if err != nil {
-		return fmt.Errorf("layout archived chapter: %w", err)
-	}
-	if err := applyNodePositions(ctx, tx, run.WorkID, layoutPositions); err != nil {
-		return fmt.Errorf("apply archived chapter layout: %w", err)
-	}
-	created := make([]string, 0, len(decoded.Proposals))
-	for _, proposal := range decoded.Proposals {
-		if proposal.NodeID == "" || !containsString(run.ContextNodeIDs, proposal.NodeID) || proposal.NodeID == run.TargetNodeID || strings.TrimSpace(proposal.Content) == "" {
-			continue
-		}
-		var kind canvas.NodeKind
-		var title string
-		var baseVersionID string
-		if err := tx.QueryRowContext(ctx, `SELECT kind,title,current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, proposal.NodeID).Scan(&kind, &title, &baseVersionID); err != nil {
-			continue
-		}
-		if proposal.Kind != "" && proposal.Kind != string(kind) {
-			continue
-		}
-		x, y := 0.0, 0.0
-		if err := tx.QueryRowContext(ctx, `SELECT x,y FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, proposal.NodeID).Scan(&x, &y); err != nil {
-			continue
-		}
-		var pending int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_candidates WHERE work_id=? AND status=?`, run.WorkID, appagent.CandidateStatusPending).Scan(&pending); err != nil {
+	var archive chapterArchiveModel
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		locked, err := isNodeArchiveLocked(tx, run.WorkID, run.TargetNodeID)
+		if err != nil {
 			return err
 		}
-		x += 320 + float64(pending/8)*36
-		y += float64(pending%8) * 36
-		candidateID := uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_candidates (id,run_id,work_id,skill_id,skill_version,status,kind,title,content,x,y,accepted_node_id,created_at,decided_at,candidate_type,node_id,base_version_id,reason,change_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, candidateID, run.ID, run.WorkID, result.SkillID, result.SkillVersion, appagent.CandidateStatusPending, kind, valueOrArchiveTitle(proposal.Title, title), proposal.Content, x, y, "", now.Format(time.RFC3339Nano), "", "version", proposal.NodeID, baseVersionID, proposal.Reason, proposal.ChangeScore); err != nil {
+		if locked {
+			return canvas.ErrArchivedNodeLocked
+		}
+		outline, err := getCanvasNode(tx, run.WorkID, run.TargetNodeID)
+		if err != nil {
 			return err
 		}
-		created = append(created, candidateID)
-	}
-	statusResult, err := tx.ExecContext(ctx, `UPDATE agent_runs SET status=?,updated_at=? WHERE id=? AND status=?`, appagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, appagent.RunStatusRunning)
+		if canvas.NodeKind(outline.Kind) != canvas.NodeKindChapterOutline {
+			return canvas.ErrInvalidNode
+		}
+		if outline.Revision != result.ExpectedRevision {
+			return fmt.Errorf("%w: chapter outline changed before archive completion", canvas.ErrRevisionConflict)
+		}
+		sections, err := readChapterArchiveSections(tx, run.WorkID, run.TargetNodeID, decoded.Archive.Sections)
+		if err != nil {
+			return err
+		}
+		var revision int64
+		if err := tx.Model(&chapterArchiveModel{}).Where("work_id = ? AND chapter_outline_node_id = ?", run.WorkID, run.TargetNodeID).Select("COALESCE(MAX(revision), 0) + 1").Scan(&revision).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&chapterArchiveModel{}).Where("work_id = ? AND chapter_outline_node_id = ? AND is_current = ?", run.WorkID, run.TargetNodeID, true).Updates(map[string]any{"is_current": false, "superseded_at": now}).Error; err != nil {
+			return err
+		}
+		archive = chapterArchiveModel{ID: archiveID, WorkID: run.WorkID, ChapterOutlineNodeID: run.TargetNodeID, Revision: revision, RunID: run.ID, OutlineVersionID: outline.CurrentVersionID, OutlineRevision: outline.Revision, OutlineTitle: outline.Title, OutlineContent: outline.Content, Summary: decoded.Archive.Summary, SourceDigest: chapterArchiveDigest(run.TargetNodeID, outline.Revision, outline.Content, sections), IsCurrent: true, ProjectionStatus: "pending", CreatedAt: now}
+		archive.Sections = make([]chapterArchiveSectionModel, len(sections))
+		layoutSections := make([]chapterLayoutSection, len(sections))
+		for index, section := range sections {
+			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(section.Content)))
+			archive.Sections[index] = chapterArchiveSectionModel{ArchiveID: archiveID, WorkID: run.WorkID, Ordinal: section.Ordinal, SectionOutlineNodeID: section.SectionOutlineNodeID, ChapterSectionNodeID: section.ChapterSectionNodeID, ChapterSectionVersionID: section.ChapterSectionVersionID, NodeRevision: section.NodeRevision, Title: section.Title, Summary: section.Summary, Content: section.Content, ContentHash: hash}
+			layoutSections[index] = chapterLayoutSection{SectionOutlineNodeID: section.SectionOutlineNodeID, ChapterSectionNodeID: section.ChapterSectionNodeID}
+		}
+		if err := tx.Create(&archive).Error; err != nil {
+			return fmt.Errorf("create chapter archive: %w", err)
+		}
+		positions, _, err := layoutChapterNodes(tx, run.WorkID, run.TargetNodeID, layoutSections)
+		if err != nil {
+			return fmt.Errorf("layout archived chapter: %w", err)
+		}
+		if err := applyNodePositions(tx, run.WorkID, positions); err != nil {
+			return fmt.Errorf("apply archived chapter layout: %w", err)
+		}
+		created := make([]string, 0, len(decoded.Proposals))
+		for _, proposal := range decoded.Proposals {
+			if proposal.NodeID == "" || !containsString(run.ContextNodeIDs, proposal.NodeID) || proposal.NodeID == run.TargetNodeID || strings.TrimSpace(proposal.Content) == "" {
+				continue
+			}
+			node, err := getCanvasNode(tx, run.WorkID, proposal.NodeID)
+			if err != nil {
+				continue
+			}
+			if proposal.Kind != "" && proposal.Kind != node.Kind {
+				continue
+			}
+			var pending int64
+			if err := tx.Model(&agentCandidateModel{}).Where("work_id = ? AND status = ?", run.WorkID, appagent.CandidateStatusPending).Count(&pending).Error; err != nil {
+				return err
+			}
+			id := uuid.NewString()
+			candidate := agentCandidateModel{ID: id, RunID: run.ID, WorkID: run.WorkID, SkillID: result.SkillID, SkillVersion: result.SkillVersion, Status: string(appagent.CandidateStatusPending), Kind: node.Kind, Title: valueOrArchiveTitle(proposal.Title, node.Title), Content: proposal.Content, X: node.X + 320 + float64(pending/8)*36, Y: node.Y + float64(pending%8)*36, CreatedAt: now, CandidateType: "version", NodeID: proposal.NodeID, BaseVersionID: node.CurrentVersionID, Reason: proposal.Reason, ChangeScore: proposal.ChangeScore}
+			if err := tx.Create(&candidate).Error; err != nil {
+				return err
+			}
+			created = append(created, id)
+		}
+		if err := completeRun(tx, run.ID, now); err != nil {
+			return err
+		}
+		if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateIds": created, "candidateType": "version"}, now); err != nil {
+			return err
+		}
+		if _, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"archiveId": archiveID, "candidateIds": created}, now); err != nil {
+			return err
+		}
+		if err := tx.Where("work_id = ?", run.WorkID).Delete(&canvasActionModel{}).Error; err != nil {
+			return fmt.Errorf("clear canvas actions at chapter archive checkpoint: %w", err)
+		}
+		return tx.Where("work_id = ?", run.WorkID).Delete(&canvasHistoryStateModel{}).Error
+	})
 	if err != nil {
 		return err
 	}
-	changed, err := statusResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read completed chapter archive run: %w", err)
-	}
-	if changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateIds": created, "candidateType": "version"}, now); err != nil {
-		return err
-	}
-	if _, err := appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"archiveId": archiveID, "candidateIds": created}, now); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM canvas_actions WHERE work_id=?`, run.WorkID); err != nil {
-		return fmt.Errorf("clear canvas actions at chapter archive checkpoint: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM canvas_history_state WHERE work_id=?`, run.WorkID); err != nil {
-		return fmt.Errorf("clear canvas history at chapter archive checkpoint: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	archive := canvas.ChapterArchive{
-		ID: archiveID, WorkID: run.WorkID, ChapterOutlineNodeID: run.TargetNodeID,
-		Revision: archiveRevision, RunID: run.ID, OutlineVersionID: outlineVersionID,
-		OutlineRevision: outlineRevision, OutlineTitle: outlineTitle, OutlineContent: outlineContent,
-		Summary: decoded.Archive.Summary, SourceDigest: sourceDigest, IsCurrent: true,
-		ProjectionStatus: "pending", Sections: archiveSections, CreatedAt: now,
-	}
+	archiveDomain := chapterArchiveFromModel(archive)
 	projectionStatus := "ready"
-	if err := writeChapterArchiveProjection(r.dataDirectory, archive); err != nil {
+	if err := writeChapterArchiveProjection(r.dataDirectory, archiveDomain); err != nil {
 		projectionStatus = "pending"
 	}
-	_, _ = r.database.ExecContext(ctx, `UPDATE chapter_archives SET projection_status=? WHERE id=?`, projectionStatus, archiveID)
+	_ = r.database.WithContext(ctx).Model(&chapterArchiveModel{}).Where("id = ?", archiveID).Update("projection_status", projectionStatus).Error
 	return nil
 }
 
-func readChapterArchiveSections(ctx context.Context, tx *sql.Tx, workID, chapterOutlineNodeID string, summaries []archiveSectionResult) ([]archiveSectionSource, error) {
-	rows, err := tx.QueryContext(ctx, `
+func readChapterArchiveSections(tx *gorm.DB, workID, chapterOutlineNodeID string, summaries []archiveSectionResult) ([]archiveSectionSource, error) {
+	rows, err := tx.Raw(`
 SELECT so.id,cs.id,cs.current_version_id,cs.revision,cs.title,cs.content
 FROM canvas_edges chapter_edge
 JOIN canvas_nodes so
@@ -1059,7 +697,7 @@ LEFT JOIN canvas_edges section_edge
   ON section_edge.work_id=chapter_edge.work_id AND section_edge.source_node_id=so.id AND section_edge.kind='generated_from'
 LEFT JOIN canvas_nodes cs
   ON cs.work_id=section_edge.work_id AND cs.id=section_edge.target_node_id AND cs.kind=?
-WHERE chapter_edge.work_id=? AND chapter_edge.source_node_id=? AND chapter_edge.kind='generated_from'`, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection, workID, chapterOutlineNodeID)
+WHERE chapter_edge.work_id=? AND chapter_edge.source_node_id=? AND chapter_edge.kind='generated_from'`, canvas.NodeKindSectionOutline, canvas.NodeKindChapterSection, workID, chapterOutlineNodeID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("read chapter archive sections: %w", err)
 	}
@@ -1201,89 +839,42 @@ func (r *AgentRepository) CompleteNodeUpdate(
 	result appagent.RunResult,
 ) error {
 	now := time.Now().UTC()
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin complete node update: %w", err)
-	}
-	defer transaction.Rollback()
-	locked, err := isNodeArchiveLocked(ctx, transaction, run.WorkID, nodeID)
-	if err != nil {
-		return err
-	}
-	if locked {
-		return canvas.ErrArchivedNodeLocked
-	}
-	before, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, nodeID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.ErrNodeNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("read canvas node before agent update: %w", err)
-	}
-	if before.Revision != result.ExpectedRevision {
-		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
-	}
-	var beforeVersionID string
-	if err := transaction.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, run.WorkID, nodeID).Scan(&beforeVersionID); err != nil {
-		return fmt.Errorf("read canvas node version before agent update: %w", err)
-	}
-	updated, err := transaction.ExecContext(ctx, `
-UPDATE canvas_nodes
-SET title = ?, content = ?, revision = revision + 1, updated_at = ?
-WHERE work_id = ? AND id = ? AND revision = ?`,
-		result.Title, result.Content, now.Format(time.RFC3339Nano), run.WorkID, nodeID, result.ExpectedRevision)
-	if err != nil {
-		return fmt.Errorf("update canvas node from agent run: %w", err)
-	}
-	changed, err := updated.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read updated canvas node from agent run: %w", err)
-	}
-	if changed == 0 {
-		return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
-	}
-	if before.Title != result.Title || before.Content != result.Content {
-		versionNode := before
-		versionNode.Title = result.Title
-		versionNode.Content = result.Content
-		versionNode.Revision++
-		versionNode.UpdatedAt = now
-		if _, err := createNodeVersion(ctx, transaction, versionNode, beforeVersionID, run.ID); err != nil {
+	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		locked, err := isNodeArchiveLocked(tx, run.WorkID, nodeID)
+		if err != nil {
 			return err
 		}
-		payload := updateNodeActionPayload{
-			Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content},
-			After:  nodeContentState{NodeID: before.ID, Title: result.Title, Content: result.Content},
+		if locked {
+			return canvas.ErrArchivedNodeLocked
 		}
-		if err := appendCanvasAction(ctx, transaction, run.WorkID, actionUpdateNode, "Agent 更新节点", payload); err != nil {
+		before, err := getCanvasNode(tx, run.WorkID, nodeID)
+		if err != nil {
 			return err
 		}
-	}
-	statusResult, err := transaction.ExecContext(ctx, `
-UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		appagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, appagent.RunStatusRunning)
-	if err != nil {
-		return fmt.Errorf("complete node update run: %w", err)
-	}
-	statusChanged, err := statusResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read completed node update run: %w", err)
-	}
-	if statusChanged == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventNodeUpdated, map[string]any{"nodeId": nodeID}, now); err != nil {
+		if before.Revision != result.ExpectedRevision {
+			return fmt.Errorf("%w: target node %q changed before agent update", canvas.ErrRevisionConflict, nodeID)
+		}
+		update := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ? AND revision = ?", run.WorkID, nodeID, result.ExpectedRevision).Updates(map[string]any{"title": result.Title, "content": result.Content, "revision": gorm.Expr("revision + 1"), "updated_at": now})
+		if update.Error != nil {
+			return fmt.Errorf("update canvas node from agent run: %w", update.Error)
+		}
+		if update.RowsAffected == 0 {
+			return canvas.ErrRevisionConflict
+		}
+		if before.Title != result.Title || before.Content != result.Content {
+			if err := appendCanvasAction(tx, run.WorkID, actionUpdateNode, "Agent 更新节点", updateNodeActionPayload{Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content}, After: nodeContentState{NodeID: before.ID, Title: result.Title, Content: result.Content}}); err != nil {
+				return err
+			}
+		}
+		if err := completeRun(tx, run.ID, now); err != nil {
+			return err
+		}
+		if _, err := appendEvent(tx, run.ID, appagent.EventNodeUpdated, map[string]any{"nodeId": nodeID}, now); err != nil {
+			return err
+		}
+		_, err = appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"nodeId": nodeID}, now)
 		return err
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventRunCompleted, map[string]any{"nodeId": nodeID}, now); err != nil {
-		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit node update run: %w", err)
-	}
-	return nil
+	})
 }
 
 func (r *AgentRepository) CompleteDerivation(
@@ -1293,127 +884,78 @@ func (r *AgentRepository) CompleteDerivation(
 	result appagent.RunResult,
 ) error {
 	now := time.Now().UTC()
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin complete node derivation: %w", err)
-	}
-	defer transaction.Rollback()
-
-	parent, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, parentNodeID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.ErrNodeNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("read derivation parent node: %w", err)
-	}
-	if parent.Revision != result.ExpectedRevision {
-		return fmt.Errorf("%w: parent node %q changed before derivation", canvas.ErrRevisionConflict, parentNodeID)
-	}
-
-	derivedKind := canvas.NodeKindSectionOutline
-	if run.Target == appagent.TargetChapterSection {
-		derivedKind = canvas.NodeKindChapterSection
-	}
-	var existingChildren int
-	if err := transaction.QueryRowContext(ctx, `
-SELECT COUNT(*)
-FROM canvas_edges e
-JOIN canvas_nodes n ON n.work_id = e.work_id AND n.id = e.target_node_id
-WHERE e.work_id = ? AND e.source_node_id = ? AND e.kind = 'generated_from' AND n.kind = ?`,
-		run.WorkID, parentNodeID, derivedKind).Scan(&existingChildren); err != nil {
-		return fmt.Errorf("read existing derived nodes: %w", err)
-	}
-	if existingChildren > 0 {
-		return canvas.ErrDerivationExists
-	}
-
-	inputs, err := derivationNodeInputs(run, parent, result.Content)
-	if err != nil {
-		return err
-	}
-	nodes := make([]canvas.Node, 0, len(inputs))
-	edges := make([]canvas.Edge, 0, len(inputs)*2)
-	startY := parent.Y - float64(len(inputs)-1)*110
-	for index, input := range inputs {
-		node := canvas.Node{
-			ID: uuid.NewString(), WorkID: run.WorkID, Revision: 1, Kind: input.Kind,
-			Title: input.Title, Content: input.Content, X: parent.X + 360,
-			Y: startY + float64(index)*220, CreatedAt: now, UpdatedAt: now,
-		}
-		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
-			node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("create derived canvas node: %w", err)
-		}
-		if _, err := createInitialNodeVersion(ctx, transaction, node); err != nil {
+	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		parentModel, err := getCanvasNode(tx, run.WorkID, parentNodeID)
+		if err != nil {
 			return err
 		}
-		sourceNodeIDs := uniqueStrings(append([]string{parentNodeID}, input.ContextNodeIDs...))
-		for _, sourceNodeID := range sourceNodeIDs {
-			if !containsString(run.ContextNodeIDs, sourceNodeID) {
-				return fmt.Errorf("%w: derived context node %q was not supplied to the run", canvas.ErrInvalidSectionOutline, sourceNodeID)
+		parent := canvasNodeFromModel(parentModel)
+		if parent.Revision != result.ExpectedRevision {
+			return fmt.Errorf("%w: parent node %q changed before derivation", canvas.ErrRevisionConflict, parentNodeID)
+		}
+		derivedKind := canvas.NodeKindSectionOutline
+		if run.Target == appagent.TargetChapterSection {
+			derivedKind = canvas.NodeKindChapterSection
+		}
+		var existing int64
+		if err := tx.Model(&canvasEdgeModel{}).Joins("JOIN canvas_nodes ON canvas_nodes.work_id = canvas_edges.work_id AND canvas_nodes.id = canvas_edges.target_node_id").Where("canvas_edges.work_id = ? AND canvas_edges.source_node_id = ? AND canvas_edges.kind = ? AND canvas_nodes.kind = ?", run.WorkID, parentNodeID, "generated_from", derivedKind).Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing > 0 {
+			return canvas.ErrDerivationExists
+		}
+		inputs, err := derivationNodeInputs(run, parent, result.Content)
+		if err != nil {
+			return err
+		}
+		nodeModels := make([]canvasNodeModel, 0, len(inputs))
+		edgeModels := make([]canvasEdgeModel, 0, len(inputs)*2)
+		startY := parent.Y - float64(len(inputs)-1)*110
+		for index, input := range inputs {
+			node := canvasNodeModel{ID: uuid.NewString(), WorkID: run.WorkID, Revision: 1, Kind: string(input.Kind), Title: input.Title, Content: input.Content, X: parent.X + 360, Y: startY + float64(index)*220, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&node).Error; err != nil {
+				return fmt.Errorf("create derived canvas node: %w", err)
 			}
-			var sourceExists int
-			if err := transaction.QueryRowContext(ctx, `
-SELECT 1 FROM canvas_nodes WHERE work_id = ? AND id = ?`, run.WorkID, sourceNodeID).Scan(&sourceExists); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
+			if _, err := createInitialNodeVersionModel(tx, &node); err != nil {
+				return err
+			}
+			sources := uniqueStrings(append([]string{parentNodeID}, input.ContextNodeIDs...))
+			for _, sourceID := range sources {
+				if !containsString(run.ContextNodeIDs, sourceID) {
+					return fmt.Errorf("%w: derived context node %q was not supplied to the run", canvas.ErrInvalidSectionOutline, sourceID)
+				}
+				var count int64
+				if err := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ?", run.WorkID, sourceID).Count(&count).Error; err != nil {
+					return err
+				}
+				if count == 0 {
 					return canvas.ErrNodeNotFound
 				}
-				return fmt.Errorf("read derived context node: %w", err)
+				edgeModels = append(edgeModels, canvasEdgeModel{ID: uuid.NewString(), WorkID: run.WorkID, SourceNodeID: sourceID, TargetNodeID: node.ID, Kind: "generated_from", CreatedAt: now})
 			}
-			edge := canvas.Edge{
-				ID: uuid.NewString(), WorkID: run.WorkID, SourceNodeID: sourceNodeID,
-				TargetNodeID: node.ID, Kind: "generated_from", CreatedAt: now,
-			}
-			if _, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
-				edge.Kind, now.Format(time.RFC3339Nano)); err != nil {
-				return fmt.Errorf("create derived canvas edge: %w", err)
-			}
-			edges = append(edges, edge)
+			nodeModels = append(nodeModels, node)
 		}
-		nodes = append(nodes, node)
-	}
-	if err := appendCanvasAction(ctx, transaction, run.WorkID, actionCreateNodes, "Agent 派生节点", createNodesActionPayload{
-		Nodes: nodes, Edges: edges,
-	}); err != nil {
+		if len(edgeModels) > 0 {
+			if err := tx.Create(&edgeModels).Error; err != nil {
+				return err
+			}
+		}
+		if err := appendCanvasAction(tx, run.WorkID, actionCreateNodes, "Agent 派生节点", createNodesActionPayload{Nodes: canvasNodesFromModels(nodeModels), Edges: canvasEdgesFromModels(edgeModels)}); err != nil {
+			return err
+		}
+		if err := completeRun(tx, run.ID, now); err != nil {
+			return err
+		}
+		ids := make([]string, len(nodeModels))
+		for i, node := range nodeModels {
+			ids[i] = node.ID
+		}
+		if _, err := appendEvent(tx, run.ID, appagent.EventNodesCreated, map[string]any{"parentNodeId": parentNodeID, "nodeIds": ids, "kind": derivedKind}, now); err != nil {
+			return err
+		}
+		_, err = appendEvent(tx, run.ID, appagent.EventRunCompleted, map[string]any{"parentNodeId": parentNodeID, "nodeIds": ids}, now)
 		return err
-	}
-	statusResult, err := transaction.ExecContext(ctx, `
-UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		appagent.RunStatusCompleted, now.Format(time.RFC3339Nano), run.ID, appagent.RunStatusRunning)
-	if err != nil {
-		return fmt.Errorf("complete node derivation run: %w", err)
-	}
-	changed, err := statusResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read completed node derivation run: %w", err)
-	}
-	if changed == 0 {
-		return appagent.ErrRunNotCancellable
-	}
-	nodeIDs := make([]string, len(nodes))
-	for index, node := range nodes {
-		nodeIDs[index] = node.ID
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventNodesCreated, map[string]any{
-		"parentNodeId": parentNodeID, "nodeIds": nodeIDs, "kind": derivedKind,
-	}, now); err != nil {
-		return err
-	}
-	if _, err := appendEvent(transaction, run.ID, appagent.EventRunCompleted, map[string]any{
-		"parentNodeId": parentNodeID, "nodeIds": nodeIDs,
-	}, now); err != nil {
-		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit node derivation: %w", err)
-	}
-	return nil
+	})
 }
 
 type derivationNodeInput struct {
@@ -1487,60 +1029,27 @@ func (r *AgentRepository) Fail(runID, message string) error {
 }
 
 func (r *AgentRepository) Cancel(runID string) error {
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin cancel agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	now := time.Now().UTC()
-	result, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, updated_at = ?
-	WHERE id = ? AND status IN (?, ?, ?)`, appagent.RunStatusCancelled, now.Format(time.RFC3339Nano), runID,
-		appagent.RunStatusQueued, appagent.RunStatusRunning, appagent.RunStatusWaitingInput)
-	if err != nil {
-		return fmt.Errorf("cancel agent run: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read cancelled agent run: %w", err)
-	}
-	if changed == 0 {
-		var status appagent.RunStatus
-		if err := transaction.QueryRow(`SELECT status FROM agent_runs WHERE id = ?`, runID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
-			return appagent.ErrRunNotFound
-		} else if err != nil {
-			return fmt.Errorf("query cancelled agent run: %w", err)
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		result := tx.Model(&agentRunModel{}).Where("id = ? AND status IN ?", runID, []appagent.RunStatus{appagent.RunStatusQueued, appagent.RunStatusRunning, appagent.RunStatusWaitingInput}).Updates(map[string]any{"status": appagent.RunStatusCancelled, "updated_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("cancel agent run: %w", result.Error)
 		}
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(transaction, runID, appagent.EventRunCancelled, nil, now); err != nil {
+		if result.RowsAffected == 0 {
+			return runMutationError(tx, runID)
+		}
+		_, err := appendEvent(tx, runID, appagent.EventRunCancelled, nil, now)
 		return err
-	}
-	return transaction.Commit()
+	})
 }
 
 func (r *AgentRepository) FailInterruptedRuns() error {
-	rows, err := r.database.Query(`SELECT id FROM agent_runs WHERE status IN (?, ?)`, appagent.RunStatusQueued, appagent.RunStatusRunning)
-	if err != nil {
+	var models []agentRunModel
+	if err := r.database.Select("id").Where("status IN ?", []appagent.RunStatus{appagent.RunStatusQueued, appagent.RunStatusRunning}).Find(&models).Error; err != nil {
 		return fmt.Errorf("query interrupted agent runs: %w", err)
 	}
-	runIDs := make([]string, 0)
-	for rows.Next() {
-		var runID string
-		if err := rows.Scan(&runID); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan interrupted agent run: %w", err)
-		}
-		runIDs = append(runIDs, runID)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close interrupted agent runs: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate interrupted agent runs: %w", err)
-	}
-	for _, runID := range runIDs {
-		if err := r.Fail(runID, "Core restarted before this run completed"); err != nil {
+	for _, model := range models {
+		if err := r.Fail(model.ID, "Core restarted before this run completed"); err != nil {
 			return err
 		}
 	}
@@ -1548,80 +1057,81 @@ func (r *AgentRepository) FailInterruptedRuns() error {
 }
 
 func (r *AgentRepository) setStatusWithEvent(runID string, status appagent.RunStatus, message string, eventType appagent.EventType, data any) error {
-	transaction, err := r.database.Begin()
-	if err != nil {
-		return fmt.Errorf("begin update agent run: %w", err)
-	}
-	defer transaction.Rollback()
-	now := time.Now().UTC()
-	result, err := transaction.Exec(`
-UPDATE agent_runs SET status = ?, error_message = ?, updated_at = ?
-WHERE id = ? AND status IN (?, ?)`, status, message, now.Format(time.RFC3339Nano), runID,
-		appagent.RunStatusQueued, appagent.RunStatusRunning)
-	if err != nil {
-		return fmt.Errorf("update agent run: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read updated agent run: %w", err)
-	}
-	if changed == 0 {
-		var currentStatus appagent.RunStatus
-		if err := transaction.QueryRow(`SELECT status FROM agent_runs WHERE id = ?`, runID).Scan(&currentStatus); errors.Is(err, sql.ErrNoRows) {
-			return appagent.ErrRunNotFound
-		} else if err != nil {
-			return fmt.Errorf("query agent run status: %w", err)
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		result := tx.Model(&agentRunModel{}).Where("id = ? AND status IN ?", runID, []appagent.RunStatus{appagent.RunStatusQueued, appagent.RunStatusRunning}).Updates(map[string]any{"status": status, "error_message": message, "updated_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("update agent run: %w", result.Error)
 		}
-		return appagent.ErrRunNotCancellable
-	}
-	if _, err := appendEvent(transaction, runID, eventType, data, now); err != nil {
+		if result.RowsAffected == 0 {
+			return runMutationError(tx, runID)
+		}
+		_, err := appendEvent(tx, runID, eventType, data, now)
 		return err
-	}
-	return transaction.Commit()
+	})
 }
 
-func appendEvent(transaction *sql.Tx, runID string, eventType appagent.EventType, data any, now time.Time) (appagent.Event, error) {
+func (r *AgentRepository) transitionRun(runID string, from, to appagent.RunStatus, eventType appagent.EventType) error {
+	return r.database.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, from).Updates(map[string]any{"status": to, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return appagent.ErrRunNotCancellable
+		}
+		_, err := appendEvent(tx, runID, eventType, nil, now)
+		return err
+	})
+}
+
+func completeRun(tx *gorm.DB, runID string, now time.Time) error {
+	result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, appagent.RunStatusRunning).Updates(map[string]any{"status": appagent.RunStatusCompleted, "updated_at": now})
+	if result.Error != nil {
+		return fmt.Errorf("complete agent run: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return appagent.ErrRunNotCancellable
+	}
+	return nil
+}
+
+func runMutationError(tx *gorm.DB, runID string) error {
+	var count int64
+	if err := tx.Model(&agentRunModel{}).Where("id = ?", runID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return appagent.ErrRunNotFound
+	}
+	return appagent.ErrRunNotCancellable
+}
+
+func appendEvent(tx *gorm.DB, runID string, eventType appagent.EventType, data any, now time.Time) (appagent.Event, error) {
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
 		return appagent.Event{}, fmt.Errorf("encode agent event: %w", err)
 	}
 	var sequence int64
-	if err := transaction.QueryRow(`SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_run_events WHERE run_id = ?`, runID).Scan(&sequence); err != nil {
+	if err := tx.Model(&agentRunEventModel{}).Where("run_id = ?", runID).Select("COALESCE(MAX(sequence), 0) + 1").Scan(&sequence).Error; err != nil {
 		return appagent.Event{}, fmt.Errorf("allocate agent event sequence: %w", err)
 	}
-	event := appagent.Event{
-		ID: uuid.NewString(), RunID: runID, Sequence: sequence, Type: eventType,
-		Timestamp: now, Data: dataJSON,
-	}
-	_, err = transaction.Exec(`
-INSERT INTO agent_run_events (id, run_id, sequence, type, data_json, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, event.ID, event.RunID, event.Sequence, event.Type, string(event.Data), now.Format(time.RFC3339Nano))
-	if err != nil {
+	model := agentRunEventModel{ID: uuid.NewString(), RunID: runID, Sequence: sequence, Type: string(eventType), DataJSON: string(dataJSON), CreatedAt: now}
+	if err := tx.Create(&model).Error; err != nil {
 		return appagent.Event{}, fmt.Errorf("insert agent event: %w", err)
 	}
-	return event, nil
+	return eventFromModel(model), nil
 }
 
-func scanRun(scanner rowScanner) (appagent.Run, error) {
-	var run appagent.Run
-	var contextNodeIDsJSON, createdAt, updatedAt string
-	if err := scanner.Scan(&run.ID, &run.WorkID, &run.Status, &run.Prompt, &run.Target, &run.TargetNodeID, &run.ProviderID,
-		&run.ModelID, &contextNodeIDsJSON, &run.ErrorMessage, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
-		return appagent.Run{}, appagent.ErrRunNotFound
-	} else if err != nil {
-		return appagent.Run{}, fmt.Errorf("scan agent run: %w", err)
-	}
-	if err := json.Unmarshal([]byte(contextNodeIDsJSON), &run.ContextNodeIDs); err != nil {
-		return appagent.Run{}, fmt.Errorf("decode context node ids: %w", err)
-	}
-	var err error
-	run.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return appagent.Run{}, fmt.Errorf("parse agent run created time: %w", err)
-	}
-	run.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
-	if err != nil {
-		return appagent.Run{}, fmt.Errorf("parse agent run updated time: %w", err)
-	}
-	return run, nil
+func runFromModel(model agentRunModel) appagent.Run {
+	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, ProviderID: model.ProviderID, ModelID: model.ModelID, ContextNodeIDs: append([]string(nil), model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
+}
+
+func runModelFromDomain(run appagent.Run) agentRunModel {
+	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ContextNodeIDs: append([]string(nil), run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
+}
+
+func eventFromModel(model agentRunEventModel) appagent.Event {
+	return appagent.Event{ID: model.ID, RunID: model.RunID, Sequence: model.Sequence, Type: appagent.EventType(model.Type), Timestamp: model.CreatedAt, Data: json.RawMessage(model.DataJSON)}
 }

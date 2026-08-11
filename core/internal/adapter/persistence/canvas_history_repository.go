@@ -2,13 +2,14 @@ package persistence
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"warmmo/core/internal/domain/canvas"
 )
@@ -63,48 +64,32 @@ func (r *CanvasRepository) DeleteEdges(ctx context.Context, workID string, edgeI
 	if len(edgeIDs) == 0 || len(edgeIDs) > 100 {
 		return canvas.ErrInvalidNode
 	}
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin delete canvas edges: %w", err)
-	}
-	defer transaction.Rollback()
-
-	edges := make([]canvas.Edge, 0, len(edgeIDs))
-	for _, edgeID := range edgeIDs {
-		edge, err := scanCanvasEdge(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, source_node_id, target_node_id, kind, created_at
-FROM canvas_edges WHERE work_id = ? AND id = ?`, workID, edgeID))
-		if errors.Is(err, sql.ErrNoRows) {
+	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var models []canvasEdgeModel
+		if err := tx.Where("work_id = ? AND id IN ?", workID, edgeIDs).Find(&models).Error; err != nil {
+			return fmt.Errorf("read deleted canvas edges: %w", err)
+		}
+		if len(models) != len(edgeIDs) {
 			return canvas.ErrNodeNotFound
 		}
-		if err != nil {
-			return fmt.Errorf("read deleted canvas edge: %w", err)
+		for _, edge := range models {
+			locked, err := isNodeArchiveLocked(tx, workID, edge.TargetNodeID)
+			if err != nil {
+				return err
+			}
+			if locked {
+				return canvas.ErrArchivedNodeLocked
+			}
 		}
-		locked, err := isNodeArchiveLocked(ctx, transaction, workID, edge.TargetNodeID)
-		if err != nil {
+		if err := deleteEdgeSnapshots(tx, workID, edgeIDs); err != nil {
 			return err
 		}
-		if locked {
-			return canvas.ErrArchivedNodeLocked
+		label := "删除连接"
+		if len(models) > 1 {
+			label = fmt.Sprintf("删除 %d 条连接", len(models))
 		}
-		edges = append(edges, edge)
-	}
-	if err := deleteEdgeSnapshots(ctx, transaction, workID, edgeIDs); err != nil {
-		return err
-	}
-	label := "删除连接"
-	if len(edges) > 1 {
-		label = fmt.Sprintf("删除 %d 条连接", len(edges))
-	}
-	if err := appendCanvasAction(ctx, transaction, workID, actionDeleteEdges, label, deleteEdgesActionPayload{
-		Edges: edges,
-	}); err != nil {
-		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit delete canvas edges: %w", err)
-	}
-	return nil
+		return appendCanvasAction(tx, workID, actionDeleteEdges, label, deleteEdgesActionPayload{Edges: canvasEdgesFromModels(models)})
+	})
 }
 
 type storedCanvasAction struct {
@@ -115,61 +100,48 @@ type storedCanvasAction struct {
 	PayloadJSON string
 }
 
-func (r *CanvasRepository) UpdateNodePositions(
-	ctx context.Context,
-	workID string,
-	positions []canvas.NodePosition,
-) error {
+func (r *CanvasRepository) UpdateNodePositions(ctx context.Context, workID string, positions []canvas.NodePosition) error {
 	positions = uniqueNodePositions(positions)
 	if len(positions) == 0 || len(positions) > 100 {
 		return canvas.ErrInvalidNode
 	}
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update canvas node positions: %w", err)
-	}
-	defer transaction.Rollback()
-
-	before := make([]canvas.NodePosition, 0, len(positions))
-	after := make([]canvas.NodePosition, 0, len(positions))
-	for _, position := range positions {
-		var current canvas.NodePosition
-		current.NodeID = position.NodeID
-		err := transaction.QueryRowContext(ctx, `
-SELECT x, y FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, position.NodeID).
-			Scan(&current.X, &current.Y)
-		if errors.Is(err, sql.ErrNoRows) {
+	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		ids := make([]string, len(positions))
+		for i, position := range positions {
+			ids[i] = position.NodeID
+		}
+		var models []canvasNodeModel
+		if err := tx.Select("id", "x", "y").Where("work_id = ? AND id IN ?", workID, ids).Find(&models).Error; err != nil {
+			return fmt.Errorf("read canvas node positions: %w", err)
+		}
+		if len(models) != len(ids) {
 			return canvas.ErrNodeNotFound
 		}
-		if err != nil {
-			return fmt.Errorf("read canvas node position: %w", err)
+		current := make(map[string]canvasNodeModel, len(models))
+		for _, model := range models {
+			current[model.ID] = model
 		}
-		if current.X == position.X && current.Y == position.Y {
-			continue
+		before, after := make([]canvas.NodePosition, 0, len(positions)), make([]canvas.NodePosition, 0, len(positions))
+		for _, position := range positions {
+			model := current[position.NodeID]
+			if model.X == position.X && model.Y == position.Y {
+				continue
+			}
+			before = append(before, canvas.NodePosition{NodeID: model.ID, X: model.X, Y: model.Y})
+			after = append(after, position)
 		}
-		before = append(before, current)
-		after = append(after, position)
-	}
-	if len(after) == 0 {
-		return nil
-	}
-	if err := applyNodePositions(ctx, transaction, workID, after); err != nil {
-		return err
-	}
-	label := "移动节点"
-	if len(after) > 1 {
-		label = fmt.Sprintf("移动 %d 个节点", len(after))
-	}
-	if err := appendCanvasAction(ctx, transaction, workID, actionMoveNodes, label, moveNodesActionPayload{
-		Before: before,
-		After:  after,
-	}); err != nil {
-		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit canvas node positions: %w", err)
-	}
-	return nil
+		if len(after) == 0 {
+			return nil
+		}
+		if err := applyNodePositions(tx, workID, after); err != nil {
+			return err
+		}
+		label := "移动节点"
+		if len(after) > 1 {
+			label = fmt.Sprintf("移动 %d 个节点", len(after))
+		}
+		return appendCanvasAction(tx, workID, actionMoveNodes, label, moveNodesActionPayload{Before: before, After: after})
+	})
 }
 
 func (r *CanvasRepository) DeleteNodes(ctx context.Context, workID string, nodeIDs []string) error {
@@ -177,70 +149,57 @@ func (r *CanvasRepository) DeleteNodes(ctx context.Context, workID string, nodeI
 	if len(nodeIDs) == 0 || len(nodeIDs) > 100 {
 		return canvas.ErrInvalidNode
 	}
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin delete canvas nodes: %w", err)
-	}
-	defer transaction.Rollback()
-
-	nodes := make([]canvas.Node, 0, len(nodeIDs))
-	deletedNodeIDs := make(map[string]struct{}, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		locked, err := isNodeArchiveLocked(ctx, transaction, workID, nodeID)
+	return r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, nodeID := range nodeIDs {
+			locked, err := isNodeArchiveLocked(tx, workID, nodeID)
+			if err != nil {
+				return err
+			}
+			if locked {
+				return canvas.ErrArchivedNodeLocked
+			}
+		}
+		var models []canvasNodeModel
+		if err := tx.Where("work_id = ? AND id IN ?", workID, nodeIDs).Find(&models).Error; err != nil {
+			return fmt.Errorf("read deleted canvas nodes: %w", err)
+		}
+		if len(models) != len(nodeIDs) {
+			return canvas.ErrNodeNotFound
+		}
+		edges, err := listEdgesForHistory(tx, workID, nodeIDs)
 		if err != nil {
 			return err
 		}
-		if locked {
-			return canvas.ErrArchivedNodeLocked
+		if len(edges) > 0 {
+			edgeIDs := make([]string, len(edges))
+			for i, edge := range edges {
+				edgeIDs[i] = edge.ID
+			}
+			if err := deleteEdgeSnapshots(tx, workID, edgeIDs); err != nil {
+				return err
+			}
 		}
-		node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
-		if errors.Is(err, sql.ErrNoRows) {
+		result := tx.Where("work_id = ? AND id IN ?", workID, nodeIDs).Delete(&canvasNodeModel{})
+		if result.Error != nil {
+			return fmt.Errorf("delete canvas nodes: %w", result.Error)
+		}
+		if result.RowsAffected != int64(len(nodeIDs)) {
 			return canvas.ErrNodeNotFound
 		}
-		if err != nil {
-			return fmt.Errorf("read deleted canvas node: %w", err)
+		label := "删除节点"
+		if len(models) > 1 {
+			label = fmt.Sprintf("删除 %d 个节点", len(models))
 		}
-		nodes = append(nodes, node)
-		deletedNodeIDs[nodeID] = struct{}{}
-	}
-	edges, err := listEdgesForHistory(ctx, transaction, workID, deletedNodeIDs)
-	if err != nil {
-		return err
-	}
-	for _, nodeID := range nodeIDs {
-		if _, err := transaction.ExecContext(ctx, `DELETE FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID); err != nil {
-			return fmt.Errorf("delete canvas node: %w", err)
-		}
-	}
-	label := "删除节点"
-	if len(nodes) > 1 {
-		label = fmt.Sprintf("删除 %d 个节点", len(nodes))
-	}
-	if err := appendCanvasAction(ctx, transaction, workID, actionDeleteNodes, label, deleteNodesActionPayload{
-		Nodes: nodes,
-		Edges: edges,
-	}); err != nil {
-		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit delete canvas nodes: %w", err)
-	}
-	return nil
+		return appendCanvasAction(tx, workID, actionDeleteNodes, label, deleteNodesActionPayload{Nodes: canvasNodesFromModels(models), Edges: edges})
+	})
 }
 
 func (r *CanvasRepository) GetHistoryState(ctx context.Context, workID string) (canvas.HistoryState, error) {
-	var currentSequence int64
-	err := r.database.QueryRowContext(ctx, `
-SELECT current_sequence FROM canvas_history_state WHERE work_id = ?`, workID).Scan(&currentSequence)
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.HistoryState{}, nil
-	}
+	current, err := readHistoryCursor(r.database.WithContext(ctx), workID)
 	if err != nil {
-		return canvas.HistoryState{}, fmt.Errorf("read canvas history state: %w", err)
+		return canvas.HistoryState{}, err
 	}
-	return readHistoryState(ctx, r.database, workID, currentSequence)
+	return readHistoryState(r.database.WithContext(ctx), workID, current)
 }
 
 func (r *CanvasRepository) Undo(ctx context.Context, workID string) (canvas.HistoryState, error) {
@@ -251,176 +210,113 @@ func (r *CanvasRepository) Redo(ctx context.Context, workID string) (canvas.Hist
 	return r.moveHistoryCursor(ctx, workID, true)
 }
 
-func (r *CanvasRepository) moveHistoryCursor(
-	ctx context.Context,
-	workID string,
-	forward bool,
-) (canvas.HistoryState, error) {
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return canvas.HistoryState{}, fmt.Errorf("begin move canvas history cursor: %w", err)
-	}
-	defer transaction.Rollback()
-
-	currentSequence, err := readHistoryCursor(ctx, transaction, workID)
-	if err != nil {
-		return canvas.HistoryState{}, err
-	}
-	targetSequence := currentSequence
-	if forward {
-		targetSequence++
-	}
-	action, err := readCanvasAction(ctx, transaction, workID, targetSequence)
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.HistoryState{}, canvas.ErrHistoryUnavailable
-	}
-	if err != nil {
-		return canvas.HistoryState{}, err
-	}
-	if err := applyCanvasAction(ctx, transaction, workID, action, forward); err != nil {
-		return canvas.HistoryState{}, err
-	}
-	newSequence := action.Sequence
-	newActionID := action.ID
-	if !forward {
-		newSequence--
-		newActionID = ""
-		if newSequence > 0 {
-			previousAction, previousErr := readCanvasAction(ctx, transaction, workID, newSequence)
-			if previousErr == nil {
-				newActionID = previousAction.ID
-			} else if !errors.Is(previousErr, sql.ErrNoRows) {
-				return canvas.HistoryState{}, previousErr
+func (r *CanvasRepository) moveHistoryCursor(ctx context.Context, workID string, forward bool) (canvas.HistoryState, error) {
+	var state canvas.HistoryState
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		current, err := readHistoryCursor(tx, workID)
+		if err != nil {
+			return err
+		}
+		target := current
+		if forward {
+			target++
+		}
+		action, err := readCanvasAction(tx, workID, target)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return canvas.ErrHistoryUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		if err := applyCanvasAction(tx, workID, action, forward); err != nil {
+			return err
+		}
+		sequence, actionID := action.Sequence, action.ID
+		if !forward {
+			sequence--
+			actionID = ""
+			if sequence > 0 {
+				previous, previousErr := readCanvasAction(tx, workID, sequence)
+				if previousErr == nil {
+					actionID = previous.ID
+				} else if !errors.Is(previousErr, gorm.ErrRecordNotFound) {
+					return previousErr
+				}
 			}
 		}
-	}
-	if _, err := transaction.ExecContext(ctx, `
-UPDATE canvas_history_state SET current_sequence = ?, current_action_id = ? WHERE work_id = ?`,
-		newSequence, newActionID, workID); err != nil {
-		return canvas.HistoryState{}, fmt.Errorf("update canvas history cursor: %w", err)
-	}
-	state, err := readHistoryState(ctx, transaction, workID, newSequence)
-	if err != nil {
-		return canvas.HistoryState{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return canvas.HistoryState{}, fmt.Errorf("commit canvas history cursor: %w", err)
-	}
-	return state, nil
+		if err := tx.Model(&canvasHistoryStateModel{}).Where("work_id = ?", workID).Updates(map[string]any{"current_sequence": sequence, "current_action_id": actionID}).Error; err != nil {
+			return fmt.Errorf("update canvas history cursor: %w", err)
+		}
+		state, err = readHistoryState(tx, workID, sequence)
+		return err
+	})
+	return state, err
 }
 
-func appendCanvasAction(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	actionType string,
-	label string,
-	payload any,
-) error {
+func appendCanvasAction(tx *gorm.DB, workID, actionType, label string, payload any) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode canvas action: %w", err)
 	}
-	currentSequence, err := readHistoryCursor(ctx, transaction, workID)
+	current, err := readHistoryCursor(tx, workID)
 	if err != nil {
 		return err
 	}
-	if _, err := transaction.ExecContext(ctx, `
-DELETE FROM canvas_actions WHERE work_id = ? AND sequence > ?`, workID, currentSequence); err != nil {
+	if err := tx.Where("work_id = ? AND sequence > ?", workID, current).Delete(&canvasActionModel{}).Error; err != nil {
 		return fmt.Errorf("clear canvas redo history: %w", err)
 	}
-	nextSequence := currentSequence + 1
-	actionID := uuid.NewString()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_actions (id, work_id, sequence, action_type, label, payload_json, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`, actionID, workID, nextSequence, actionType, label, string(payloadJSON), now); err != nil {
+	next := current + 1
+	action := canvasActionModel{ID: uuid.NewString(), WorkID: workID, Sequence: next, ActionType: actionType, Label: label, PayloadJSON: string(payloadJSON), CreatedAt: time.Now().UTC()}
+	if err := tx.Create(&action).Error; err != nil {
 		return fmt.Errorf("append canvas action: %w", err)
 	}
-	if _, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_history_state (work_id, current_sequence, current_action_id)
-VALUES (?, ?, ?)
-ON CONFLICT(work_id) DO UPDATE SET current_sequence = excluded.current_sequence,
-    current_action_id = excluded.current_action_id`, workID, nextSequence, actionID); err != nil {
+	state := canvasHistoryStateModel{WorkID: workID, CurrentSequence: next, CurrentActionID: action.ID}
+	if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "work_id"}}, DoUpdates: clause.AssignmentColumns([]string{"current_sequence", "current_action_id"})}).Create(&state).Error; err != nil {
 		return fmt.Errorf("advance canvas history cursor: %w", err)
 	}
-	oldestSequence := nextSequence - canvasHistoryLimit + 1
-	if oldestSequence > 1 {
-		if _, err := transaction.ExecContext(ctx, `
-DELETE FROM canvas_actions WHERE work_id = ? AND sequence < ?`, workID, oldestSequence); err != nil {
+	if oldest := next - canvasHistoryLimit + 1; oldest > 1 {
+		if err := tx.Where("work_id = ? AND sequence < ?", workID, oldest).Delete(&canvasActionModel{}).Error; err != nil {
 			return fmt.Errorf("prune canvas action history: %w", err)
 		}
 	}
 	return nil
 }
 
-func readHistoryCursor(ctx context.Context, transaction *sql.Tx, workID string) (int64, error) {
-	var currentSequence int64
-	err := transaction.QueryRowContext(ctx, `
-SELECT current_sequence FROM canvas_history_state WHERE work_id = ?`, workID).Scan(&currentSequence)
-	if errors.Is(err, sql.ErrNoRows) {
+func readHistoryCursor(db *gorm.DB, workID string) (int64, error) {
+	var state canvasHistoryStateModel
+	if err := db.Select("current_sequence").First(&state, "work_id = ?", workID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return 0, fmt.Errorf("read canvas history cursor: %w", err)
 	}
-	return currentSequence, nil
+	return state.CurrentSequence, nil
 }
 
-type historyStateQuerier interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func readHistoryState(
-	ctx context.Context,
-	querier historyStateQuerier,
-	workID string,
-	currentSequence int64,
-) (canvas.HistoryState, error) {
-	state := canvas.HistoryState{}
-	err := querier.QueryRowContext(ctx, `
-SELECT label FROM canvas_actions WHERE work_id = ? AND sequence = ?`, workID, currentSequence).
-		Scan(&state.UndoLabel)
-	if err == nil {
-		state.CanUndo = true
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return canvas.HistoryState{}, fmt.Errorf("read canvas undo action: %w", err)
+func readHistoryState(db *gorm.DB, workID string, current int64) (canvas.HistoryState, error) {
+	var state canvas.HistoryState
+	var undo, redo canvasActionModel
+	if err := db.Select("label").Where("work_id = ? AND sequence = ?", workID, current).First(&undo).Error; err == nil {
+		state.CanUndo, state.UndoLabel = true, undo.Label
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return state, fmt.Errorf("read canvas undo action: %w", err)
 	}
-	err = querier.QueryRowContext(ctx, `
-SELECT label FROM canvas_actions WHERE work_id = ? AND sequence = ?`, workID, currentSequence+1).
-		Scan(&state.RedoLabel)
-	if err == nil {
-		state.CanRedo = true
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return canvas.HistoryState{}, fmt.Errorf("read canvas redo action: %w", err)
+	if err := db.Select("label").Where("work_id = ? AND sequence = ?", workID, current+1).First(&redo).Error; err == nil {
+		state.CanRedo, state.RedoLabel = true, redo.Label
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return state, fmt.Errorf("read canvas redo action: %w", err)
 	}
 	return state, nil
 }
 
-func readCanvasAction(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	sequence int64,
-) (storedCanvasAction, error) {
-	var action storedCanvasAction
-	err := transaction.QueryRowContext(ctx, `
-SELECT id, sequence, action_type, label, payload_json
-FROM canvas_actions WHERE work_id = ? AND sequence = ?`, workID, sequence).
-		Scan(&action.ID, &action.Sequence, &action.ActionType, &action.Label, &action.PayloadJSON)
-	if err != nil {
+func readCanvasAction(db *gorm.DB, workID string, sequence int64) (storedCanvasAction, error) {
+	var model canvasActionModel
+	if err := db.Where("work_id = ? AND sequence = ?", workID, sequence).First(&model).Error; err != nil {
 		return storedCanvasAction{}, err
 	}
-	return action, nil
+	return storedCanvasAction{ID: model.ID, Sequence: model.Sequence, ActionType: model.ActionType, Label: model.Label, PayloadJSON: model.PayloadJSON}, nil
 }
 
-func applyCanvasAction(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	action storedCanvasAction,
-	forward bool,
-) error {
+func applyCanvasAction(tx *gorm.DB, workID string, action storedCanvasAction, forward bool) error {
 	switch action.ActionType {
 	case actionCreateNodes:
 		var payload createNodesActionPayload
@@ -428,220 +324,170 @@ func applyCanvasAction(
 			return fmt.Errorf("decode create nodes action: %w", err)
 		}
 		if forward {
-			if err := restoreNodes(ctx, transaction, payload.Nodes); err != nil {
+			if err := restoreNodes(tx, payload.Nodes); err != nil {
 				return err
 			}
-			return restoreEdges(ctx, transaction, payload.Edges)
+			return restoreEdges(tx, payload.Edges)
 		}
-		return deleteNodeSnapshots(ctx, transaction, workID, payload.Nodes)
+		if len(payload.Edges) > 0 {
+			ids := make([]string, len(payload.Edges))
+			for i, edge := range payload.Edges {
+				ids[i] = edge.ID
+			}
+			if err := deleteEdgeSnapshots(tx, workID, ids); err != nil {
+				return err
+			}
+		}
+		return deleteNodeSnapshots(tx, workID, payload.Nodes)
 	case actionDeleteNodes:
 		var payload deleteNodesActionPayload
 		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
 			return fmt.Errorf("decode delete nodes action: %w", err)
 		}
 		if forward {
-			return deleteNodeSnapshots(ctx, transaction, workID, payload.Nodes)
+			if len(payload.Edges) > 0 {
+				ids := make([]string, len(payload.Edges))
+				for i, edge := range payload.Edges {
+					ids[i] = edge.ID
+				}
+				if err := deleteEdgeSnapshots(tx, workID, ids); err != nil {
+					return err
+				}
+			}
+			return deleteNodeSnapshots(tx, workID, payload.Nodes)
 		}
-		if err := restoreNodes(ctx, transaction, payload.Nodes); err != nil {
+		if err := restoreNodes(tx, payload.Nodes); err != nil {
 			return err
 		}
-		return restoreEdges(ctx, transaction, payload.Edges)
+		return restoreEdges(tx, payload.Edges)
 	case actionMoveNodes:
 		var payload moveNodesActionPayload
 		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
 			return fmt.Errorf("decode move nodes action: %w", err)
 		}
 		if forward {
-			return applyNodePositions(ctx, transaction, workID, payload.After)
+			return applyNodePositions(tx, workID, payload.After)
 		}
-		return applyNodePositions(ctx, transaction, workID, payload.Before)
+		return applyNodePositions(tx, workID, payload.Before)
 	case actionUpdateNode:
 		var payload updateNodeActionPayload
 		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
 			return fmt.Errorf("decode update node action: %w", err)
 		}
 		if forward {
-			return applyNodeContent(ctx, transaction, workID, payload.After)
+			return applyNodeContent(tx, workID, payload.After)
 		}
-		return applyNodeContent(ctx, transaction, workID, payload.Before)
+		return applyNodeContent(tx, workID, payload.Before)
 	case actionCreateEdge:
 		var payload createEdgeActionPayload
 		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
 			return fmt.Errorf("decode create edge action: %w", err)
 		}
 		if forward {
-			return restoreEdges(ctx, transaction, []canvas.Edge{payload.Edge})
+			return restoreEdges(tx, []canvas.Edge{payload.Edge})
 		}
-		return deleteEdgeSnapshots(ctx, transaction, workID, []string{payload.Edge.ID})
+		return deleteEdgeSnapshots(tx, workID, []string{payload.Edge.ID})
 	case actionDeleteEdges:
 		var payload deleteEdgesActionPayload
 		if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
 			return fmt.Errorf("decode delete edges action: %w", err)
 		}
 		if forward {
-			edgeIDs := make([]string, len(payload.Edges))
-			for index, edge := range payload.Edges {
-				edgeIDs[index] = edge.ID
+			ids := make([]string, len(payload.Edges))
+			for i, edge := range payload.Edges {
+				ids[i] = edge.ID
 			}
-			return deleteEdgeSnapshots(ctx, transaction, workID, edgeIDs)
+			return deleteEdgeSnapshots(tx, workID, ids)
 		}
-		return restoreEdges(ctx, transaction, payload.Edges)
+		return restoreEdges(tx, payload.Edges)
 	default:
 		return fmt.Errorf("unsupported canvas action type %q", action.ActionType)
 	}
 }
 
-func deleteEdgeSnapshots(ctx context.Context, transaction *sql.Tx, workID string, edgeIDs []string) error {
-	for _, edgeID := range edgeIDs {
-		result, err := transaction.ExecContext(ctx, `DELETE FROM canvas_edges WHERE work_id = ? AND id = ?`, workID, edgeID)
-		if err != nil {
-			return fmt.Errorf("delete canvas edge snapshot: %w", err)
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("read deleted canvas edge snapshot: %w", err)
-		}
-		if changed == 0 {
-			return canvas.ErrNodeNotFound
-		}
+func deleteEdgeSnapshots(tx *gorm.DB, workID string, edgeIDs []string) error {
+	result := tx.Where("work_id = ? AND id IN ?", workID, edgeIDs).Delete(&canvasEdgeModel{})
+	if result.Error != nil {
+		return fmt.Errorf("delete canvas edge snapshots: %w", result.Error)
 	}
-	return nil
-}
-
-func applyNodePositions(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	positions []canvas.NodePosition,
-) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for _, position := range positions {
-		result, err := transaction.ExecContext(ctx, `
-UPDATE canvas_nodes SET x = ?, y = ?, updated_at = ? WHERE work_id = ? AND id = ?`,
-			position.X, position.Y, now, workID, position.NodeID)
-		if err != nil {
-			return fmt.Errorf("apply canvas node position: %w", err)
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("read applied canvas node position: %w", err)
-		}
-		if changed == 0 {
-			return canvas.ErrNodeNotFound
-		}
-	}
-	return nil
-}
-
-func applyNodeContent(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	state nodeContentState,
-) error {
-	result, err := transaction.ExecContext(ctx, `
-UPDATE canvas_nodes
-SET title = ?, content = ?, revision = revision + 1, updated_at = ?
-WHERE work_id = ? AND id = ?`, state.Title, state.Content,
-		time.Now().UTC().Format(time.RFC3339Nano), workID, state.NodeID)
-	if err != nil {
-		return fmt.Errorf("apply canvas node content: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read applied canvas node content: %w", err)
-	}
-	if changed == 0 {
+	if result.RowsAffected != int64(len(edgeIDs)) {
 		return canvas.ErrNodeNotFound
 	}
 	return nil
 }
 
-func restoreNodes(ctx context.Context, transaction *sql.Tx, nodes []canvas.Node) error {
-	for _, node := range nodes {
-		_, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind,
-			node.Title, node.Content, node.X, node.Y, node.CreatedAt.Format(time.RFC3339Nano),
-			node.UpdatedAt.Format(time.RFC3339Nano))
-		if err != nil {
-			return fmt.Errorf("restore canvas node: %w", err)
+func applyNodePositions(tx *gorm.DB, workID string, positions []canvas.NodePosition) error {
+	now := time.Now().UTC()
+	for _, position := range positions {
+		result := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ?", workID, position.NodeID).Updates(map[string]any{"x": position.X, "y": position.Y, "updated_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("apply canvas node position: %w", result.Error)
 		}
-	}
-	return nil
-}
-
-func restoreEdges(ctx context.Context, transaction *sql.Tx, edges []canvas.Edge) error {
-	for _, edge := range edges {
-		_, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
-			edge.Kind, edge.CreatedAt.Format(time.RFC3339Nano))
-		if err != nil {
-			return fmt.Errorf("restore canvas edge: %w", err)
-		}
-	}
-	return nil
-}
-
-func deleteNodeSnapshots(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	nodes []canvas.Node,
-) error {
-	for _, node := range nodes {
-		result, err := transaction.ExecContext(ctx, `
-DELETE FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, node.ID)
-		if err != nil {
-			return fmt.Errorf("reapply canvas node deletion: %w", err)
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("read reapplied canvas node deletion: %w", err)
-		}
-		if changed == 0 {
+		if result.RowsAffected == 0 {
 			return canvas.ErrNodeNotFound
 		}
 	}
 	return nil
 }
 
-func listEdgesForHistory(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	nodeIDs map[string]struct{},
-) ([]canvas.Edge, error) {
-	rows, err := transaction.QueryContext(ctx, `
-SELECT id, work_id, source_node_id, target_node_id, kind, created_at
-FROM canvas_edges WHERE work_id = ? ORDER BY created_at`, workID)
-	if err != nil {
+func applyNodeContent(tx *gorm.DB, workID string, state nodeContentState) error {
+	result := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ?", workID, state.NodeID).Updates(map[string]any{"title": state.Title, "content": state.Content, "revision": gorm.Expr("revision + 1"), "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return fmt.Errorf("apply canvas node content: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return canvas.ErrNodeNotFound
+	}
+	return nil
+}
+
+func restoreNodes(tx *gorm.DB, nodes []canvas.Node) error {
+	models := make([]canvasNodeModel, len(nodes))
+	for i, node := range nodes {
+		models[i] = canvasNodeModel{ID: node.ID, WorkID: node.WorkID, Revision: node.Revision, Kind: string(node.Kind), Title: node.Title, Content: node.Content, X: node.X, Y: node.Y, CurrentVersionID: node.CurrentVersionID, CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt}
+	}
+	if len(models) > 0 {
+		if err := tx.Create(&models).Error; err != nil {
+			return fmt.Errorf("restore canvas nodes: %w", err)
+		}
+	}
+	return nil
+}
+
+func restoreEdges(tx *gorm.DB, edges []canvas.Edge) error {
+	models := make([]canvasEdgeModel, len(edges))
+	for i, edge := range edges {
+		models[i] = canvasEdgeModel{ID: edge.ID, WorkID: edge.WorkID, SourceNodeID: edge.SourceNodeID, TargetNodeID: edge.TargetNodeID, Kind: edge.Kind, CreatedAt: edge.CreatedAt}
+	}
+	if len(models) > 0 {
+		if err := tx.Create(&models).Error; err != nil {
+			return fmt.Errorf("restore canvas edges: %w", err)
+		}
+	}
+	return nil
+}
+
+func deleteNodeSnapshots(tx *gorm.DB, workID string, nodes []canvas.Node) error {
+	ids := make([]string, len(nodes))
+	for i, node := range nodes {
+		ids[i] = node.ID
+	}
+	result := tx.Where("work_id = ? AND id IN ?", workID, ids).Delete(&canvasNodeModel{})
+	if result.Error != nil {
+		return fmt.Errorf("reapply canvas node deletion: %w", result.Error)
+	}
+	if result.RowsAffected != int64(len(ids)) {
+		return canvas.ErrNodeNotFound
+	}
+	return nil
+}
+
+func listEdgesForHistory(tx *gorm.DB, workID string, nodeIDs []string) ([]canvas.Edge, error) {
+	var models []canvasEdgeModel
+	if err := tx.Where("work_id = ? AND (source_node_id IN ? OR target_node_id IN ?)", workID, nodeIDs, nodeIDs).Order("created_at").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list canvas edges for history: %w", err)
 	}
-	defer rows.Close()
-	edges := make([]canvas.Edge, 0)
-	for rows.Next() {
-		var edge canvas.Edge
-		var createdAt string
-		if err := rows.Scan(&edge.ID, &edge.WorkID, &edge.SourceNodeID, &edge.TargetNodeID, &edge.Kind, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan canvas edge for history: %w", err)
-		}
-		if _, sourceDeleted := nodeIDs[edge.SourceNodeID]; !sourceDeleted {
-			if _, targetDeleted := nodeIDs[edge.TargetNodeID]; !targetDeleted {
-				continue
-			}
-		}
-		edge.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse canvas edge history time: %w", err)
-		}
-		edges = append(edges, edge)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate canvas edges for history: %w", err)
-	}
-	return edges, nil
+	return canvasEdgesFromModels(models), nil
 }
 
 func uniqueStrings(values []string) []string {

@@ -36,7 +36,7 @@ func TestCompleteSectionOutlineBatchCreatesUndoableNodesAndEdges(t *testing.T) {
 		{id: chapterID, kind: string(canvas.NodeKindChapterOutline), title: "第一章"},
 		{id: worldID, kind: string(canvas.NodeKindWorld), title: "世界观"},
 	} {
-		if _, err := providerRepository.database.Exec(`
+		if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
 VALUES (?, ?, 1, ?, ?, '', 100, 200, ?, ?)`, node.id, workID, node.kind, node.title, now, now); err != nil {
 			t.Fatalf("insert canvas node: %v", err)
@@ -46,7 +46,7 @@ VALUES (?, ?, 1, ?, ?, '', 100, 200, ?, ?)`, node.id, workID, node.kind, node.ti
 	if err != nil {
 		t.Fatalf("encode context node ids: %v", err)
 	}
-	if _, err := providerRepository.database.Exec(`
+	if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO agent_runs (
     id, work_id, status, prompt, target, target_node_id, provider_id, model_id,
     context_node_ids_json, created_at, updated_at
@@ -106,7 +106,7 @@ func TestGetNodeAttachmentsReturnsDirectIncomingNodes(t *testing.T) {
 		{id: "location", kind: string(canvas.NodeKindLocation), title: "宴会厅"},
 		{id: "child", kind: string(canvas.NodeKindEvent), title: "后续事件"},
 	} {
-		if _, err := providerRepository.database.Exec(`
+		if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
 VALUES (?, ?, 1, ?, ?, '', 0, 0, ?, ?)`, node.id, workID, node.kind, node.title, now, now); err != nil {
 			t.Fatalf("insert canvas node: %v", err)
@@ -119,7 +119,7 @@ VALUES (?, ?, 1, ?, ?, '', 0, 0, ?, ?)`, node.id, workID, node.kind, node.title,
 		{id: "edge-location", sourceNodeID: "location", targetNodeID: "target"},
 		{id: "edge-child", sourceNodeID: "target", targetNodeID: "child"},
 	} {
-		if _, err := providerRepository.database.Exec(`
+		if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
 VALUES (?, ?, ?, ?, 'generated_from', ?)`, edge.id, workID, edge.sourceNodeID, edge.targetNodeID, now); err != nil {
 			t.Fatalf("insert canvas edge: %v", err)
@@ -172,7 +172,7 @@ func TestCompleteChapterSectionConnectsInheritedWritingContext(t *testing.T) {
 		{id: chapterID, kind: string(canvas.NodeKindChapterOutline), title: "第一章"},
 		{id: worldID, kind: string(canvas.NodeKindWorld), title: "世界观"},
 	} {
-		if _, err := providerRepository.database.Exec(`
+		if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
 VALUES (?, ?, 1, ?, ?, '', 100, 200, ?, ?)`, node.id, workID, node.kind, node.title, now, now); err != nil {
 			t.Fatalf("insert canvas node: %v", err)
@@ -184,7 +184,7 @@ VALUES (?, ?, 1, ?, ?, '', 100, 200, ?, ?)`, node.id, workID, node.kind, node.ti
 		{id: "edge-world-chapter", sourceNodeID: worldID, targetNodeID: chapterID},
 		{id: "edge-chapter-section", sourceNodeID: chapterID, targetNodeID: sectionID},
 	} {
-		if _, err := providerRepository.database.Exec(`
+		if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
 VALUES (?, ?, ?, ?, 'generated_from', ?)`, edge.id, workID, edge.sourceNodeID, edge.targetNodeID, now); err != nil {
 			t.Fatalf("insert canvas edge: %v", err)
@@ -208,7 +208,7 @@ VALUES (?, ?, ?, ?, 'generated_from', ?)`, edge.id, workID, edge.sourceNodeID, e
 	if err != nil {
 		t.Fatalf("encode context node ids: %v", err)
 	}
-	if _, err := providerRepository.database.Exec(`
+	if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO agent_runs (
     id, work_id, status, prompt, target, target_node_id, provider_id, model_id,
     context_node_ids_json, created_at, updated_at
@@ -253,7 +253,7 @@ func testSectionOutline(ordinal int) canvas.SectionOutlineData {
 func assertTableCount(t *testing.T, repository *ProviderRepository, query string, want int, arguments ...any) {
 	t.Helper()
 	var got int
-	if err := repository.database.QueryRow(query, arguments...).Scan(&got); err != nil {
+	if err := repository.database.Raw(query, arguments...).Row().Scan(&got); err != nil {
 		t.Fatalf("query table count: %v", err)
 	}
 	if got != want {
@@ -286,13 +286,13 @@ func TestCompleteNodeUpdateRecordsUndoableCanvasHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode context node ids: %v", err)
 	}
-	if _, err := providerRepository.database.Exec(`
+	if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nodeID, workID, 3, "character", originalTitle, originalContent, 0, 0, now, now); err != nil {
 		t.Fatalf("insert canvas node: %v", err)
 	}
-	if _, err := providerRepository.database.Exec(`
+	if _, err := providerRepository.databaseHost.sqlDB.Exec(`
 INSERT INTO agent_runs (
     id, work_id, status, prompt, target, provider_id, model_id, context_node_ids_json, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -310,7 +310,7 @@ INSERT INTO agent_runs (
 	}
 
 	var actionType, label, payloadJSON string
-	if err := providerRepository.database.QueryRow(`
+	if err := providerRepository.databaseHost.sqlDB.QueryRow(`
 SELECT action_type, label, payload_json FROM canvas_actions WHERE work_id = ?`, workID).
 		Scan(&actionType, &label, &payloadJSON); err != nil {
 		t.Fatalf("read canvas action: %v", err)
@@ -331,7 +331,7 @@ SELECT action_type, label, payload_json FROM canvas_actions WHERE work_id = ?`, 
 		t.Fatalf("undo agent update: %v", err)
 	}
 	var title, content string
-	if err := providerRepository.database.QueryRow(`
+	if err := providerRepository.databaseHost.sqlDB.QueryRow(`
 SELECT title, content FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).
 		Scan(&title, &content); err != nil {
 		t.Fatalf("read restored canvas node: %v", err)

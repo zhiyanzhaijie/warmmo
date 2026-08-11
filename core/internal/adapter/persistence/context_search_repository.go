@@ -3,7 +3,6 @@ package persistence
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 
 	appagent "warmmo/core/internal/application/agent"
 	"warmmo/core/internal/domain/ai"
@@ -33,7 +34,7 @@ type ContextEmbedder interface {
 }
 
 type ContextIndex struct {
-	database *sql.DB
+	database *gorm.DB
 	embedder ContextEmbedder
 }
 
@@ -90,7 +91,14 @@ func NewContextIndex(providerRepository *ProviderRepository, embedder ContextEmb
 	if providerRepository == nil {
 		return &ContextIndex{embedder: embedder}
 	}
-	return &ContextIndex{database: providerRepository.database, embedder: embedder}
+	return NewContextIndexWithDatabase(providerRepository.databaseHost, embedder)
+}
+
+func NewContextIndexWithDatabase(database *Database, embedder ContextEmbedder) *ContextIndex {
+	if database == nil {
+		return &ContextIndex{embedder: embedder}
+	}
+	return &ContextIndex{database: database.DB, embedder: embedder}
 }
 
 func (i *ContextIndex) configured() error {
@@ -136,14 +144,14 @@ func (i *ContextIndex) prepareJobs(ctx context.Context) error {
 	if err := i.configured(); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := i.database.ExecContext(ctx, `UPDATE knowledge_index_jobs SET status='pending', last_error='', updated_at=? WHERE status='processing'`, now); err != nil {
+	now := time.Now().UTC()
+	if err := i.database.WithContext(ctx).Model(&knowledgeIndexJobModel{}).Where("status = ?", "processing").Updates(map[string]any{"status": "pending", "last_error": "", "updated_at": now}).Error; err != nil {
 		return err
 	}
 	if err := i.retireLegacyArchiveNodeVersions(ctx); err != nil {
 		return err
 	}
-	if _, err := i.database.ExecContext(ctx, `
+	if err := i.database.WithContext(ctx).Exec(`
 INSERT INTO knowledge_index_jobs(work_id,object_type,object_id,status,created_at,updated_at)
 SELECT n.work_id,'node-version',n.current_version_id,'pending',?,?
 FROM canvas_nodes n
@@ -151,45 +159,43 @@ WHERE n.current_version_id<>'' AND NOT EXISTS (
     SELECT 1 FROM knowledge_vector_documents d
     WHERE d.work_id=n.work_id AND d.version_id=n.current_version_id AND d.scope='current' AND d.model_id=? AND d.status='ready'
 )
-ON CONFLICT(work_id,object_type,object_id) DO UPDATE SET status='pending',attempts=0,last_error='',updated_at=excluded.updated_at`, now, now, i.embedder.ModelID()); err != nil {
+	ON CONFLICT(work_id,object_type,object_id) DO UPDATE SET status='pending',attempts=0,last_error='',updated_at=excluded.updated_at`, now, now, i.embedder.ModelID()).Error; err != nil {
 		return err
 	}
-	if _, err := i.database.ExecContext(ctx, `
+	if err := i.database.WithContext(ctx).Exec(`
 INSERT INTO knowledge_index_jobs(work_id,object_type,object_id,status,created_at,updated_at)
 SELECT a.work_id,'archive',a.id,'pending',?,?
 FROM chapter_archives a
-WHERE a.retracted_at='' AND NOT EXISTS (
+	WHERE a.retracted_at IS NULL AND NOT EXISTS (
     SELECT 1 FROM knowledge_vector_documents d
     WHERE d.work_id=a.work_id AND d.object_type='archive' AND d.object_id=a.id AND d.model_id=? AND d.status='ready'
 )
-ON CONFLICT(work_id,object_type,object_id) DO UPDATE SET status='pending',attempts=0,last_error='',updated_at=excluded.updated_at`, now, now, i.embedder.ModelID()); err != nil {
+	ON CONFLICT(work_id,object_type,object_id) DO UPDATE SET status='pending',attempts=0,last_error='',updated_at=excluded.updated_at`, now, now, i.embedder.ModelID()).Error; err != nil {
 		return err
 	}
-	_, err := i.database.ExecContext(ctx, `
+	err := i.database.WithContext(ctx).Exec(`
 INSERT INTO knowledge_index_jobs(work_id,object_type,object_id,status,created_at,updated_at)
 SELECT s.work_id,'archive-section',s.archive_id || ':' || s.chapter_section_node_id,'pending',?,?
 FROM chapter_archive_sections s
 JOIN chapter_archives a ON a.id=s.archive_id AND a.work_id=s.work_id
-WHERE a.retracted_at='' AND NOT EXISTS (
+	WHERE a.retracted_at IS NULL AND NOT EXISTS (
     SELECT 1 FROM knowledge_vector_documents d
     WHERE d.work_id=s.work_id AND d.object_type='archive-section'
       AND d.object_id=s.archive_id || ':' || s.chapter_section_node_id
       AND d.model_id=? AND d.status='ready'
 )
-ON CONFLICT(work_id,object_type,object_id) DO UPDATE SET status='pending',attempts=0,last_error='',updated_at=excluded.updated_at`, now, now, i.embedder.ModelID())
+	ON CONFLICT(work_id,object_type,object_id) DO UPDATE SET status='pending',attempts=0,last_error='',updated_at=excluded.updated_at`, now, now, i.embedder.ModelID()).Error
 	return err
 }
 
 func (i *ContextIndex) retireLegacyArchiveNodeVersions(ctx context.Context) error {
-	rows, err := i.database.QueryContext(ctx, `SELECT vector_row_id FROM knowledge_vector_documents WHERE object_type='node-version' AND scope='archive' AND status='ready'`)
-	if err != nil {
+	var documents []knowledgeVectorDocumentModel
+	db := i.database.WithContext(ctx)
+	if err := db.Select("vector_row_id").Where("object_type = ? AND scope = ? AND status = ?", "node-version", "archive", "ready").Find(&documents).Error; err != nil {
 		return err
 	}
-	ids, err := collectVectorRowIDs(rows)
-	if err != nil {
-		return err
-	}
-	if _, err = i.database.ExecContext(ctx, `UPDATE knowledge_vector_documents SET status='retired',indexed_at=? WHERE object_type='node-version' AND scope='archive'`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	ids := vectorDocumentIDs(documents)
+	if err := db.Model(&knowledgeVectorDocumentModel{}).Where("object_type = ? AND scope = ?", "node-version", "archive").Updates(map[string]any{"status": "retired", "indexed_at": time.Now().UTC()}).Error; err != nil {
 		return err
 	}
 	return i.deleteVectors(ctx, ids)
@@ -218,36 +224,27 @@ type contextIndexJob struct {
 }
 
 func (i *ContextIndex) claimJob(ctx context.Context) (contextIndexJob, bool, error) {
-	tx, err := i.database.BeginTx(ctx, nil)
-	if err != nil {
-		return contextIndexJob{}, false, err
-	}
-	defer tx.Rollback()
 	var job contextIndexJob
-	err = tx.QueryRowContext(ctx, `
-SELECT id, work_id, object_type, object_id
-FROM knowledge_index_jobs
-WHERE status='pending'
-ORDER BY updated_at, id
-LIMIT 1`).Scan(&job.ID, &job.WorkID, &job.ObjectType, &job.ObjectID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return contextIndexJob{}, false, nil
-	}
-	if err != nil {
-		return contextIndexJob{}, false, err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE knowledge_index_jobs SET status='processing', attempts=attempts+1, updated_at=? WHERE id=? AND status='pending'`, time.Now().UTC().Format(time.RFC3339Nano), job.ID)
-	if err != nil {
-		return contextIndexJob{}, false, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil || changed == 0 {
-		return contextIndexJob{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return contextIndexJob{}, false, err
-	}
-	return job, true, nil
+	claimed := false
+	err := i.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model knowledgeIndexJobModel
+		if err := tx.Where("status = ?", "pending").Order("updated_at, id").First(&model).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		result := tx.Model(&knowledgeIndexJobModel{}).Where("id = ? AND status = ?", model.ID, "pending").Updates(map[string]any{"status": "processing", "attempts": gorm.Expr("attempts + 1"), "updated_at": time.Now().UTC()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		job = contextIndexJob{ID: model.ID, WorkID: model.WorkID, ObjectType: model.ObjectType, ObjectID: model.ObjectID}
+		claimed = true
+		return nil
+	})
+	return job, claimed, err
 }
 
 func (i *ContextIndex) finishJob(ctx context.Context, jobID int64, success bool, message string) error {
@@ -255,8 +252,17 @@ func (i *ContextIndex) finishJob(ctx context.Context, jobID int64, success bool,
 	if success {
 		status = "ready"
 	}
-	_, err := i.database.ExecContext(ctx, `UPDATE knowledge_index_jobs SET status=CASE WHEN ?='failed' AND attempts<3 THEN 'pending' ELSE ? END, last_error=?, updated_at=? WHERE id=?`, status, status, message, time.Now().UTC().Format(time.RFC3339Nano), jobID)
-	return err
+	updates := map[string]any{"status": status, "last_error": message, "updated_at": time.Now().UTC()}
+	if !success {
+		var job knowledgeIndexJobModel
+		if err := i.database.WithContext(ctx).Select("attempts").First(&job, jobID).Error; err != nil {
+			return err
+		}
+		if job.Attempts < 3 {
+			updates["status"] = "pending"
+		}
+	}
+	return i.database.WithContext(ctx).Model(&knowledgeIndexJobModel{}).Where("id = ?", jobID).Updates(updates).Error
 }
 
 func (i *ContextIndex) processJob(ctx context.Context, job contextIndexJob) error {
@@ -273,63 +279,59 @@ func (i *ContextIndex) processJob(ctx context.Context, job contextIndexJob) erro
 }
 
 func (i *ContextIndex) indexNodeVersion(ctx context.Context, workID, versionID string) error {
-	var nodeID, kind, title, content, currentVersionID string
-	var revision int64
-	if err := i.database.QueryRowContext(ctx, `
-SELECT v.node_id, n.kind, v.title, v.content, n.revision, n.current_version_id
-FROM canvas_node_versions v
-JOIN canvas_nodes n ON n.work_id=v.work_id AND n.id=v.node_id
-WHERE v.work_id=? AND v.id=?`, workID, versionID).Scan(&nodeID, &kind, &title, &content, &revision, &currentVersionID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	db := i.database.WithContext(ctx)
+	var version canvasNodeVersionModel
+	if err := db.Where("work_id = ? AND id = ?", workID, versionID).First(&version).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
 		return err
 	}
-	if currentVersionID != versionID {
+	var node canvasNodeModel
+	if err := db.Select("id", "kind", "revision", "current_version_id").Where("work_id = ? AND id = ?", workID, version.NodeID).First(&node).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if node.CurrentVersionID != versionID {
 		return i.retireDocuments(ctx, workID, "node-version", versionID)
 	}
-	if err := i.retireOtherCurrentVersions(ctx, workID, nodeID, versionID); err != nil {
+	if err := i.retireOtherCurrentVersions(ctx, workID, version.NodeID, versionID); err != nil {
 		return err
 	}
 	return i.upsertDocument(ctx, contextDocument{
 		WorkID: workID, ObjectType: "node-version", ObjectID: versionID,
-		NodeID: nodeID, VersionID: versionID, Revision: revision,
-		Kind: kind, Title: title, Content: title + "\n" + content,
+		NodeID: version.NodeID, VersionID: versionID, Revision: node.Revision,
+		Kind: node.Kind, Title: version.Title, Content: version.Title + "\n" + version.Content,
 		Scope: "current", Source: "canvas.current",
 	})
 }
 
 func (i *ContextIndex) retireOtherCurrentVersions(ctx context.Context, workID, nodeID, currentVersionID string) error {
-	rows, err := i.database.QueryContext(ctx, `SELECT vector_row_id FROM knowledge_vector_documents WHERE work_id=? AND node_id=? AND scope='current' AND version_id<>? AND status='ready'`, workID, nodeID, currentVersionID)
-	if err != nil {
+	db := i.database.WithContext(ctx)
+	var documents []knowledgeVectorDocumentModel
+	query := db.Where("work_id = ? AND node_id = ? AND scope = ? AND version_id <> ? AND status = ?", workID, nodeID, "current", currentVersionID, "ready")
+	if err := query.Select("vector_row_id").Find(&documents).Error; err != nil {
 		return err
 	}
-	ids, err := collectVectorRowIDs(rows)
-	if err != nil {
+	if err := query.Updates(map[string]any{"status": "retired", "indexed_at": time.Now().UTC()}).Error; err != nil {
 		return err
 	}
-	if _, err = i.database.ExecContext(ctx, `UPDATE knowledge_vector_documents SET status='retired',indexed_at=? WHERE work_id=? AND node_id=? AND scope='current' AND version_id<>?`, time.Now().UTC().Format(time.RFC3339Nano), workID, nodeID, currentVersionID); err != nil {
-		return err
-	}
-	return i.deleteVectors(ctx, ids)
+	return i.deleteVectors(ctx, vectorDocumentIDs(documents))
 }
 
 func (i *ContextIndex) indexArchive(ctx context.Context, workID, archiveID string) error {
-	var nodeID, versionID, title, summary, content string
-	var revision int64
-	if err := i.database.QueryRowContext(ctx, `
-SELECT chapter_outline_node_id, outline_version_id, outline_revision, outline_title, summary, outline_content
-FROM chapter_archives
-WHERE work_id=? AND id=? AND retracted_at=''`, workID, archiveID).Scan(&nodeID, &versionID, &revision, &title, &summary, &content); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	var archive chapterArchiveModel
+	if err := i.database.WithContext(ctx).Where("work_id = ? AND id = ? AND retracted_at IS NULL", workID, archiveID).First(&archive).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return i.retireArchiveDocuments(ctx, workID, archiveID)
 		}
 		return err
 	}
 	return i.upsertDocument(ctx, contextDocument{
 		WorkID: workID, ObjectType: "archive", ObjectID: archiveID, ArchiveID: archiveID,
-		NodeID: nodeID, VersionID: versionID, Revision: revision, Kind: string(canvas.NodeKindChapterOutline),
-		Title: title, Content: title + "\n" + summary + "\n" + content,
+		NodeID: archive.ChapterOutlineNodeID, VersionID: archive.OutlineVersionID, Revision: archive.OutlineRevision, Kind: string(canvas.NodeKindChapterOutline),
+		Title: archive.OutlineTitle, Content: archive.OutlineTitle + "\n" + archive.Summary + "\n" + archive.OutlineContent,
 		Scope: "archive", Source: "chapter-archive",
 	})
 }
@@ -339,25 +341,24 @@ func (i *ContextIndex) indexArchiveSection(ctx context.Context, workID, objectID
 	if !ok || archiveID == "" || sectionNodeID == "" {
 		return fmt.Errorf("invalid archive section index id %q", objectID)
 	}
-	var title, summary, content, versionID string
-	var revision int64
-	err := i.database.QueryRowContext(ctx, `
-SELECT s.title, s.summary, s.content, s.chapter_section_version_id, s.node_revision
-FROM chapter_archive_sections s
-JOIN chapter_archives a ON a.id=s.archive_id AND a.work_id=s.work_id
-WHERE s.work_id=? AND s.archive_id=? AND s.chapter_section_node_id=?
-  AND a.retracted_at=''`, workID, archiveID, sectionNodeID).Scan(&title, &summary, &content, &versionID, &revision)
-	if errors.Is(err, sql.ErrNoRows) {
+	db := i.database.WithContext(ctx)
+	var archive chapterArchiveModel
+	if err := db.Select("id").Where("id = ? AND work_id = ? AND retracted_at IS NULL", archiveID, workID).First(&archive).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return i.retireDocuments(ctx, workID, "archive-section", objectID)
+	} else if err != nil {
+		return err
 	}
-	if err != nil {
+	var section chapterArchiveSectionModel
+	if err := db.Where("work_id = ? AND archive_id = ? AND chapter_section_node_id = ?", workID, archiveID, sectionNodeID).First(&section).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return i.retireDocuments(ctx, workID, "archive-section", objectID)
+	} else if err != nil {
 		return err
 	}
 	return i.upsertDocument(ctx, contextDocument{
 		WorkID: workID, ObjectType: "archive-section", ObjectID: objectID,
-		NodeID: sectionNodeID, VersionID: versionID, ArchiveID: archiveID, Revision: revision,
+		NodeID: sectionNodeID, VersionID: section.ChapterSectionVersionID, ArchiveID: archiveID, Revision: section.NodeRevision,
 		Kind:  string(canvas.NodeKindChapterSection),
-		Title: title, Content: title + "\n" + summary + "\n" + content,
+		Title: section.Title, Content: section.Title + "\n" + section.Summary + "\n" + section.Content,
 		Scope: "archive", Source: "chapter-archive",
 	})
 }
@@ -373,18 +374,14 @@ type contextDocument struct {
 func (i *ContextIndex) upsertDocument(ctx context.Context, document contextDocument) error {
 	digest := sha256.Sum256([]byte(document.Content))
 	hash := hex.EncodeToString(digest[:])
-	var existingRowID int64
-	var existingHash, existingStatus string
-	err := i.database.QueryRowContext(ctx, `
-SELECT vector_row_id,content_hash,status
-FROM knowledge_vector_documents
-WHERE work_id=? AND object_type=? AND object_id=? AND chunk_index=0 AND model_id=? AND scope=?`,
-		document.WorkID, document.ObjectType, document.ObjectID, i.embedder.ModelID(), document.Scope,
-	).Scan(&existingRowID, &existingHash, &existingStatus)
-	if err == nil && existingHash == hash && existingStatus == "ready" {
+	db := i.database.WithContext(ctx)
+	var existing knowledgeVectorDocumentModel
+	identity := db.Where("work_id = ? AND object_type = ? AND object_id = ? AND chunk_index = 0 AND model_id = ? AND scope = ?", document.WorkID, document.ObjectType, document.ObjectID, i.embedder.ModelID(), document.Scope)
+	err := identity.First(&existing).Error
+	if err == nil && existing.ContentHash == hash && existing.Status == "ready" {
 		return nil
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 
@@ -403,41 +400,28 @@ WHERE work_id=? AND object_type=? AND object_id=? AND chunk_index=0 AND model_id
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := i.database.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var rowID int64
-	err = tx.QueryRowContext(ctx, `SELECT vector_row_id FROM knowledge_vector_documents WHERE work_id=? AND object_type=? AND object_id=? AND chunk_index=0 AND model_id=? AND scope=?`, document.WorkID, document.ObjectType, document.ObjectID, i.embedder.ModelID(), document.Scope).Scan(&rowID)
-	exists := err == nil
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if exists {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_vectors_partitioned WHERE rowid=?`, rowID); err != nil {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var stored knowledgeVectorDocumentModel
+		err := tx.Where("work_id = ? AND object_type = ? AND object_id = ? AND chunk_index = 0 AND model_id = ? AND scope = ?", document.WorkID, document.ObjectType, document.ObjectID, i.embedder.ModelID(), document.Scope).First(&stored).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-	} else {
-		result, err := tx.ExecContext(ctx, `INSERT INTO knowledge_vector_documents(work_id,object_type,object_id,node_id,version_id,archive_id,revision,chunk_index,model_id,content_hash,scope,kind,title,source,evidence_json,status,indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, document.WorkID, document.ObjectType, document.ObjectID, document.NodeID, document.VersionID, document.ArchiveID, document.Revision, 0, i.embedder.ModelID(), hash, document.Scope, document.Kind, document.Title, document.Source, string(evidenceJSON), "pending", "")
-		if err != nil {
+		if err == nil {
+			if err := tx.Exec(`DELETE FROM knowledge_vectors_partitioned WHERE rowid = ?`, stored.VectorRowID).Error; err != nil {
+				return err
+			}
+		} else {
+			stored = knowledgeVectorDocumentModel{WorkID: document.WorkID, ObjectType: document.ObjectType, ObjectID: document.ObjectID, NodeID: document.NodeID, VersionID: document.VersionID, ArchiveID: document.ArchiveID, Revision: document.Revision, ChunkIndex: 0, ModelID: i.embedder.ModelID(), ContentHash: hash, Scope: document.Scope, Kind: document.Kind, Title: document.Title, Source: document.Source, EvidenceJSON: string(evidenceJSON), Status: "pending"}
+			if err := tx.Create(&stored).Error; err != nil {
+				return err
+			}
+		}
+		isSpine := document.ObjectType == "archive" || document.ObjectType == "archive-section"
+		if err := tx.Exec(`INSERT INTO knowledge_vectors_partitioned(rowid,work_id,model_id,scope,kind,is_spine,embedding) VALUES (?,?,?,?,?,?,?)`, stored.VectorRowID, document.WorkID, i.embedder.ModelID(), document.Scope, document.Kind, isSpine, string(vector)).Error; err != nil {
 			return err
 		}
-		rowID, err = result.LastInsertId()
-		if err != nil {
-			return err
-		}
-	}
-	isSpine := document.ObjectType == "archive" || document.ObjectType == "archive-section"
-	if _, err := tx.ExecContext(ctx, `INSERT INTO knowledge_vectors_partitioned(rowid,work_id,model_id,scope,kind,is_spine,embedding) VALUES (?,?,?,?,?,?,?)`, rowID, document.WorkID, i.embedder.ModelID(), document.Scope, document.Kind, isSpine, string(vector)); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE knowledge_vector_documents SET work_id=?,node_id=?,version_id=?,archive_id=?,revision=?,content_hash=?,kind=?,title=?,source=?,evidence_json=?,status='ready',indexed_at=? WHERE vector_row_id=?`, document.WorkID, document.NodeID, document.VersionID, document.ArchiveID, document.Revision, hash, document.Kind, document.Title, document.Source, string(evidenceJSON), now, rowID)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+		return tx.Model(&knowledgeVectorDocumentModel{}).Where("vector_row_id = ?", stored.VectorRowID).Updates(map[string]any{"work_id": document.WorkID, "node_id": document.NodeID, "version_id": document.VersionID, "archive_id": document.ArchiveID, "revision": document.Revision, "content_hash": hash, "kind": document.Kind, "title": document.Title, "source": document.Source, "evidence_json": string(evidenceJSON), "status": "ready", "indexed_at": time.Now().UTC()}).Error
+	})
 }
 
 func truncateContextEvidence(content string, limit int) string {
@@ -450,58 +434,42 @@ func truncateContextEvidence(content string, limit int) string {
 }
 
 func (i *ContextIndex) retireDocuments(ctx context.Context, workID, objectType, objectID string) error {
-	rows, err := i.database.QueryContext(ctx, `SELECT vector_row_id FROM knowledge_vector_documents WHERE work_id=? AND object_type=? AND object_id=? AND status='ready'`, workID, objectType, objectID)
-	if err != nil {
+	db := i.database.WithContext(ctx)
+	var documents []knowledgeVectorDocumentModel
+	query := db.Where("work_id = ? AND object_type = ? AND object_id = ?", workID, objectType, objectID)
+	if err := query.Where("status = ?", "ready").Select("vector_row_id").Find(&documents).Error; err != nil {
 		return err
 	}
-	ids, err := collectVectorRowIDs(rows)
-	if err != nil {
+	if err := query.Updates(map[string]any{"status": "retired", "indexed_at": time.Now().UTC()}).Error; err != nil {
 		return err
 	}
-	if _, err := i.database.ExecContext(ctx, `UPDATE knowledge_vector_documents SET status='retired', indexed_at=? WHERE work_id=? AND object_type=? AND object_id=?`, time.Now().UTC().Format(time.RFC3339Nano), workID, objectType, objectID); err != nil {
-		return err
-	}
-	return i.deleteVectors(ctx, ids)
+	return i.deleteVectors(ctx, vectorDocumentIDs(documents))
 }
 
 func (i *ContextIndex) retireArchiveDocuments(ctx context.Context, workID, archiveID string) error {
-	rows, err := i.database.QueryContext(ctx, `SELECT vector_row_id FROM knowledge_vector_documents WHERE work_id=? AND archive_id=? AND status='ready'`, workID, archiveID)
-	if err != nil {
+	db := i.database.WithContext(ctx)
+	var documents []knowledgeVectorDocumentModel
+	query := db.Where("work_id = ? AND archive_id = ?", workID, archiveID)
+	if err := query.Where("status = ?", "ready").Select("vector_row_id").Find(&documents).Error; err != nil {
 		return err
 	}
-	ids, err := collectVectorRowIDs(rows)
-	if err != nil {
+	if err := query.Updates(map[string]any{"status": "retired", "indexed_at": time.Now().UTC()}).Error; err != nil {
 		return err
 	}
-	if _, err := i.database.ExecContext(ctx, `UPDATE knowledge_vector_documents SET status='retired',indexed_at=? WHERE work_id=? AND archive_id=?`, time.Now().UTC().Format(time.RFC3339Nano), workID, archiveID); err != nil {
-		return err
-	}
-	return i.deleteVectors(ctx, ids)
+	return i.deleteVectors(ctx, vectorDocumentIDs(documents))
 }
 
-func collectVectorRowIDs(rows *sql.Rows) ([]int64, error) {
-	ids := make([]int64, 0)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
+func vectorDocumentIDs(documents []knowledgeVectorDocumentModel) []int64 {
+	ids := make([]int64, len(documents))
+	for index, document := range documents {
+		ids[index] = document.VectorRowID
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return ids, nil
+	return ids
 }
 
 func (i *ContextIndex) deleteVectors(ctx context.Context, ids []int64) error {
 	for _, id := range ids {
-		if _, err := i.database.ExecContext(ctx, `DELETE FROM knowledge_vectors_partitioned WHERE rowid=?`, id); err != nil {
+		if err := i.database.WithContext(ctx).Exec(`DELETE FROM knowledge_vectors_partitioned WHERE rowid = ?`, id).Error; err != nil {
 			return err
 		}
 	}
@@ -553,7 +521,7 @@ WHERE v.embedding MATCH ? AND k=? AND v.work_id=? AND v.model_id=?
 		statement += ` AND v.is_spine=0`
 	}
 	statement += ` ORDER BY v.distance`
-	rows, err := i.database.QueryContext(ctx, statement, args...)
+	rows, err := i.database.WithContext(ctx).Raw(statement, args...).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("query context vectors: %w", err)
 	}
@@ -644,7 +612,7 @@ ORDER BY MIN(related.depth),n.id`
 		args = append(args, id)
 	}
 	args = append(args, workID, input.MaxRelationHops, workID)
-	rows, err := i.database.QueryContext(ctx, statement, args...)
+	rows, err := i.database.WithContext(ctx).Raw(statement, args...).Rows()
 	if err != nil {
 		return nil, err
 	}

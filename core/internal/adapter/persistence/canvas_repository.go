@@ -2,31 +2,30 @@ package persistence
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	agent "warmmo/core/internal/application/agent"
 	"warmmo/core/internal/domain/canvas"
 )
 
 type CanvasRepository struct {
-	database      *sql.DB
+	database      *gorm.DB
 	dataDirectory string
 }
 
 func NewCanvasRepository(providerRepository *ProviderRepository) *CanvasRepository {
-	return &CanvasRepository{
-		database:      providerRepository.database,
-		dataDirectory: filepath.Dir(providerRepository.databasePath),
-	}
+	return NewCanvasRepositoryWithDatabase(providerRepository.databaseHost)
+}
+
+func NewCanvasRepositoryWithDatabase(database *Database) *CanvasRepository {
+	return &CanvasRepository{database: database.DB, dataDirectory: database.DataDirectory()}
 }
 
 func (r *CanvasRepository) CreateNode(ctx context.Context, input canvas.CreateNodeInput) (canvas.Node, error) {
@@ -38,186 +37,122 @@ func (r *CanvasRepository) CreateNode(ctx context.Context, input canvas.CreateNo
 		return canvas.Node{}, canvas.ErrInvalidNode
 	}
 	now := time.Now().UTC()
-	node := canvas.Node{
-		ID: uuid.NewString(), WorkID: input.WorkID, Revision: 1, Kind: input.Kind,
-		Title: input.Title, Content: input.Content, X: input.X, Y: input.Y, CreatedAt: now, UpdatedAt: now,
-	}
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("begin create canvas node: %w", err)
-	}
-	defer transaction.Rollback()
-	_, err = transaction.ExecContext(ctx, `
-INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.ID, node.WorkID, node.Revision, node.Kind, node.Title,
-		node.Content, node.X, node.Y, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("create canvas node: %w", err)
-	}
-	_, err = createInitialNodeVersion(ctx, transaction, node)
+	model := canvasNodeModel{ID: uuid.NewString(), WorkID: input.WorkID, Revision: 1, Kind: string(input.Kind), Title: input.Title, Content: input.Content, X: input.X, Y: input.Y, CreatedAt: now, UpdatedAt: now}
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&model).Error; err != nil {
+			return fmt.Errorf("create canvas node: %w", err)
+		}
+		if _, err := createInitialNodeVersionModel(tx, &model); err != nil {
+			return err
+		}
+		contextIDs := uniqueStrings(input.ContextNodeIDs)
+		if len(contextIDs) > 0 {
+			var count int64
+			if err := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id IN ?", model.WorkID, contextIDs).Count(&count).Error; err != nil {
+				return fmt.Errorf("read canvas context nodes: %w", err)
+			}
+			if count != int64(len(contextIDs)) {
+				return canvas.ErrNodeNotFound
+			}
+		}
+		edges := make([]canvasEdgeModel, 0, len(contextIDs))
+		for _, sourceID := range contextIDs {
+			if sourceID != model.ID {
+				edges = append(edges, canvasEdgeModel{ID: uuid.NewString(), WorkID: model.WorkID, SourceNodeID: sourceID, TargetNodeID: model.ID, Kind: "generated_from", CreatedAt: now})
+			}
+		}
+		if len(edges) > 0 {
+			if err := tx.Create(&edges).Error; err != nil {
+				return fmt.Errorf("create canvas context edges: %w", err)
+			}
+		}
+		return appendCanvasAction(tx, model.WorkID, actionCreateNodes, "创建节点", createNodesActionPayload{Nodes: []canvas.Node{canvasNodeFromModel(model)}, Edges: canvasEdgesFromModels(edges)})
+	})
 	if err != nil {
 		return canvas.Node{}, err
 	}
-	contextNodeIDs := uniqueStrings(input.ContextNodeIDs)
-	edges := make([]canvas.Edge, 0, len(contextNodeIDs))
-	for _, sourceNodeID := range contextNodeIDs {
-		if sourceNodeID == node.ID {
-			continue
-		}
-		var sourceExists int
-		err := transaction.QueryRowContext(ctx, `
-SELECT 1 FROM canvas_nodes WHERE work_id = ? AND id = ?`, node.WorkID, sourceNodeID).Scan(&sourceExists)
-		if errors.Is(err, sql.ErrNoRows) {
-			return canvas.Node{}, canvas.ErrNodeNotFound
-		}
-		if err != nil {
-			return canvas.Node{}, fmt.Errorf("read canvas context node: %w", err)
-		}
-		edge := canvas.Edge{
-			ID: uuid.NewString(), WorkID: node.WorkID, SourceNodeID: sourceNodeID,
-			TargetNodeID: node.ID, Kind: "generated_from", CreatedAt: now,
-		}
-		_, err = transaction.ExecContext(ctx, `
-INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
-			edge.Kind, edge.CreatedAt.Format(time.RFC3339Nano))
-		if err != nil {
-			return canvas.Node{}, fmt.Errorf("create canvas context edge: %w", err)
-		}
-		edges = append(edges, edge)
-	}
-	if err := appendCanvasAction(ctx, transaction, node.WorkID, actionCreateNodes, "创建节点", createNodesActionPayload{
-		Nodes: []canvas.Node{node},
-		Edges: edges,
-	}); err != nil {
-		return canvas.Node{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return canvas.Node{}, fmt.Errorf("commit create canvas node: %w", err)
-	}
-	return node, nil
+	return canvasNodeFromModel(model), nil
 }
 
-func createInitialNodeVersion(ctx context.Context, transaction *sql.Tx, node canvas.Node) (string, error) {
-	versionID := uuid.NewString()
-	if _, err := transaction.ExecContext(ctx, `INSERT INTO canvas_node_versions (id,node_id,work_id,version_number,title,content,created_at) VALUES (?,?,?,?,?,?,?)`, versionID, node.ID, node.WorkID, 1, node.Title, node.Content, node.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+func createInitialNodeVersionModel(tx *gorm.DB, node *canvasNodeModel) (string, error) {
+	version := canvasNodeVersionModel{ID: uuid.NewString(), NodeID: node.ID, WorkID: node.WorkID, VersionNumber: 1, Title: node.Title, Content: node.Content, CreatedAt: node.CreatedAt}
+	if err := tx.Create(&version).Error; err != nil {
 		return "", fmt.Errorf("create initial node version: %w", err)
 	}
-	if _, err := transaction.ExecContext(ctx, `UPDATE canvas_nodes SET current_version_id=? WHERE work_id=? AND id=?`, versionID, node.WorkID, node.ID); err != nil {
+	if err := tx.Model(node).Update("current_version_id", version.ID).Error; err != nil {
 		return "", fmt.Errorf("set initial node version: %w", err)
 	}
-	return versionID, nil
+	node.CurrentVersionID = version.ID
+	return version.ID, nil
 }
 
-func createNodeVersion(ctx context.Context, transaction *sql.Tx, node canvas.Node, parentVersionID, sourceRunID string) (string, error) {
-	var nextVersion int64
-	if err := transaction.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_number), 0) + 1 FROM canvas_node_versions WHERE work_id=? AND node_id=?`, node.WorkID, node.ID).Scan(&nextVersion); err != nil {
+func createNodeVersionModel(tx *gorm.DB, node *canvasNodeModel, parentVersionID, sourceRunID string) (string, error) {
+	var next int64
+	if err := tx.Model(&canvasNodeVersionModel{}).Where("work_id = ? AND node_id = ?", node.WorkID, node.ID).Select("COALESCE(MAX(version_number), 0) + 1").Scan(&next).Error; err != nil {
 		return "", fmt.Errorf("read next canvas node version: %w", err)
 	}
-	versionID := uuid.NewString()
-	if _, err := transaction.ExecContext(ctx, `INSERT INTO canvas_node_versions (id,node_id,work_id,version_number,parent_version_id,title,content,source_run_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, versionID, node.ID, node.WorkID, nextVersion, parentVersionID, node.Title, node.Content, sourceRunID, node.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+	version := canvasNodeVersionModel{ID: uuid.NewString(), NodeID: node.ID, WorkID: node.WorkID, VersionNumber: next, ParentVersionID: parentVersionID, Title: node.Title, Content: node.Content, SourceRunID: sourceRunID, CreatedAt: node.UpdatedAt}
+	if err := tx.Create(&version).Error; err != nil {
 		return "", fmt.Errorf("create canvas node version: %w", err)
 	}
-	if _, err := transaction.ExecContext(ctx, `UPDATE canvas_nodes SET current_version_id=? WHERE work_id=? AND id=?`, versionID, node.WorkID, node.ID); err != nil {
+	if err := tx.Model(node).Update("current_version_id", version.ID).Error; err != nil {
 		return "", fmt.Errorf("set current canvas node version: %w", err)
 	}
-	return versionID, nil
+	node.CurrentVersionID = version.ID
+	return version.ID, nil
 }
 
-type candidateQuerier interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func candidateByID(ctx context.Context, querier candidateQuerier, workID, candidateID string) (agent.Candidate, error) {
-	candidate, err := scanCandidate(querier.QueryRowContext(ctx, `
-SELECT c.id, c.run_id, c.work_id, c.skill_id, c.skill_version, c.status, c.kind, c.title,
-       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json,
-       c.candidate_type, c.node_id, c.base_version_id, c.reason, c.change_score
-FROM agent_candidates c
-JOIN agent_runs r ON r.id = c.run_id
-WHERE c.work_id = ? AND c.id = ?`, workID, candidateID))
-	if errors.Is(err, sql.ErrNoRows) {
+func candidateByID(tx *gorm.DB, workID, candidateID string) (agent.Candidate, error) {
+	var model agentCandidateModel
+	if err := tx.Where("work_id = ? AND id = ?", workID, candidateID).First(&model).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return agent.Candidate{}, canvas.ErrCandidateNotFound
+	} else if err != nil {
+		return agent.Candidate{}, fmt.Errorf("read canvas candidate: %w", err)
 	}
-	return candidate, err
+	return candidateFromModel(tx, model)
 }
 
-func scanCandidate(scanner rowScanner) (agent.Candidate, error) {
-	var candidate agent.Candidate
-	var createdAt, decidedAt, contextNodeIDsJSON string
-	if err := scanner.Scan(
-		&candidate.ID, &candidate.RunID, &candidate.WorkID, &candidate.SkillID, &candidate.SkillVersion,
-		&candidate.Status, &candidate.Kind, &candidate.Title, &candidate.Content, &candidate.X, &candidate.Y,
-		&candidate.AcceptedNodeID, &createdAt, &decidedAt, &contextNodeIDsJSON,
-		&candidate.CandidateType, &candidate.NodeID, &candidate.BaseVersionID, &candidate.Reason, &candidate.ChangeScore,
-	); err != nil {
-		return agent.Candidate{}, err
+func candidateFromModel(db *gorm.DB, model agentCandidateModel) (agent.Candidate, error) {
+	var run agentRunModel
+	if err := db.Select("id", "context_node_ids_json").First(&run, "id = ?", model.RunID).Error; err != nil {
+		return agent.Candidate{}, fmt.Errorf("read candidate run: %w", err)
 	}
-	if err := json.Unmarshal([]byte(contextNodeIDsJSON), &candidate.ContextNodeIDs); err != nil {
-		return agent.Candidate{}, fmt.Errorf("decode canvas candidate context node ids: %w", err)
+	contextIDs := run.ContextNodeIDs
+	if model.CandidateType == "version" && model.NodeID != "" {
+		contextIDs = []string{model.NodeID}
 	}
-	if candidate.CandidateType == "version" && candidate.NodeID != "" {
-		candidate.ContextNodeIDs = []string{candidate.NodeID}
-	}
-	var err error
-	candidate.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return agent.Candidate{}, fmt.Errorf("parse canvas candidate time: %w", err)
-	}
-	if decidedAt != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, decidedAt)
-		if err != nil {
-			return agent.Candidate{}, fmt.Errorf("parse canvas candidate decision time: %w", err)
-		}
-		candidate.DecidedAt = &parsed
-	}
-	return candidate, nil
+	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: model.Kind, CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: contextIDs, AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}, nil
 }
 
-func (r *CanvasRepository) initialCandidatePosition(
-	ctx context.Context,
-	transaction *sql.Tx,
-	workID string,
-	contextNodeIDs []string,
-) (float64, float64, error) {
+func (r *CanvasRepository) initialCandidatePosition(tx *gorm.DB, workID string, contextNodeIDs []string) (float64, float64, error) {
 	x, y := 520.0, 80.0
-	maxX := -math.MaxFloat64
-	totalY := 0.0
-	found := 0
-	for _, nodeID := range contextNodeIDs {
-		var nodeX, nodeY float64
-		err := transaction.QueryRowContext(ctx, `
-SELECT x, y FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID).Scan(&nodeX, &nodeY)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
+	if len(contextNodeIDs) > 0 {
+		var nodes []canvasNodeModel
+		if err := tx.Select("id", "x", "y").Where("work_id = ? AND id IN ?", workID, contextNodeIDs).Find(&nodes).Error; err != nil {
+			return 0, 0, fmt.Errorf("read candidate context positions: %w", err)
 		}
-		if err != nil {
-			return 0, 0, fmt.Errorf("read candidate context position: %w", err)
+		if len(nodes) > 0 {
+			maxX, totalY := -math.MaxFloat64, 0.0
+			for _, node := range nodes {
+				maxX = math.Max(maxX, node.X)
+				totalY += node.Y
+			}
+			x, y = maxX+320, totalY/float64(len(nodes))
 		}
-		maxX = math.Max(maxX, nodeX)
-		totalY += nodeY
-		found++
 	}
-	if found > 0 {
-		x = maxX + 320
-		y = totalY / float64(found)
-	}
-	var pendingCount int
-	if err := transaction.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM agent_candidates WHERE work_id = ? AND status = ?`,
-		workID, agent.CandidateStatusPending).Scan(&pendingCount); err != nil {
+	var pending int64
+	if err := tx.Model(&agentCandidateModel{}).Where("work_id = ? AND status = ?", workID, agent.CandidateStatusPending).Count(&pending).Error; err != nil {
 		return 0, 0, fmt.Errorf("count pending canvas candidates: %w", err)
 	}
-	x += float64(pendingCount/8) * 36
-	y += float64(pendingCount%8) * 36
+	x += float64(pending/8) * 36
+	y += float64(pending%8) * 36
 	return x, y, nil
 }
 
 func (r *CanvasRepository) candidateMutationError(ctx context.Context, workID, candidateID string) error {
-	var status agent.CandidateStatus
-	err := r.database.QueryRowContext(ctx, `
-SELECT status FROM agent_candidates WHERE work_id = ? AND id = ?`, workID, candidateID).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
+	var model agentCandidateModel
+	err := r.database.WithContext(ctx).Select("status").Where("work_id = ? AND id = ?", workID, candidateID).First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return canvas.ErrCandidateNotFound
 	}
 	if err != nil {
@@ -228,8 +163,7 @@ SELECT status FROM agent_candidates WHERE work_id = ? AND id = ?`, workID, candi
 
 func candidateTitle(content, kind string) string {
 	for _, line := range strings.Split(content, "\n") {
-		title := strings.TrimSpace(line)
-		title = strings.TrimSpace(strings.TrimLeft(title, "#*-"))
+		title := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#*-"))
 		if title == "" {
 			continue
 		}
@@ -246,46 +180,29 @@ func candidateTitle(content, kind string) string {
 }
 
 func (r *CanvasRepository) ListNodes(ctx context.Context, workID string) ([]canvas.Node, error) {
-	rows, err := r.database.QueryContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? ORDER BY created_at`, workID)
-	if err != nil {
+	var models []canvasNodeModel
+	if err := r.database.WithContext(ctx).Where("work_id = ?", workID).Order("created_at").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list canvas nodes: %w", err)
 	}
-	defer rows.Close()
-	nodes := make([]canvas.Node, 0)
-	for rows.Next() {
-		node, err := scanCanvasNode(rows)
-		if err != nil {
-			return nil, err
-		}
-		nodes = append(nodes, node)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate canvas nodes: %w", err)
-	}
-	for index := range nodes {
-		if err := r.hydrateCurrentVersionID(ctx, &nodes[index]); err != nil {
-			return nil, err
-		}
-	}
-	return nodes, nil
+	return canvasNodesFromModels(models), nil
 }
 
 func (r *CanvasRepository) GetNode(ctx context.Context, workID, nodeID string) (canvas.Node, error) {
-	node, err := scanCanvasNode(r.database.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.Node{}, canvas.ErrNodeNotFound
-	}
+	model, err := getCanvasNode(r.database.WithContext(ctx), workID, nodeID)
 	if err != nil {
-		return canvas.Node{}, fmt.Errorf("get canvas node: %w", err)
-	}
-	if err := r.hydrateCurrentVersionID(ctx, &node); err != nil {
 		return canvas.Node{}, err
 	}
-	return node, nil
+	return canvasNodeFromModel(model), nil
+}
+
+func getCanvasNode(db *gorm.DB, workID, nodeID string) (canvasNodeModel, error) {
+	var model canvasNodeModel
+	if err := db.Where("work_id = ? AND id = ?", workID, nodeID).First(&model).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return canvasNodeModel{}, canvas.ErrNodeNotFound
+	} else if err != nil {
+		return canvasNodeModel{}, fmt.Errorf("get canvas node: %w", err)
+	}
+	return model, nil
 }
 
 func (r *CanvasRepository) GetNodes(ctx context.Context, workID string, nodeIDs []string) ([]canvas.Node, error) {
@@ -295,97 +212,61 @@ func (r *CanvasRepository) GetNodes(ctx context.Context, workID string, nodeIDs 
 	if len(nodeIDs) > 64 {
 		return nil, fmt.Errorf("%w: at most 64 nodes can be read", canvas.ErrInvalidNode)
 	}
+	var models []canvasNodeModel
+	if err := r.database.WithContext(ctx).Where("work_id = ? AND id IN ?", workID, nodeIDs).Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("get canvas nodes: %w", err)
+	}
+	byID := make(map[string]canvasNodeModel, len(models))
+	for _, model := range models {
+		byID[model.ID] = model
+	}
 	nodes := make([]canvas.Node, 0, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		node, err := scanCanvasNode(r.database.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, workID, nodeID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("%w: %s", canvas.ErrNodeNotFound, nodeID)
+	for _, id := range nodeIDs {
+		model, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", canvas.ErrNodeNotFound, id)
 		}
-		if err != nil {
-			return nil, err
-		}
-		if err := r.hydrateCurrentVersionID(ctx, &node); err != nil {
-			return nil, err
-		}
-		nodes = append(nodes, node)
+		nodes = append(nodes, canvasNodeFromModel(model))
 	}
 	return nodes, nil
 }
 
-func (r *CanvasRepository) hydrateCurrentVersionID(ctx context.Context, node *canvas.Node) error {
-	var versionID string
-	err := r.database.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, node.WorkID, node.ID).Scan(&versionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.ErrNodeNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("read current node version: %w", err)
-	}
-	node.CurrentVersionID = versionID
-	return nil
-}
-
 func (r *CanvasRepository) UpdateNode(ctx context.Context, input canvas.UpdateNodeInput) (canvas.Node, error) {
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("begin update canvas node: %w", err)
-	}
-	defer transaction.Rollback()
-	locked, err := isNodeArchiveLocked(ctx, transaction, input.WorkID, input.NodeID)
+	var result canvasNodeModel
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		locked, err := isNodeArchiveLocked(tx, input.WorkID, input.NodeID)
+		if err != nil || locked {
+			if locked {
+				return canvas.ErrArchivedNodeLocked
+			}
+			return err
+		}
+		before, err := getCanvasNode(tx, input.WorkID, input.NodeID)
+		if err != nil {
+			return err
+		}
+		if before.Revision != input.ExpectedRevision {
+			return canvas.ErrRevisionConflict
+		}
+		now := time.Now().UTC()
+		update := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ? AND revision = ?", input.WorkID, input.NodeID, input.ExpectedRevision).Updates(map[string]any{"title": input.Title, "content": input.Content, "revision": gorm.Expr("revision + 1"), "updated_at": now})
+		if update.Error != nil {
+			return fmt.Errorf("update canvas node: %w", update.Error)
+		}
+		if update.RowsAffected == 0 {
+			return canvas.ErrRevisionConflict
+		}
+		result = before
+		result.Title, result.Content, result.Revision, result.UpdatedAt = input.Title, input.Content, before.Revision+1, now
+		if before.Title != result.Title || before.Content != result.Content {
+			return appendCanvasAction(tx, input.WorkID, actionUpdateNode, "编辑节点", updateNodeActionPayload{Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content}, After: nodeContentState{NodeID: result.ID, Title: result.Title, Content: result.Content}})
+		}
+		return nil
+	})
 	if err != nil {
 		return canvas.Node{}, err
 	}
-	if locked {
-		return canvas.Node{}, canvas.ErrArchivedNodeLocked
-	}
-	before, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, input.NodeID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.Node{}, canvas.ErrNodeNotFound
-	}
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("read canvas node before update: %w", err)
-	}
-	if before.Revision != input.ExpectedRevision {
-		return canvas.Node{}, canvas.ErrRevisionConflict
-	}
-	var beforeVersionID string
-	if err := transaction.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, input.WorkID, input.NodeID).Scan(&beforeVersionID); err != nil {
-		return canvas.Node{}, fmt.Errorf("read canvas node version before update: %w", err)
-	}
-	now := time.Now().UTC()
-	node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
-UPDATE canvas_nodes
-SET title = ?, content = ?, revision = revision + 1, updated_at = ?
-WHERE work_id = ? AND id = ? AND revision = ?
-RETURNING id, work_id, revision, kind, title, content, x, y, created_at, updated_at`,
-		input.Title, input.Content, now.Format(time.RFC3339Nano),
-		input.WorkID, input.NodeID, input.ExpectedRevision))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return canvas.Node{}, canvas.ErrRevisionConflict
-		}
-		return canvas.Node{}, fmt.Errorf("update canvas node: %w", err)
-	}
-	if before.Title != node.Title || before.Content != node.Content {
-		if _, err := createNodeVersion(ctx, transaction, node, beforeVersionID, ""); err != nil {
-			return canvas.Node{}, err
-		}
-		payload := updateNodeActionPayload{
-			Before: nodeContentState{NodeID: before.ID, Title: before.Title, Content: before.Content},
-			After:  nodeContentState{NodeID: node.ID, Title: node.Title, Content: node.Content},
-		}
-		if err := appendCanvasAction(ctx, transaction, input.WorkID, actionUpdateNode, "编辑节点", payload); err != nil {
-			return canvas.Node{}, err
-		}
-	}
-	if err := transaction.Commit(); err != nil {
-		return canvas.Node{}, fmt.Errorf("commit update canvas node: %w", err)
-	}
-	return node, nil
+	return canvasNodeFromModel(result), nil
 }
 
 func (r *CanvasRepository) UpdateNodePosition(ctx context.Context, workID, nodeID string, x, y float64) error {
@@ -393,98 +274,49 @@ func (r *CanvasRepository) UpdateNodePosition(ctx context.Context, workID, nodeI
 }
 
 func (r *CanvasRepository) ListEdges(ctx context.Context, workID string) ([]canvas.Edge, error) {
-	rows, err := r.database.QueryContext(ctx, `
-SELECT id, work_id, source_node_id, target_node_id, kind, created_at
-FROM canvas_edges WHERE work_id = ? ORDER BY created_at`, workID)
-	if err != nil {
+	var models []canvasEdgeModel
+	if err := r.database.WithContext(ctx).Where("work_id = ?", workID).Order("created_at").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list canvas edges: %w", err)
 	}
-	defer rows.Close()
-	edges := make([]canvas.Edge, 0)
-	for rows.Next() {
-		var edge canvas.Edge
-		var createdAt string
-		if err := rows.Scan(&edge.ID, &edge.WorkID, &edge.SourceNodeID, &edge.TargetNodeID, &edge.Kind, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan canvas edge: %w", err)
-		}
-		edge.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse canvas edge time: %w", err)
-		}
-		edges = append(edges, edge)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate canvas edges: %w", err)
-	}
-	return edges, nil
+	return canvasEdgesFromModels(models), nil
 }
 
 func (r *CanvasRepository) CreateEdge(ctx context.Context, input canvas.CreateEdgeInput) (canvas.Edge, error) {
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return canvas.Edge{}, fmt.Errorf("begin create canvas edge: %w", err)
-	}
-	defer transaction.Rollback()
-
-	var nodeCount int
-	err = transaction.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM canvas_nodes
-WHERE work_id = ? AND id IN (?, ?)`, input.WorkID, input.SourceNodeID, input.TargetNodeID).Scan(&nodeCount)
-	if err != nil {
-		return canvas.Edge{}, fmt.Errorf("read canvas edge nodes: %w", err)
-	}
-	if nodeCount != 2 {
-		return canvas.Edge{}, canvas.ErrNodeNotFound
-	}
-	locked, err := isNodeArchiveLocked(ctx, transaction, input.WorkID, input.TargetNodeID)
-	if err != nil {
-		return canvas.Edge{}, err
-	}
-	if locked {
-		return canvas.Edge{}, canvas.ErrArchivedNodeLocked
-	}
-
-	existing, err := scanCanvasEdge(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, source_node_id, target_node_id, kind, created_at
-FROM canvas_edges
-WHERE work_id = ? AND source_node_id = ? AND target_node_id = ? AND kind = 'generated_from'`,
-		input.WorkID, input.SourceNodeID, input.TargetNodeID))
-	if err == nil {
-		return existing, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return canvas.Edge{}, fmt.Errorf("read existing canvas edge: %w", err)
-	}
-
-	now := time.Now().UTC()
-	edge := canvas.Edge{
-		ID: uuid.NewString(), WorkID: input.WorkID, SourceNodeID: input.SourceNodeID,
-		TargetNodeID: input.TargetNodeID, Kind: "generated_from", CreatedAt: now,
-	}
-	_, err = transaction.ExecContext(ctx, `
-INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, edge.ID, edge.WorkID, edge.SourceNodeID, edge.TargetNodeID,
-		edge.Kind, edge.CreatedAt.Format(time.RFC3339Nano))
-	if err != nil {
-		return canvas.Edge{}, fmt.Errorf("create canvas edge: %w", err)
-	}
-	if err := appendCanvasAction(ctx, transaction, input.WorkID, actionCreateEdge, "创建连接", createEdgeActionPayload{
-		Edge: edge,
-	}); err != nil {
-		return canvas.Edge{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return canvas.Edge{}, fmt.Errorf("commit create canvas edge: %w", err)
-	}
-	return edge, nil
+	var edge canvasEdgeModel
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id IN ?", input.WorkID, []string{input.SourceNodeID, input.TargetNodeID}).Count(&count).Error; err != nil {
+			return fmt.Errorf("read canvas edge nodes: %w", err)
+		}
+		if count != 2 {
+			return canvas.ErrNodeNotFound
+		}
+		locked, err := isNodeArchiveLocked(tx, input.WorkID, input.TargetNodeID)
+		if err != nil || locked {
+			if locked {
+				return canvas.ErrArchivedNodeLocked
+			}
+			return err
+		}
+		lookup := canvasEdgeModel{WorkID: input.WorkID, SourceNodeID: input.SourceNodeID, TargetNodeID: input.TargetNodeID, Kind: "generated_from"}
+		if err := tx.Where(&lookup).First(&edge).Error; err == nil {
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("read existing canvas edge: %w", err)
+		}
+		edge = canvasEdgeModel{ID: uuid.NewString(), WorkID: input.WorkID, SourceNodeID: input.SourceNodeID, TargetNodeID: input.TargetNodeID, Kind: "generated_from", CreatedAt: time.Now().UTC()}
+		if err := tx.Create(&edge).Error; err != nil {
+			return fmt.Errorf("create canvas edge: %w", err)
+		}
+		return appendCanvasAction(tx, input.WorkID, actionCreateEdge, "创建连接", createEdgeActionPayload{Edge: canvasEdgeFromModel(edge)})
+	})
+	return canvasEdgeFromModel(edge), err
 }
 
 func (r *CanvasRepository) CreateCandidate(ctx context.Context, candidate agent.Candidate) (agent.Candidate, error) {
-	existing, err := r.candidateByRun(ctx, candidate.RunID)
-	if err == nil {
+	if existing, err := r.candidateByRun(ctx, candidate.RunID); err == nil {
 		return existing, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return agent.Candidate{}, err
 	}
 	if candidate.ID == "" {
@@ -493,244 +325,162 @@ func (r *CanvasRepository) CreateCandidate(ctx context.Context, candidate agent.
 	if candidate.CreatedAt.IsZero() {
 		candidate.CreatedAt = time.Now().UTC()
 	}
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return agent.Candidate{}, fmt.Errorf("begin create canvas candidate: %w", err)
-	}
-	defer transaction.Rollback()
-
-	var contextNodeIDsJSON string
-	err = transaction.QueryRowContext(ctx, `
-SELECT target, context_node_ids_json
-FROM agent_runs WHERE id = ? AND work_id = ?`, candidate.RunID, candidate.WorkID).
-		Scan(&candidate.Kind, &contextNodeIDsJSON)
-	if errors.Is(err, sql.ErrNoRows) {
-		return agent.Candidate{}, fmt.Errorf("create canvas candidate: %w", agent.ErrRunNotFound)
-	}
-	if err != nil {
-		return agent.Candidate{}, fmt.Errorf("read candidate run: %w", err)
-	}
-	if err := json.Unmarshal([]byte(contextNodeIDsJSON), &candidate.ContextNodeIDs); err != nil {
-		return agent.Candidate{}, fmt.Errorf("decode candidate context node ids: %w", err)
-	}
-	candidate.Status = agent.CandidateStatusPending
-	candidate.Title = candidateTitle(candidate.Content, candidate.Kind)
-	candidate.X, candidate.Y, err = r.initialCandidatePosition(ctx, transaction, candidate.WorkID, candidate.ContextNodeIDs)
-	if err != nil {
-		return agent.Candidate{}, err
-	}
-	_, err = transaction.ExecContext(ctx, `
-INSERT INTO agent_candidates (
-    id, run_id, work_id, skill_id, skill_version, status, kind, title, content, x, y,
-    accepted_node_id, created_at, decided_at, candidate_type, node_id, base_version_id, reason, change_score
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', ?, ?, ?, ?, ?)`,
-		candidate.ID, candidate.RunID, candidate.WorkID, candidate.SkillID, candidate.SkillVersion,
-		candidate.Status, candidate.Kind, candidate.Title, candidate.Content, candidate.X, candidate.Y,
-		candidate.CreatedAt.Format(time.RFC3339Nano), valueOrDefault(candidate.CandidateType, "node"), candidate.NodeID, candidate.BaseVersionID, candidate.Reason, candidate.ChangeScore)
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run agentRunModel
+		if err := tx.Where("id = ? AND work_id = ?", candidate.RunID, candidate.WorkID).First(&run).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("create canvas candidate: %w", agent.ErrRunNotFound)
+		} else if err != nil {
+			return fmt.Errorf("read candidate run: %w", err)
+		}
+		candidate.Kind, candidate.ContextNodeIDs = run.Target, run.ContextNodeIDs
+		candidate.Status = agent.CandidateStatusPending
+		candidate.Title = candidateTitle(candidate.Content, candidate.Kind)
+		var err error
+		candidate.X, candidate.Y, err = r.initialCandidatePosition(tx, candidate.WorkID, candidate.ContextNodeIDs)
+		if err != nil {
+			return err
+		}
+		model := candidateModelFromDomain(candidate)
+		return tx.Create(&model).Error
+	})
 	if err != nil {
 		return agent.Candidate{}, fmt.Errorf("create canvas candidate: %w", err)
-	}
-	if err := transaction.Commit(); err != nil {
-		return agent.Candidate{}, fmt.Errorf("commit canvas candidate: %w", err)
 	}
 	return candidate, nil
 }
 
-func scanCanvasEdge(scanner rowScanner) (canvas.Edge, error) {
-	var edge canvas.Edge
-	var createdAt string
-	if err := scanner.Scan(&edge.ID, &edge.WorkID, &edge.SourceNodeID, &edge.TargetNodeID, &edge.Kind, &createdAt); err != nil {
-		return canvas.Edge{}, err
-	}
-	var err error
-	edge.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return canvas.Edge{}, fmt.Errorf("parse canvas edge created time: %w", err)
-	}
-	return edge, nil
-}
-
 func (r *CanvasRepository) candidateByRun(ctx context.Context, runID string) (agent.Candidate, error) {
-	return scanCandidate(r.database.QueryRowContext(ctx, `
-SELECT c.id, c.run_id, c.work_id, c.skill_id, c.skill_version, c.status, c.kind, c.title,
-       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json,
-       c.candidate_type, c.node_id, c.base_version_id, c.reason, c.change_score
-FROM agent_candidates c
-JOIN agent_runs r ON r.id = c.run_id
-WHERE c.run_id = ?`, runID))
+	var model agentCandidateModel
+	if err := r.database.WithContext(ctx).Where("run_id = ?", runID).First(&model).Error; err != nil {
+		return agent.Candidate{}, err
+	}
+	return candidateFromModel(r.database.WithContext(ctx), model)
 }
 
 func (r *CanvasRepository) ListCandidates(ctx context.Context, workID string) ([]agent.Candidate, error) {
-	rows, err := r.database.QueryContext(ctx, `
-SELECT c.id, c.run_id, c.work_id, c.skill_id, c.skill_version, c.status, c.kind, c.title,
-       c.content, c.x, c.y, c.accepted_node_id, c.created_at, c.decided_at, r.context_node_ids_json,
-       c.candidate_type, c.node_id, c.base_version_id, c.reason, c.change_score
-FROM agent_candidates c
-JOIN agent_runs r ON r.id = c.run_id
-WHERE c.work_id = ? AND c.status = ?
-ORDER BY c.created_at DESC`, workID, agent.CandidateStatusPending)
-	if err != nil {
+	var models []agentCandidateModel
+	db := r.database.WithContext(ctx)
+	if err := db.Where("work_id = ? AND status = ?", workID, agent.CandidateStatusPending).Order("created_at DESC").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list canvas candidates: %w", err)
 	}
-	defer rows.Close()
-	candidates := make([]agent.Candidate, 0)
-	for rows.Next() {
-		candidate, err := scanCandidate(rows)
-		if err != nil {
-			return nil, err
+	var runs []agentRunModel
+	runIDs := make([]string, len(models))
+	for i, model := range models {
+		runIDs[i] = model.RunID
+	}
+	if len(runIDs) > 0 {
+		if err := db.Select("id", "context_node_ids_json").Where("id IN ?", runIDs).Find(&runs).Error; err != nil {
+			return nil, fmt.Errorf("read candidate runs: %w", err)
 		}
-		candidates = append(candidates, candidate)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate canvas candidates: %w", err)
+	contexts := make(map[string][]string, len(runs))
+	for _, run := range runs {
+		contexts[run.ID] = run.ContextNodeIDs
 	}
-	return candidates, nil
+	result := make([]agent.Candidate, 0, len(models))
+	for _, model := range models {
+		candidate := candidateFromStoredModel(model, contexts[model.RunID])
+		result = append(result, candidate)
+	}
+	return result, nil
 }
 
 func (r *CanvasRepository) UpdateCandidatePosition(ctx context.Context, workID, candidateID string, x, y float64) error {
-	result, err := r.database.ExecContext(ctx, `
-UPDATE agent_candidates SET x = ?, y = ?
-WHERE work_id = ? AND id = ? AND status = ?`,
-		x, y, workID, candidateID, agent.CandidateStatusPending)
-	if err != nil {
-		return fmt.Errorf("update canvas candidate position: %w", err)
+	result := r.database.WithContext(ctx).Model(&agentCandidateModel{}).Where("work_id = ? AND id = ? AND status = ?", workID, candidateID, agent.CandidateStatusPending).Updates(map[string]any{"x": x, "y": y})
+	if result.Error != nil {
+		return fmt.Errorf("update canvas candidate position: %w", result.Error)
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read updated canvas candidate position: %w", err)
+	if result.RowsAffected == 0 {
+		return r.candidateMutationError(ctx, workID, candidateID)
 	}
-	if changed > 0 {
-		return nil
-	}
-	return r.candidateMutationError(ctx, workID, candidateID)
+	return nil
 }
 
 func (r *CanvasRepository) AcceptCandidate(ctx context.Context, input canvas.AcceptCandidateInput) (canvas.Node, error) {
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("begin accept canvas candidate: %w", err)
-	}
-	defer transaction.Rollback()
-
-	candidate, err := candidateByID(ctx, transaction, input.WorkID, input.CandidateID)
-	if err != nil {
-		return canvas.Node{}, err
-	}
-	switch candidate.Status {
-	case agent.CandidateStatusAccepted:
-		node, err := scanCanvasNode(transaction.QueryRowContext(ctx, `
-SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at
-FROM canvas_nodes WHERE work_id = ? AND id = ?`, input.WorkID, candidate.AcceptedNodeID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return canvas.Node{}, canvas.ErrCandidateResolved
-		}
-		return node, err
-	case agent.CandidateStatusRejected:
-		return canvas.Node{}, canvas.ErrCandidateResolved
-	}
-	if candidate.CandidateType == "version" {
-		return r.acceptVersionCandidate(ctx, transaction, input, candidate)
-	}
-
-	title := strings.TrimSpace(input.Title)
-	if title == "" {
-		title = candidate.Title
-	}
-	now := time.Now().UTC()
-	node := canvas.Node{
-		ID: uuid.NewString(), WorkID: candidate.WorkID, Revision: 1, Kind: canvas.NodeKind(candidate.Kind),
-		Title: title, Content: candidate.Content, X: candidate.X, Y: candidate.Y,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	_, err = transaction.ExecContext(ctx, `
-INSERT INTO canvas_nodes (id, work_id, revision, kind, title, content, x, y, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		node.ID, node.WorkID, node.Revision, node.Kind, node.Title, node.Content, node.X, node.Y,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("create accepted canvas node: %w", err)
-	}
-	if _, err := createInitialNodeVersion(ctx, transaction, node); err != nil {
-		return canvas.Node{}, err
-	}
-	for _, sourceNodeID := range candidate.ContextNodeIDs {
-		_, err := transaction.ExecContext(ctx, `
-INSERT INTO canvas_edges (id, work_id, source_node_id, target_node_id, kind, created_at)
-SELECT ?, ?, id, ?, 'generated_from', ?
-FROM canvas_nodes
-WHERE work_id = ? AND id = ? AND id <> ?
-ON CONFLICT(work_id, source_node_id, target_node_id, kind) DO NOTHING`,
-			uuid.NewString(), candidate.WorkID, node.ID, now.Format(time.RFC3339Nano),
-			candidate.WorkID, sourceNodeID, node.ID)
+	var accepted canvasNodeModel
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		candidate, err := candidateByID(tx, input.WorkID, input.CandidateID)
 		if err != nil {
-			return canvas.Node{}, fmt.Errorf("create accepted canvas edge: %w", err)
+			return err
 		}
-	}
-	result, err := transaction.ExecContext(ctx, `
-UPDATE agent_candidates
-SET status = ?, title = ?, accepted_node_id = ?, decided_at = ?
-WHERE work_id = ? AND id = ? AND status = ?`,
-		agent.CandidateStatusAccepted, title, node.ID, now.Format(time.RFC3339Nano),
-		input.WorkID, input.CandidateID, agent.CandidateStatusPending)
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("accept canvas candidate: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("read accepted canvas candidate: %w", err)
-	}
-	if changed == 0 {
-		return canvas.Node{}, canvas.ErrCandidateResolved
-	}
-	if err := transaction.Commit(); err != nil {
-		return canvas.Node{}, fmt.Errorf("commit accepted canvas candidate: %w", err)
-	}
-	return node, nil
+		if candidate.Status == agent.CandidateStatusAccepted {
+			accepted, err = getCanvasNode(tx, input.WorkID, candidate.AcceptedNodeID)
+			if errors.Is(err, canvas.ErrNodeNotFound) {
+				return canvas.ErrCandidateResolved
+			}
+			return err
+		}
+		if candidate.Status == agent.CandidateStatusRejected {
+			return canvas.ErrCandidateResolved
+		}
+		if candidate.CandidateType == "version" {
+			accepted, err = acceptVersionCandidate(tx, input, candidate)
+			return err
+		}
+		title, now := strings.TrimSpace(input.Title), time.Now().UTC()
+		if title == "" {
+			title = candidate.Title
+		}
+		accepted = canvasNodeModel{ID: uuid.NewString(), WorkID: candidate.WorkID, Revision: 1, Kind: candidate.Kind, Title: title, Content: candidate.Content, X: candidate.X, Y: candidate.Y, CreatedAt: now, UpdatedAt: now}
+		if err := tx.Create(&accepted).Error; err != nil {
+			return fmt.Errorf("create accepted canvas node: %w", err)
+		}
+		if _, err := createInitialNodeVersionModel(tx, &accepted); err != nil {
+			return err
+		}
+		edges := make([]canvasEdgeModel, 0, len(candidate.ContextNodeIDs))
+		for _, sourceID := range uniqueStrings(candidate.ContextNodeIDs) {
+			if sourceID != accepted.ID {
+				edges = append(edges, canvasEdgeModel{ID: uuid.NewString(), WorkID: candidate.WorkID, SourceNodeID: sourceID, TargetNodeID: accepted.ID, Kind: "generated_from", CreatedAt: now})
+			}
+		}
+		if len(edges) > 0 {
+			if err := tx.Create(&edges).Error; err != nil {
+				return fmt.Errorf("create accepted canvas edges: %w", err)
+			}
+		}
+		update := tx.Model(&agentCandidateModel{}).Where("work_id = ? AND id = ? AND status = ?", input.WorkID, input.CandidateID, agent.CandidateStatusPending).Updates(map[string]any{"status": agent.CandidateStatusAccepted, "title": title, "accepted_node_id": accepted.ID, "decided_at": now})
+		if update.Error != nil {
+			return fmt.Errorf("accept canvas candidate: %w", update.Error)
+		}
+		if update.RowsAffected == 0 {
+			return canvas.ErrCandidateResolved
+		}
+		return nil
+	})
+	return canvasNodeFromModel(accepted), err
 }
 
-func (r *CanvasRepository) acceptVersionCandidate(ctx context.Context, transaction *sql.Tx, input canvas.AcceptCandidateInput, candidate agent.Candidate) (canvas.Node, error) {
-	locked, err := isNodeArchiveLocked(ctx, transaction, candidate.WorkID, candidate.NodeID)
+func acceptVersionCandidate(tx *gorm.DB, input canvas.AcceptCandidateInput, candidate agent.Candidate) (canvasNodeModel, error) {
+	locked, err := isNodeArchiveLocked(tx, candidate.WorkID, candidate.NodeID)
+	if err != nil || locked {
+		if locked {
+			return canvasNodeModel{}, canvas.ErrArchivedNodeLocked
+		}
+		return canvasNodeModel{}, err
+	}
+	node, err := getCanvasNode(tx, candidate.WorkID, candidate.NodeID)
 	if err != nil {
-		return canvas.Node{}, err
+		return canvasNodeModel{}, err
 	}
-	if locked {
-		return canvas.Node{}, canvas.ErrArchivedNodeLocked
-	}
-	var node canvas.Node
-	var currentVersionID string
-	node, err = scanCanvasNode(transaction.QueryRowContext(ctx, `SELECT id, work_id, revision, kind, title, content, x, y, created_at, updated_at FROM canvas_nodes WHERE work_id=? AND id=?`, candidate.WorkID, candidate.NodeID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return canvas.Node{}, canvas.ErrNodeNotFound
-	}
-	if err != nil {
-		return canvas.Node{}, err
-	}
-	if err := transaction.QueryRowContext(ctx, `SELECT current_version_id FROM canvas_nodes WHERE work_id=? AND id=?`, candidate.WorkID, candidate.NodeID).Scan(&currentVersionID); err != nil {
-		return canvas.Node{}, err
-	}
-	var next int64
-	if err := transaction.QueryRowContext(ctx, `SELECT COALESCE(MAX(version_number),0)+1 FROM canvas_node_versions WHERE node_id=?`, candidate.NodeID).Scan(&next); err != nil {
-		return canvas.Node{}, err
-	}
-	versionID := uuid.NewString()
-	now := time.Now().UTC()
-	title := strings.TrimSpace(input.Title)
+	now, title := time.Now().UTC(), strings.TrimSpace(input.Title)
 	if title == "" {
 		title = candidate.Title
 	}
-	if _, err := transaction.ExecContext(ctx, `INSERT INTO canvas_node_versions (id,node_id,work_id,version_number,parent_version_id,title,content,source_run_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, versionID, candidate.NodeID, candidate.WorkID, next, currentVersionID, title, candidate.Content, candidate.RunID, now.Format(time.RFC3339Nano)); err != nil {
-		return canvas.Node{}, err
+	node.Title, node.Content, node.Revision, node.UpdatedAt = title, candidate.Content, node.Revision+1, now
+	if _, err := createNodeVersionModel(tx, &node, node.CurrentVersionID, candidate.RunID); err != nil {
+		return canvasNodeModel{}, err
 	}
-	if _, err := transaction.ExecContext(ctx, `UPDATE canvas_nodes SET title=?,content=?,revision=revision+1,current_version_id=?,updated_at=? WHERE work_id=? AND id=?`, title, candidate.Content, versionID, now.Format(time.RFC3339Nano), candidate.WorkID, candidate.NodeID); err != nil {
-		return canvas.Node{}, err
+	if err := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ?", node.WorkID, node.ID).Updates(map[string]any{"title": title, "content": candidate.Content, "revision": node.Revision, "current_version_id": node.CurrentVersionID, "updated_at": now}).Error; err != nil {
+		return canvasNodeModel{}, err
 	}
-	if _, err := transaction.ExecContext(ctx, `UPDATE agent_candidates SET status=?,title=?,accepted_node_id=?,decided_at=? WHERE work_id=? AND id=? AND status=?`, agent.CandidateStatusAccepted, title, candidate.NodeID, now.Format(time.RFC3339Nano), input.WorkID, input.CandidateID, agent.CandidateStatusPending); err != nil {
-		return canvas.Node{}, err
+	update := tx.Model(&agentCandidateModel{}).Where("work_id = ? AND id = ? AND status = ?", input.WorkID, input.CandidateID, agent.CandidateStatusPending).Updates(map[string]any{"status": agent.CandidateStatusAccepted, "title": title, "accepted_node_id": candidate.NodeID, "decided_at": now})
+	if update.Error != nil {
+		return canvasNodeModel{}, update.Error
 	}
-	if err := transaction.Commit(); err != nil {
-		return canvas.Node{}, err
+	if update.RowsAffected == 0 {
+		return canvasNodeModel{}, canvas.ErrCandidateResolved
 	}
-	node.Title, node.Content, node.Revision, node.UpdatedAt, node.CurrentVersionID = title, candidate.Content, node.Revision+1, now, versionID
 	return node, nil
 }
 
@@ -743,106 +493,102 @@ func valueOrDefault(value, fallback string) string {
 
 func (r *CanvasRepository) RejectCandidate(ctx context.Context, workID, candidateID string) error {
 	now := time.Now().UTC()
-	result, err := r.database.ExecContext(ctx, `
-UPDATE agent_candidates SET status = ?, decided_at = ?
-WHERE work_id = ? AND id = ? AND status = ?`,
-		agent.CandidateStatusRejected, now.Format(time.RFC3339Nano), workID, candidateID,
-		agent.CandidateStatusPending)
-	if err != nil {
-		return fmt.Errorf("reject canvas candidate: %w", err)
+	result := r.database.WithContext(ctx).Model(&agentCandidateModel{}).Where("work_id = ? AND id = ? AND status = ?", workID, candidateID, agent.CandidateStatusPending).Updates(map[string]any{"status": agent.CandidateStatusRejected, "decided_at": now})
+	if result.Error != nil {
+		return fmt.Errorf("reject canvas candidate: %w", result.Error)
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read rejected canvas candidate: %w", err)
-	}
-	if changed > 0 {
+	if result.RowsAffected > 0 {
 		return nil
 	}
-	var status agent.CandidateStatus
-	err = r.database.QueryRowContext(ctx, `
-SELECT status FROM agent_candidates WHERE work_id = ? AND id = ?`, workID, candidateID).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
+	var model agentCandidateModel
+	if err := r.database.WithContext(ctx).Select("status").Where("work_id = ? AND id = ?", workID, candidateID).First(&model).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return canvas.ErrCandidateNotFound
-	}
-	if err != nil {
+	} else if err != nil {
 		return fmt.Errorf("read canvas candidate status: %w", err)
 	}
-	if status == agent.CandidateStatusRejected {
+	if model.Status == string(agent.CandidateStatusRejected) {
 		return nil
 	}
 	return canvas.ErrCandidateResolved
 }
 
-func scanCanvasNode(scanner rowScanner) (canvas.Node, error) {
-	var node canvas.Node
-	var createdAt, updatedAt string
-	if err := scanner.Scan(&node.ID, &node.WorkID, &node.Revision, &node.Kind, &node.Title, &node.Content, &node.X, &node.Y, &createdAt, &updatedAt); err != nil {
-		return canvas.Node{}, err
-	}
-	var err error
-	node.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("parse canvas node created time: %w", err)
-	}
-	node.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
-	if err != nil {
-		return canvas.Node{}, fmt.Errorf("parse canvas node updated time: %w", err)
-	}
-	return node, nil
-}
-
 func (r *CanvasRepository) ListNodeVersions(ctx context.Context, workID, nodeID string) ([]canvas.NodeVersion, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id,node_id,work_id,version_number,parent_version_id,title,content,source_run_id,created_at FROM canvas_node_versions WHERE work_id=? AND node_id=? ORDER BY version_number DESC`, workID, nodeID)
-	if err != nil {
+	var models []canvasNodeVersionModel
+	if err := r.database.WithContext(ctx).Where("work_id = ? AND node_id = ?", workID, nodeID).Order("version_number DESC").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list node versions: %w", err)
 	}
-	defer rows.Close()
-	versions := make([]canvas.NodeVersion, 0)
-	for rows.Next() {
-		var v canvas.NodeVersion
-		var created string
-		if err := rows.Scan(&v.ID, &v.NodeID, &v.WorkID, &v.VersionNumber, &v.ParentVersionID, &v.Title, &v.Content, &v.SourceRunID, &created); err != nil {
-			return nil, err
-		}
-		v.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
-		if err != nil {
-			return nil, err
-		}
-		versions = append(versions, v)
+	versions := make([]canvas.NodeVersion, len(models))
+	for i, model := range models {
+		versions[i] = canvasNodeVersionFromModel(model)
 	}
-	return versions, rows.Err()
+	return versions, nil
 }
 
 func (r *CanvasRepository) SwitchNodeVersion(ctx context.Context, workID, nodeID, versionID string) (canvas.Node, error) {
-	tx, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return canvas.Node{}, err
+	var node canvasNodeModel
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		locked, err := isNodeArchiveLocked(tx, workID, nodeID)
+		if err != nil || locked {
+			if locked {
+				return canvas.ErrArchivedNodeLocked
+			}
+			return err
+		}
+		var version canvasNodeVersionModel
+		if err := tx.Where("id = ? AND work_id = ? AND node_id = ?", versionID, workID, nodeID).First(&version).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return canvas.ErrNodeNotFound
+		} else if err != nil {
+			return err
+		}
+		node, err = getCanvasNode(tx, workID, nodeID)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&canvasNodeModel{}).Where("work_id = ? AND id = ?", workID, nodeID).Updates(map[string]any{"title": version.Title, "content": version.Content, "current_version_id": versionID, "revision": gorm.Expr("revision + 1"), "updated_at": now}).Error; err != nil {
+			return err
+		}
+		node.Title, node.Content, node.CurrentVersionID, node.Revision, node.UpdatedAt = version.Title, version.Content, versionID, node.Revision+1, now
+		return nil
+	})
+	return canvasNodeFromModel(node), err
+}
+
+func canvasNodeFromModel(model canvasNodeModel) canvas.Node {
+	return canvas.Node{ID: model.ID, WorkID: model.WorkID, Revision: model.Revision, Kind: canvas.NodeKind(model.Kind), Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt, CurrentVersionID: model.CurrentVersionID}
+}
+
+func canvasNodesFromModels(models []canvasNodeModel) []canvas.Node {
+	result := make([]canvas.Node, len(models))
+	for i, model := range models {
+		result[i] = canvasNodeFromModel(model)
 	}
-	defer tx.Rollback()
-	locked, err := isNodeArchiveLocked(ctx, tx, workID, nodeID)
-	if err != nil {
-		return canvas.Node{}, err
+	return result
+}
+
+func canvasEdgeFromModel(model canvasEdgeModel) canvas.Edge {
+	return canvas.Edge{ID: model.ID, WorkID: model.WorkID, SourceNodeID: model.SourceNodeID, TargetNodeID: model.TargetNodeID, Kind: model.Kind, CreatedAt: model.CreatedAt}
+}
+
+func canvasEdgesFromModels(models []canvasEdgeModel) []canvas.Edge {
+	result := make([]canvas.Edge, len(models))
+	for i, model := range models {
+		result[i] = canvasEdgeFromModel(model)
 	}
-	if locked {
-		return canvas.Node{}, canvas.ErrArchivedNodeLocked
+	return result
+}
+
+func canvasNodeVersionFromModel(model canvasNodeVersionModel) canvas.NodeVersion {
+	return canvas.NodeVersion{ID: model.ID, NodeID: model.NodeID, WorkID: model.WorkID, VersionNumber: model.VersionNumber, ParentVersionID: model.ParentVersionID, Title: model.Title, Content: model.Content, SourceRunID: model.SourceRunID, CreatedAt: model.CreatedAt}
+}
+
+func candidateModelFromDomain(candidate agent.Candidate) agentCandidateModel {
+	return agentCandidateModel{ID: candidate.ID, RunID: candidate.RunID, WorkID: candidate.WorkID, SkillID: candidate.SkillID, SkillVersion: candidate.SkillVersion, Status: string(candidate.Status), Kind: candidate.Kind, Title: candidate.Title, Content: candidate.Content, X: candidate.X, Y: candidate.Y, AcceptedNodeID: candidate.AcceptedNodeID, CreatedAt: candidate.CreatedAt, DecidedAt: candidate.DecidedAt, CandidateType: valueOrDefault(candidate.CandidateType, "node"), NodeID: candidate.NodeID, BaseVersionID: candidate.BaseVersionID, Reason: candidate.Reason, ChangeScore: candidate.ChangeScore}
+}
+
+func candidateFromStoredModel(model agentCandidateModel, contextIDs []string) agent.Candidate {
+	if model.CandidateType == "version" && model.NodeID != "" {
+		contextIDs = []string{model.NodeID}
 	}
-	var title, content string
-	if err := tx.QueryRowContext(ctx, `SELECT title,content FROM canvas_node_versions WHERE id=? AND work_id=? AND node_id=?`, versionID, workID, nodeID).Scan(&title, &content); errors.Is(err, sql.ErrNoRows) {
-		return canvas.Node{}, canvas.ErrNodeNotFound
-	} else if err != nil {
-		return canvas.Node{}, err
-	}
-	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `UPDATE canvas_nodes SET title=?,content=?,current_version_id=?,revision=revision+1,updated_at=? WHERE work_id=? AND id=?`, title, content, versionID, now.Format(time.RFC3339Nano), workID, nodeID); err != nil {
-		return canvas.Node{}, err
-	}
-	node, err := scanCanvasNode(tx.QueryRowContext(ctx, `SELECT id,work_id,revision,kind,title,content,x,y,created_at,updated_at FROM canvas_nodes WHERE work_id=? AND id=?`, workID, nodeID))
-	if err != nil {
-		return canvas.Node{}, err
-	}
-	node.CurrentVersionID = versionID
-	if err := tx.Commit(); err != nil {
-		return canvas.Node{}, err
-	}
-	return node, nil
+	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: model.Kind, CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: contextIDs, AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}
 }

@@ -36,18 +36,19 @@ func Run(logger *slog.Logger, version string) error {
 	if err != nil {
 		return err
 	}
-	providerRepository, err := persistence.NewProviderRepository(dataDirectory)
+	database, err := persistence.OpenDatabase(dataDirectory)
 	if err != nil {
 		return err
 	}
-	defer providerRepository.Close()
-	logger.Info("Warmmo data initialized", "database", providerRepository.DatabasePath())
+	defer database.Close()
+	providerRepository := persistence.NewProviderRepositoryWithDatabase(database)
+	logger.Info("Warmmo data initialized", "database", database.Path())
 	providerService := application.NewProviderService(providerRepository, aiprovider.NewProbe(nil))
 	providerController := httpapi.NewProviderController(providerService, logger)
-	workRepository := persistence.NewWorkRepository(providerRepository)
+	workRepository := persistence.NewWorkRepositoryWithDatabase(database)
 	workService := application.NewWorkService(workRepository)
 	workController := httpapi.NewWorkController(workService, logger)
-	agentRepository := persistence.NewAgentRepository(providerRepository)
+	agentRepository := persistence.NewAgentRepositoryWithDatabase(database)
 	if err := agentRepository.FailInterruptedRuns(); err != nil {
 		return err
 	}
@@ -60,10 +61,10 @@ func Run(logger *slog.Logger, version string) error {
 		return err
 	}
 	logger.Info("Warmmo skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
-	canvasRepository := persistence.NewCanvasRepository(providerRepository)
+	canvasRepository := persistence.NewCanvasRepositoryWithDatabase(database)
 	workspaceSearcher := agentworkspace.NewSearcher(dataDirectory)
 	contextSearchGateway := persistence.NewContextSearchGateway(ctx, func() (*persistence.ContextIndex, error) {
-		return configureContextIndex(providerRepository, providerService)
+		return configureContextIndex(database, providerRepository, providerService)
 	})
 	toolRegistry := agentcore.NewToolRegistry(
 		agenttools.NewGetNodesTool(canvasRepository),
@@ -113,7 +114,7 @@ func Run(logger *slog.Logger, version string) error {
 	}
 }
 
-func configureContextIndex(providerRepository *persistence.ProviderRepository, providerService *application.ProviderService) (*persistence.ContextIndex, error) {
+func configureContextIndex(database *persistence.Database, providerRepository *persistence.ProviderRepository, providerService *application.ProviderService) (*persistence.ContextIndex, error) {
 	providerID := strings.TrimSpace(os.Getenv("WARMMO_EMBEDDING_PROVIDER_ID"))
 	modelID := strings.TrimSpace(os.Getenv("WARMMO_EMBEDDING_MODEL_ID"))
 	if providerID == "" && modelID == "" {
@@ -153,7 +154,7 @@ func configureContextIndex(providerRepository *persistence.ProviderRepository, p
 	if err != nil {
 		return nil, err
 	}
-	return persistence.NewContextIndex(providerRepository, embedder), nil
+	return persistence.NewContextIndexWithDatabase(database, embedder), nil
 }
 
 func resolveDataDirectory() (string, error) {
