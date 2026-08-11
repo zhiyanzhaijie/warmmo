@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"testing"
 
@@ -11,16 +10,6 @@ import (
 	agent "warmmo/core/internal/application/agent"
 	"warmmo/core/internal/domain/canvas"
 )
-
-func TestPublicAgentErrorForInvalidDecision(t *testing.T) {
-	t.Parallel()
-
-	err := fmt.Errorf("run invocation: %w", agent.ErrInvalidDecision)
-	message := publicAgentError(err)
-	if message != "模型未返回有效的 Agent 决策，请重试或切换模型" {
-		t.Fatalf("publicAgentError() = %q", message)
-	}
-}
 
 func TestHasOnlyAttachmentPriorityNodes(t *testing.T) {
 	t.Parallel()

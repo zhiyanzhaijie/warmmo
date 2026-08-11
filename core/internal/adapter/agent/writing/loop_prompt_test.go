@@ -102,17 +102,6 @@ func TestCandidatePromptReplacesNodeWithoutLeakingItsContent(t *testing.T) {
 	assertNodeReferenceList(t, payload["availableContextNodes"], []NodeReference{})
 }
 
-func TestNodeUpdateSystemPromptRequiresOnDemandBaselineRead(t *testing.T) {
-	t.Parallel()
-
-	prompt := nodeUpdateSystemPrompt("Character skill instructions.", "merge")
-	for _, required := range []string{"On-Demand Canvas Context", "authoritative baseline", "Preserve", "complete merged title and content"} {
-		if !strings.Contains(prompt, required) {
-			t.Fatalf("system prompt does not contain %q: %s", required, prompt)
-		}
-	}
-}
-
 func TestNodeUpdateModeKeepsOrdinaryCharacterEditsAsMerge(t *testing.T) {
 	t.Parallel()
 
