@@ -44,6 +44,14 @@ func (s *WorkService) List(ctx context.Context) ([]work.Summary, error) {
 	return s.store.List(ctx)
 }
 
+func (s *WorkService) Delete(ctx context.Context, workID string) error {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return work.ErrInvalidWork
+	}
+	return s.store.Delete(ctx, workID)
+}
+
 func (s *WorkService) Update(ctx context.Context, input work.UpdateInput) (work.Detail, error) {
 	input.ID = strings.TrimSpace(input.ID)
 	input.Title = strings.TrimSpace(input.Title)

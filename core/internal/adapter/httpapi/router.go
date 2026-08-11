@@ -15,6 +15,7 @@ func NewRouter(runtimeController *RuntimeController, providerController *Provide
 	router.HandleFunc("POST /api/v1/works", workController.Create)
 	router.HandleFunc("GET /api/v1/works/{workID}", workController.Get)
 	router.HandleFunc("PATCH /api/v1/works/{workID}", workController.Update)
+	router.HandleFunc("DELETE /api/v1/works/{workID}", workController.Delete)
 	router.HandleFunc("GET /api/v1/work-folders", workController.ListFolders)
 	router.HandleFunc("POST /api/v1/work-folders", workController.CreateFolder)
 	router.HandleFunc("POST /api/v1/works/{workID}/agent-runs", agentController.CreateRun)

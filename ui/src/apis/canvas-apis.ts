@@ -18,8 +18,12 @@ interface NodesResponse {
   nodes: CanvasNode[]
 }
 
+type CandidateResponse = Omit<AgentCandidate, 'contextNodeIds'> & {
+  contextNodeIds: string[] | null
+}
+
 interface CandidatesResponse {
-  candidates: AgentCandidate[]
+  candidates: CandidateResponse[]
 }
 
 interface EdgesResponse {
@@ -68,7 +72,10 @@ export function useCanvasCandidates(workId: string) {
     refetchInterval: 2_000,
     queryFn: async ({ signal }) => {
       const response = await coreClient<CandidatesResponse>(`/works/${workId}/candidates`, { signal })
-      return response.candidates
+      return response.candidates.map((candidate) => ({
+        ...candidate,
+        contextNodeIds: candidate.contextNodeIds ?? [],
+      }))
     },
   })
 }

@@ -10,6 +10,7 @@ var (
 	ErrInvalidWork      = errors.New("invalid work")
 	ErrNotFound         = errors.New("work not found")
 	ErrRevisionConflict = errors.New("work revision conflict")
+	ErrActiveRun        = errors.New("work has an active agent run")
 	ErrFolderNotFound   = errors.New("work folder not found")
 	ErrFolderConflict   = errors.New("work folder already exists")
 )
@@ -80,6 +81,7 @@ type Store interface {
 	Get(context.Context, string) (Detail, error)
 	List(context.Context) ([]Summary, error)
 	Update(context.Context, UpdateInput) (Detail, error)
+	Delete(context.Context, string) error
 	CreateFolder(context.Context, string) (Folder, error)
 	ListFolders(context.Context) ([]Folder, error)
 }

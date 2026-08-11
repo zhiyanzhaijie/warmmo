@@ -119,6 +119,22 @@ func (c *WorkController) Update(response http.ResponseWriter, request *http.Requ
 	}
 }
 
+func (c *WorkController) Delete(response http.ResponseWriter, request *http.Request) {
+	err := c.app.Delete(request.Context(), request.PathValue("workID"))
+	switch {
+	case errors.Is(err, work.ErrInvalidWork):
+		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID 不能为空"})
+	case errors.Is(err, work.ErrNotFound):
+		writeJSON(response, http.StatusNotFound, map[string]string{"message": "作品不存在"})
+	case errors.Is(err, work.ErrActiveRun):
+		writeJSON(response, http.StatusConflict, map[string]string{"message": "作品仍有正在运行的 AI 任务，请稍后再删除"})
+	case err != nil:
+		c.internalError(response, "delete work", err)
+	default:
+		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (c *WorkController) ListFolders(response http.ResponseWriter, request *http.Request) {
 	folders, err := c.app.ListFolders(request.Context())
 	if err != nil {

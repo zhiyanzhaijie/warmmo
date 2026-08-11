@@ -94,6 +94,25 @@ export function useUpdateWork() {
   })
 }
 
+export function useDeleteWork() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (workId: string) => {
+      await coreClient(`/works/${encodeURIComponent(workId)}`, {
+        method: 'DELETE',
+        responseType: 'text',
+      })
+    },
+    onSuccess: (_, workId) => {
+      queryClient.setQueryData<WorkSummary[]>(workKeys.list(), (works = []) =>
+        works.filter((work) => work.id !== workId))
+      queryClient.removeQueries({ queryKey: workKeys.detail(workId) })
+      queryClient.removeQueries({ queryKey: ['canvas', workId] })
+      queryClient.removeQueries({ queryKey: ['chapter-archives', workId] })
+    },
+  })
+}
+
 export function useWorkFolders(enabled = true) {
   return useQuery({
     queryKey: workKeys.folders(),

@@ -114,6 +114,77 @@ func (r *WorkRepository) Update(ctx context.Context, input work.UpdateInput) (wo
 	return detail, err
 }
 
+func (r *WorkRepository) Delete(ctx context.Context, workID string) error {
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&workModel{}).Where("id = ?", workID).Count(&count).Error; err != nil {
+			return fmt.Errorf("find work before delete: %w", err)
+		}
+		if count == 0 {
+			return work.ErrNotFound
+		}
+
+		if err := tx.Model(&agentRunModel{}).
+			Where("work_id = ? AND status IN ?", workID, []string{"queued", "running"}).
+			Count(&count).Error; err != nil {
+			return fmt.Errorf("check active agent runs: %w", err)
+		}
+		if count > 0 {
+			return work.ErrActiveRun
+		}
+
+		var documents []knowledgeVectorDocumentModel
+		if err := tx.Select("vector_row_id").Where("work_id = ?", workID).Find(&documents).Error; err != nil {
+			return fmt.Errorf("list work vectors: %w", err)
+		}
+		for _, document := range documents {
+			if err := tx.Exec(`DELETE FROM knowledge_vectors_partitioned WHERE rowid = ?`, document.VectorRowID).Error; err != nil {
+				return fmt.Errorf("delete work vector: %w", err)
+			}
+		}
+
+		runIDs := tx.Model(&agentRunModel{}).Select("id").Where("work_id = ?", workID)
+		if err := tx.Where("run_id IN (?)", runIDs).Delete(&agentResponseModel{}).Error; err != nil {
+			return fmt.Errorf("delete work agent responses: %w", err)
+		}
+		if err := tx.Where("run_id IN (?)", runIDs).Delete(&agentRunEventModel{}).Error; err != nil {
+			return fmt.Errorf("delete work agent events: %w", err)
+		}
+
+		scopedModels := []struct {
+			label string
+			model any
+		}{
+			{"agent candidates", &agentCandidateModel{}},
+			{"agent runs", &agentRunModel{}},
+			{"chapter archive sections", &chapterArchiveSectionModel{}},
+			{"chapter archives", &chapterArchiveModel{}},
+			{"canvas edges", &canvasEdgeModel{}},
+			{"canvas actions", &canvasActionModel{}},
+			{"canvas history", &canvasHistoryStateModel{}},
+			{"canvas node versions", &canvasNodeVersionModel{}},
+			{"canvas nodes", &canvasNodeModel{}},
+			{"knowledge documents", &knowledgeVectorDocumentModel{}},
+			{"knowledge jobs", &knowledgeIndexJobModel{}},
+		}
+		for _, scoped := range scopedModels {
+			if err := tx.Where("work_id = ?", workID).Delete(scoped.model).Error; err != nil {
+				return fmt.Errorf("delete work %s: %w", scoped.label, err)
+			}
+		}
+
+		result := tx.Where("id = ?", workID).Delete(&workModel{})
+		if result.Error != nil {
+			return fmt.Errorf("delete work: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return work.ErrNotFound
+		}
+		return nil
+	})
+	return err
+}
+
 func (r *WorkRepository) CreateFolder(ctx context.Context, name string) (work.Folder, error) {
 	model := workFolderModel{ID: uuid.NewString(), Name: name}
 	err := r.database.WithContext(ctx).Create(&model).Error

@@ -325,7 +325,7 @@ func (r *AgentRepository) CreateRun(input appagent.RunInput) (appagent.Run, erro
 	run := appagent.Run{
 		ID: input.RunID, WorkID: input.WorkID, Status: appagent.RunStatusQueued,
 		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, ProviderID: input.ProviderID, ModelID: input.ModelID,
-		ContextNodeIDs: append([]string(nil), input.ContextNodeIDs...), CreatedAt: now, UpdatedAt: now,
+		ContextNodeIDs: append([]string{}, input.ContextNodeIDs...), CreatedAt: now, UpdatedAt: now,
 	}
 	model := runModelFromDomain(run)
 	err := r.database.Transaction(func(tx *gorm.DB) error {
@@ -1011,7 +1011,7 @@ func derivationNodeInputs(run appagent.Run, parent canvas.Node, content string) 
 	}
 	return []derivationNodeInput{{
 		Kind: canvas.NodeKindChapterSection, Title: section.Title, Content: section.Content,
-		ContextNodeIDs: append([]string(nil), run.ContextNodeIDs...),
+		ContextNodeIDs: append([]string{}, run.ContextNodeIDs...),
 	}}, nil
 }
 
@@ -1125,11 +1125,11 @@ func appendEvent(tx *gorm.DB, runID string, eventType appagent.EventType, data a
 }
 
 func runFromModel(model agentRunModel) appagent.Run {
-	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, ProviderID: model.ProviderID, ModelID: model.ModelID, ContextNodeIDs: append([]string(nil), model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
+	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, ProviderID: model.ProviderID, ModelID: model.ModelID, ContextNodeIDs: append([]string{}, model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
 }
 
 func runModelFromDomain(run appagent.Run) agentRunModel {
-	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ContextNodeIDs: append([]string(nil), run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
+	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ContextNodeIDs: append([]string{}, run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
 }
 
 func eventFromModel(model agentRunEventModel) appagent.Event {

@@ -131,7 +131,7 @@ export function toFlowEdges(
 
   for (const candidate of candidates) {
     if (candidate.nodeId !== undefined && collapsedNodeProxyIds.has(candidate.nodeId)) continue
-    for (const sourceNodeId of candidate.contextNodeIds) {
+    for (const sourceNodeId of candidate.contextNodeIds ?? []) {
       const visibleSourceNodeId = collapsedNodeProxyIds.get(sourceNodeId) ?? sourceNodeId
       const edgeKey = `${visibleSourceNodeId}\u0000candidate:${candidate.id}\u0000candidate_context`
       if (edgeKeys.has(edgeKey)) continue

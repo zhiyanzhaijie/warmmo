@@ -117,11 +117,7 @@ func candidateFromModel(db *gorm.DB, model agentCandidateModel) (agent.Candidate
 	if err := db.Select("id", "context_node_ids_json").First(&run, "id = ?", model.RunID).Error; err != nil {
 		return agent.Candidate{}, fmt.Errorf("read candidate run: %w", err)
 	}
-	contextIDs := run.ContextNodeIDs
-	if model.CandidateType == "version" && model.NodeID != "" {
-		contextIDs = []string{model.NodeID}
-	}
-	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: model.Kind, CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: contextIDs, AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}, nil
+	return candidateFromStoredModel(model, run.ContextNodeIDs), nil
 }
 
 func (r *CanvasRepository) initialCandidatePosition(tx *gorm.DB, workID string, contextNodeIDs []string) (float64, float64, error) {
@@ -332,7 +328,8 @@ func (r *CanvasRepository) CreateCandidate(ctx context.Context, candidate agent.
 		} else if err != nil {
 			return fmt.Errorf("read candidate run: %w", err)
 		}
-		candidate.Kind, candidate.ContextNodeIDs = run.Target, run.ContextNodeIDs
+		candidate.Kind = run.Target
+		candidate.ContextNodeIDs = append([]string{}, run.ContextNodeIDs...)
 		candidate.Status = agent.CandidateStatusPending
 		candidate.Title = candidateTitle(candidate.Content, candidate.Kind)
 		var err error
@@ -590,5 +587,5 @@ func candidateFromStoredModel(model agentCandidateModel, contextIDs []string) ag
 	if model.CandidateType == "version" && model.NodeID != "" {
 		contextIDs = []string{model.NodeID}
 	}
-	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: model.Kind, CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: contextIDs, AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}
+	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: model.Kind, CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: append([]string{}, contextIDs...), AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}
 }
