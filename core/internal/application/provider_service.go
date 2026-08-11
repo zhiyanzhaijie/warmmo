@@ -136,9 +136,19 @@ func (s *ProviderService) TestConfiguration(ctx context.Context, providerID stri
 		modelID = candidate.ID
 	}
 	if s.probe == nil {
-		return ai.ProviderTestResult{}, errors.New("provider probe is not configured")
+		return ai.ProviderTestResult{}, InternalError("test provider configuration", errors.New("provider probe is not configured"))
 	}
-	return s.probe.Test(ctx, baseURL, apiKey, modelID, capability)
+	result, err := s.probe.Test(ctx, baseURL, apiKey, modelID, capability)
+	if err != nil {
+		return ai.ProviderTestResult{}, newAppError(
+			ErrorUpstream,
+			"PROVIDER_UNREACHABLE",
+			"无法连接 Provider，请检查 Base URL 和网络",
+			"test provider configuration",
+			err,
+		)
+	}
+	return result, nil
 }
 
 func (s *ProviderService) DeleteConfiguration(providerID string) error {

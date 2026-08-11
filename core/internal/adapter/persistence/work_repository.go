@@ -35,7 +35,7 @@ func (r *WorkRepository) Create(ctx context.Context, input work.CreateInput) (wo
 		FolderID: input.FolderID, Status: "active", Revision: 1,
 	}
 	if err := r.database.WithContext(ctx).Create(&model).Error; err != nil {
-		return work.Summary{}, fmt.Errorf("create work: %w", err)
+		return work.Summary{}, databaseError("create work", err)
 	}
 	return workSummaryFromModel(model, folder, 0), nil
 }
@@ -47,7 +47,7 @@ func (r *WorkRepository) Get(ctx context.Context, workID string) (work.Detail, e
 		return work.Detail{}, work.ErrNotFound
 	}
 	if err != nil {
-		return work.Detail{}, fmt.Errorf("get work: %w", err)
+		return work.Detail{}, databaseError("get work", err)
 	}
 	return workDetailFromModel(model), nil
 }
@@ -55,7 +55,7 @@ func (r *WorkRepository) Get(ctx context.Context, workID string) (work.Detail, e
 func (r *WorkRepository) List(ctx context.Context) ([]work.Summary, error) {
 	var models []workModel
 	if err := r.database.WithContext(ctx).Preload("Folder").Order("updated_at DESC, id").Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("list works: %w", err)
+		return nil, databaseError("list works", err)
 	}
 	works := make([]work.Summary, len(models))
 	workIndex := make(map[string]int, len(models))
@@ -92,12 +92,12 @@ func (r *WorkRepository) Update(ctx context.Context, input work.UpdateInput) (wo
 				"revision": gorm.Expr("revision + 1"), "updated_at": time.Now().UTC(),
 			})
 		if result.Error != nil {
-			return fmt.Errorf("update work: %w", result.Error)
+			return databaseError("update work", result.Error)
 		}
 		if result.RowsAffected == 0 {
 			var count int64
 			if err := tx.Model(&workModel{}).Where("id = ?", input.ID).Count(&count).Error; err != nil {
-				return err
+				return databaseError("find work after update conflict", err)
 			}
 			if count == 0 {
 				return work.ErrNotFound
@@ -106,7 +106,7 @@ func (r *WorkRepository) Update(ctx context.Context, input work.UpdateInput) (wo
 		}
 		var model workModel
 		if err := tx.Preload("Folder").First(&model, "id = ?", input.ID).Error; err != nil {
-			return err
+			return databaseError("reload updated work", err)
 		}
 		detail = workDetailFromModel(model)
 		return nil
@@ -118,7 +118,7 @@ func (r *WorkRepository) Delete(ctx context.Context, workID string) error {
 	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&workModel{}).Where("id = ?", workID).Count(&count).Error; err != nil {
-			return fmt.Errorf("find work before delete: %w", err)
+			return databaseError("find work before delete", err)
 		}
 		if count == 0 {
 			return work.ErrNotFound
@@ -127,7 +127,7 @@ func (r *WorkRepository) Delete(ctx context.Context, workID string) error {
 		if err := tx.Model(&agentRunModel{}).
 			Where("work_id = ? AND status IN ?", workID, []string{"queued", "running"}).
 			Count(&count).Error; err != nil {
-			return fmt.Errorf("check active agent runs: %w", err)
+			return databaseError("check active agent runs", err)
 		}
 		if count > 0 {
 			return work.ErrActiveRun
@@ -135,20 +135,20 @@ func (r *WorkRepository) Delete(ctx context.Context, workID string) error {
 
 		var documents []knowledgeVectorDocumentModel
 		if err := tx.Select("vector_row_id").Where("work_id = ?", workID).Find(&documents).Error; err != nil {
-			return fmt.Errorf("list work vectors: %w", err)
+			return databaseError("list work vectors", err)
 		}
 		for _, document := range documents {
 			if err := tx.Exec(`DELETE FROM knowledge_vectors_partitioned WHERE rowid = ?`, document.VectorRowID).Error; err != nil {
-				return fmt.Errorf("delete work vector: %w", err)
+				return databaseError("delete work vector", err)
 			}
 		}
 
 		runIDs := tx.Model(&agentRunModel{}).Select("id").Where("work_id = ?", workID)
 		if err := tx.Where("run_id IN (?)", runIDs).Delete(&agentResponseModel{}).Error; err != nil {
-			return fmt.Errorf("delete work agent responses: %w", err)
+			return databaseError("delete work agent responses", err)
 		}
 		if err := tx.Where("run_id IN (?)", runIDs).Delete(&agentRunEventModel{}).Error; err != nil {
-			return fmt.Errorf("delete work agent events: %w", err)
+			return databaseError("delete work agent events", err)
 		}
 
 		scopedModels := []struct {
@@ -169,13 +169,13 @@ func (r *WorkRepository) Delete(ctx context.Context, workID string) error {
 		}
 		for _, scoped := range scopedModels {
 			if err := tx.Where("work_id = ?", workID).Delete(scoped.model).Error; err != nil {
-				return fmt.Errorf("delete work %s: %w", scoped.label, err)
+				return databaseError(fmt.Sprintf("delete work %s", scoped.label), err)
 			}
 		}
 
 		result := tx.Where("id = ?", workID).Delete(&workModel{})
 		if result.Error != nil {
-			return fmt.Errorf("delete work: %w", result.Error)
+			return databaseError("delete work", result.Error)
 		}
 		if result.RowsAffected == 0 {
 			return work.ErrNotFound
@@ -192,7 +192,7 @@ func (r *WorkRepository) CreateFolder(ctx context.Context, name string) (work.Fo
 		return work.Folder{}, work.ErrFolderConflict
 	}
 	if err != nil {
-		return work.Folder{}, fmt.Errorf("create work folder: %w", err)
+		return work.Folder{}, databaseError("create work folder", err)
 	}
 	return workFolderFromModel(model), nil
 }
@@ -200,7 +200,7 @@ func (r *WorkRepository) CreateFolder(ctx context.Context, name string) (work.Fo
 func (r *WorkRepository) ListFolders(ctx context.Context) ([]work.Folder, error) {
 	var models []workFolderModel
 	if err := r.database.WithContext(ctx).Order("sort_order, name").Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("list work folders: %w", err)
+		return nil, databaseError("list work folders", err)
 	}
 	folders := make([]work.Folder, len(models))
 	for index, model := range models {
@@ -219,7 +219,7 @@ func (r *WorkRepository) findFolder(ctx context.Context, folderID string) (*work
 		return nil, work.ErrFolderNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get work folder: %w", err)
+		return nil, databaseError("get work folder", err)
 	}
 	return &model, nil
 }
@@ -261,7 +261,7 @@ func (r *WorkRepository) loadNodeCounts(ctx context.Context, works []work.Summar
 	}
 	if err := r.database.WithContext(ctx).Model(&canvasNodeModel{}).
 		Select("work_id, count(*) AS count").Group("work_id").Scan(&counts).Error; err != nil {
-		return fmt.Errorf("count work nodes: %w", err)
+		return databaseError("count work nodes", err)
 	}
 	for _, count := range counts {
 		if workIndex, exists := index[count.WorkID]; exists {
@@ -283,7 +283,7 @@ SELECT work_id,id,title,kind,x,y FROM (
     FROM canvas_nodes
 ) WHERE row_number <= ? ORDER BY work_id,row_number`, workPreviewLimit).Scan(&rows).Error
 	if err != nil {
-		return fmt.Errorf("list work preview nodes: %w", err)
+		return databaseError("list work preview nodes", err)
 	}
 	for _, row := range rows {
 		if workIndex, exists := index[row.WorkID]; exists {
@@ -308,7 +308,7 @@ JOIN preview_nodes source ON source.work_id=e.work_id AND source.id=e.source_nod
 JOIN preview_nodes target ON target.work_id=e.work_id AND target.id=e.target_node_id AND target.row_number<=?
 ORDER BY e.work_id,e.created_at`, workPreviewLimit, workPreviewLimit).Scan(&rows).Error
 	if err != nil {
-		return fmt.Errorf("list work preview edges: %w", err)
+		return databaseError("list work preview edges", err)
 	}
 	for _, row := range rows {
 		if workIndex, exists := index[row.WorkID]; exists {

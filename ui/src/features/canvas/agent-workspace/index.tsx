@@ -1,6 +1,5 @@
 import { NodeToolbar, Position, useStore } from '@xyflow/react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { toast } from 'sonner'
 
 import {
   useCreateAgentRun,
@@ -180,8 +179,7 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
     beginNodeAgentRun(targetNodeId)
     createRun.mutate({ prompt: input.prompt, targetNodeId, contextNodeIds: runContextNodeIds, model }, {
       onSuccess: (run) => streamRun(run.id, targetNodeId),
-      onError: (error) => {
-        toast.error(error instanceof Error ? error.message : '无法创建 Agent Run')
+      onError: () => {
         dismissNodeAgentRun(targetNodeId)
       },
     })
@@ -194,7 +192,6 @@ export const CanvasAgentWorkspace = memo(function CanvasAgentWorkspace({
       answer,
     }, {
       onSuccess: () => streamRun(pendingInput.runId, targetNodeId, pendingInput.lastSequence),
-      onError: (error) => toast.error(error instanceof Error ? error.message : '提交回答失败'),
     })
   }, [pendingInput, respondToRun, streamRun, targetNodeId])
   return targetNodeId !== null && targetNode !== undefined && targetNode.data.archiveStateResolved &&

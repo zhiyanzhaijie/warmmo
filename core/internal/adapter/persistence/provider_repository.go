@@ -65,7 +65,7 @@ func (r *ProviderRepository) DatabasePath() string { return r.databaseHost.Path(
 func (r *ProviderRepository) List() ([]ai.ProviderConfiguration, error) {
 	var models []providerConfigurationModel
 	if err := r.database.Order("updated_at DESC").Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("query provider configurations: %w", err)
+		return nil, databaseError("query provider configurations", err)
 	}
 	configurations := make([]ai.ProviderConfiguration, len(models))
 	for index, model := range models {
@@ -83,7 +83,7 @@ func (r *ProviderRepository) Save(input ai.SaveProviderConfiguration) (ai.Provid
 			First(&existing).Error
 		exists := err == nil
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("query existing provider configuration: %w", err)
+			return databaseError("query existing provider configuration", err)
 		}
 
 		secret := encryptedSecret{Nonce: existing.SecretNonce, Ciphertext: existing.SecretCiphertext}
@@ -103,10 +103,13 @@ func (r *ProviderRepository) Save(input ai.SaveProviderConfiguration) (ai.Provid
 			ModelIDs:    append([]string(nil), input.ModelIDs...),
 			SecretNonce: secret.Nonce, SecretCiphertext: secret.Ciphertext, APIKeyHint: keyHint,
 		}
-		return tx.Clauses(clause.OnConflict{
+		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "provider_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"base_url", "model_ids_json", "secret_nonce", "secret_ciphertext", "api_key_hint", "updated_at"}),
-		}).Create(&saved).Error
+		}).Create(&saved).Error; err != nil {
+			return databaseError("save provider configuration", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return ai.ProviderConfiguration{}, err
@@ -117,7 +120,7 @@ func (r *ProviderRepository) Save(input ai.SaveProviderConfiguration) (ai.Provid
 func (r *ProviderRepository) Delete(providerID string) error {
 	result := r.database.Where("provider_id = ?", providerID).Delete(&providerConfigurationModel{})
 	if result.Error != nil {
-		return fmt.Errorf("delete provider configuration: %w", result.Error)
+		return databaseError("delete provider configuration", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return ErrProviderConfigurationNotFound
@@ -134,7 +137,7 @@ func (r *ProviderRepository) GetAPIKey(providerID string) (string, error) {
 		return "", ErrProviderConfigurationNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("query provider secret: %w", err)
+		return "", databaseError("query provider secret", err)
 	}
 	return r.decrypt(encryptedSecret{Nonce: model.SecretNonce, Ciphertext: model.SecretCiphertext})
 }
@@ -148,7 +151,7 @@ func (r *ProviderRepository) ResolveModel(providerID, modelID string) (string, s
 		return "", "", ErrProviderConfigurationNotFound
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("query provider model: %w", err)
+		return "", "", databaseError("query provider model", err)
 	}
 	for _, enabledModelID := range model.ModelIDs {
 		if enabledModelID == modelID {

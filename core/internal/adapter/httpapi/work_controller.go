@@ -43,7 +43,7 @@ func NewWorkController(workService *application.WorkService, logger *slog.Logger
 func (c *WorkController) List(response http.ResponseWriter, request *http.Request) {
 	works, err := c.app.List(request.Context())
 	if err != nil {
-		c.internalError(response, "list works", err)
+		writeAppError(response, c.logger, "list works", err)
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"works": works})
@@ -51,16 +51,11 @@ func (c *WorkController) List(response http.ResponseWriter, request *http.Reques
 
 func (c *WorkController) Get(response http.ResponseWriter, request *http.Request) {
 	detail, err := c.app.Get(request.Context(), request.PathValue("workID"))
-	switch {
-	case errors.Is(err, work.ErrInvalidWork):
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID 不能为空"})
-	case errors.Is(err, work.ErrNotFound):
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "作品不存在"})
-	case err != nil:
-		c.internalError(response, "get work", err)
-	default:
-		writeJSON(response, http.StatusOK, detail)
+	if err != nil {
+		writeAppError(response, c.logger, "get work", err)
+		return
 	}
+	writeJSON(response, http.StatusOK, detail)
 }
 
 func (c *WorkController) Create(response http.ResponseWriter, request *http.Request) {
@@ -68,27 +63,19 @@ func (c *WorkController) Create(response http.ResponseWriter, request *http.Requ
 	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, maxWorkRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求内容无效"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求内容无效", err)
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求只能包含一个 JSON 对象"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求只能包含一个 JSON 对象", err)
 		return
 	}
 
 	created, err := c.app.Create(request.Context(), work.CreateInput{
 		Title: input.Title, Description: input.Description, FolderID: input.FolderID,
 	})
-	if errors.Is(err, work.ErrInvalidWork) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品名称或简介无效"})
-		return
-	}
-	if errors.Is(err, work.ErrFolderNotFound) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "所选分类不存在"})
-		return
-	}
 	if err != nil {
-		c.internalError(response, "create work", err)
+		writeAppError(response, c.logger, "create work", err)
 		return
 	}
 	writeJSON(response, http.StatusCreated, created)
@@ -103,42 +90,26 @@ func (c *WorkController) Update(response http.ResponseWriter, request *http.Requ
 		ID: request.PathValue("workID"), Title: input.Title, Description: input.Description,
 		FolderID: input.FolderID, Status: input.Status, ExpectedRevision: input.ExpectedRevision,
 	})
-	switch {
-	case errors.Is(err, work.ErrInvalidWork):
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品信息无效"})
-	case errors.Is(err, work.ErrFolderNotFound):
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "所选分类不存在"})
-	case errors.Is(err, work.ErrNotFound):
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "作品不存在"})
-	case errors.Is(err, work.ErrRevisionConflict):
-		writeJSON(response, http.StatusConflict, map[string]string{"message": "作品信息已更新，请重新打开后再保存"})
-	case err != nil:
-		c.internalError(response, "update work", err)
-	default:
-		writeJSON(response, http.StatusOK, updated)
+	if err != nil {
+		writeAppError(response, c.logger, "update work", err)
+		return
 	}
+	writeJSON(response, http.StatusOK, updated)
 }
 
 func (c *WorkController) Delete(response http.ResponseWriter, request *http.Request) {
 	err := c.app.Delete(request.Context(), request.PathValue("workID"))
-	switch {
-	case errors.Is(err, work.ErrInvalidWork):
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "作品 ID 不能为空"})
-	case errors.Is(err, work.ErrNotFound):
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "作品不存在"})
-	case errors.Is(err, work.ErrActiveRun):
-		writeJSON(response, http.StatusConflict, map[string]string{"message": "作品仍有正在运行的 AI 任务，请稍后再删除"})
-	case err != nil:
-		c.internalError(response, "delete work", err)
-	default:
-		response.WriteHeader(http.StatusNoContent)
+	if err != nil {
+		writeAppError(response, c.logger, "delete work", err)
+		return
 	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (c *WorkController) ListFolders(response http.ResponseWriter, request *http.Request) {
 	folders, err := c.app.ListFolders(request.Context())
 	if err != nil {
-		c.internalError(response, "list work folders", err)
+		writeAppError(response, c.logger, "list work folders", err)
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"folders": folders})
@@ -150,16 +121,8 @@ func (c *WorkController) CreateFolder(response http.ResponseWriter, request *htt
 		return
 	}
 	folder, err := c.app.CreateFolder(request.Context(), input.Name)
-	if errors.Is(err, work.ErrInvalidWork) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "分类名称不能为空且不能超过 60 个字符"})
-		return
-	}
-	if errors.Is(err, work.ErrFolderConflict) {
-		writeJSON(response, http.StatusConflict, map[string]string{"message": "同名分类已经存在"})
-		return
-	}
 	if err != nil {
-		c.internalError(response, "create work folder", err)
+		writeAppError(response, c.logger, "create work folder", err)
 		return
 	}
 	writeJSON(response, http.StatusCreated, folder)
@@ -169,17 +132,12 @@ func decodeWorkRequest(response http.ResponseWriter, request *http.Request, targ
 	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, maxWorkRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求内容无效"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求内容无效", err)
 		return false
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求只能包含一个 JSON 对象"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求只能包含一个 JSON 对象", err)
 		return false
 	}
 	return true
-}
-
-func (c *WorkController) internalError(response http.ResponseWriter, operation string, err error) {
-	c.logger.Error(operation, "error", err)
-	writeJSON(response, http.StatusInternalServerError, map[string]string{"message": "作品服务不可用"})
 }

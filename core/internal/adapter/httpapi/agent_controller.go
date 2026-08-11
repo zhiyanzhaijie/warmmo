@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"warmmo/core/internal/application"
@@ -45,11 +44,11 @@ func (c *AgentController) CreateRun(response http.ResponseWriter, request *http.
 	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, maxAgentRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求内容无效"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求内容无效", err)
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求只能包含一个 JSON 对象"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求只能包含一个 JSON 对象", err)
 		return
 	}
 	run, err := c.app.CreateRun(agent.RunInput{
@@ -58,11 +57,7 @@ func (c *AgentController) CreateRun(response http.ResponseWriter, request *http.
 		ContextNodeIDs: input.ContextNodeIDs,
 	})
 	if err != nil {
-		if errors.Is(err, application.ErrInvalidAgentRun) {
-			writeJSON(response, http.StatusBadRequest, map[string]string{"message": strings.TrimPrefix(err.Error(), application.ErrInvalidAgentRun.Error()+": ")})
-			return
-		}
-		c.internalError(response, "create agent run", err)
+		writeAppError(response, c.logger, "create agent run", err)
 		return
 	}
 	writeJSON(response, http.StatusAccepted, run)
@@ -70,12 +65,8 @@ func (c *AgentController) CreateRun(response http.ResponseWriter, request *http.
 
 func (c *AgentController) GetRun(response http.ResponseWriter, request *http.Request) {
 	run, err := c.app.GetRun(request.PathValue("runID"))
-	if errors.Is(err, agent.ErrRunNotFound) {
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Agent Run 不存在"})
-		return
-	}
 	if err != nil {
-		c.internalError(response, "get agent run", err)
+		writeAppError(response, c.logger, "get agent run", err)
 		return
 	}
 	writeJSON(response, http.StatusOK, run)
@@ -84,20 +75,17 @@ func (c *AgentController) GetRun(response http.ResponseWriter, request *http.Req
 func (c *AgentController) StreamEvents(response http.ResponseWriter, request *http.Request) {
 	flusher, ok := response.(http.Flusher)
 	if !ok {
-		writeJSON(response, http.StatusInternalServerError, map[string]string{"message": "事件流不可用"})
+		writeAppError(response, c.logger, "start agent event stream", errors.New("response does not support streaming"))
 		return
 	}
 	afterSequence, err := eventCursor(request)
 	if err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "事件游标无效"})
+		writeInvalidRequest(response, "INVALID_EVENT_CURSOR", "事件游标无效", err)
 		return
 	}
 	follow := request.URL.Query().Get("follow") == "true"
-	if _, err := c.app.GetRun(request.PathValue("runID")); errors.Is(err, agent.ErrRunNotFound) {
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Agent Run 不存在"})
-		return
-	} else if err != nil {
-		c.internalError(response, "get agent run for stream", err)
+	if _, err := c.app.GetRun(request.PathValue("runID")); err != nil {
+		writeAppError(response, c.logger, "get agent run for stream", err)
 		return
 	}
 
@@ -147,16 +135,11 @@ func (c *AgentController) StreamEvents(response http.ResponseWriter, request *ht
 
 func (c *AgentController) CancelRun(response http.ResponseWriter, request *http.Request) {
 	err := c.app.CancelRun(request.PathValue("runID"))
-	switch {
-	case errors.Is(err, agent.ErrRunNotFound):
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Agent Run 不存在"})
-	case errors.Is(err, agent.ErrRunNotCancellable):
-		writeJSON(response, http.StatusConflict, map[string]string{"message": "Agent Run 已结束，无法取消"})
-	case err != nil:
-		c.internalError(response, "cancel agent run", err)
-	default:
-		response.WriteHeader(http.StatusNoContent)
+	if err != nil {
+		writeAppError(response, c.logger, "cancel agent run", err)
+		return
 	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (c *AgentController) RespondToRun(response http.ResponseWriter, request *http.Request) {
@@ -164,31 +147,19 @@ func (c *AgentController) RespondToRun(response http.ResponseWriter, request *ht
 	decoder := json.NewDecoder(http.MaxBytesReader(response, request.Body, maxAgentRequestBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "回答内容无效"})
+		writeInvalidRequest(response, "INVALID_AGENT_RESPONSE", "回答内容无效", err)
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": "请求只能包含一个 JSON 对象"})
+		writeInvalidRequest(response, "INVALID_REQUEST_BODY", "请求只能包含一个 JSON 对象", err)
 		return
 	}
 	run, err := c.app.RespondToRun(request.PathValue("runID"), input.ApprovalEventID, input.Answer)
-	switch {
-	case errors.Is(err, agent.ErrRunNotFound):
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Agent Run 不存在"})
-	case errors.Is(err, agent.ErrRunNotWaitingInput), errors.Is(err, agent.ErrInvalidUserResponse):
-		writeJSON(response, http.StatusConflict, map[string]string{"message": "这个问题已经回答或不再有效"})
-	case errors.Is(err, application.ErrInvalidAgentRun):
-		writeJSON(response, http.StatusBadRequest, map[string]string{"message": strings.TrimPrefix(err.Error(), application.ErrInvalidAgentRun.Error()+": ")})
-	case err != nil:
-		c.internalError(response, "respond to agent run", err)
-	default:
-		writeJSON(response, http.StatusAccepted, run)
+	if err != nil {
+		writeAppError(response, c.logger, "respond to agent run", err)
+		return
 	}
-}
-
-func (c *AgentController) internalError(response http.ResponseWriter, operation string, err error) {
-	c.logger.Error(operation, "error", err)
-	writeJSON(response, http.StatusInternalServerError, map[string]string{"message": "Agent 服务不可用"})
+	writeJSON(response, http.StatusAccepted, run)
 }
 
 func eventCursor(request *http.Request) (int64, error) {

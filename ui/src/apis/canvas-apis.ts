@@ -69,7 +69,6 @@ export function useUpdateCanvasNode(workId: string, nodeId: string) {
 export function useCanvasCandidates(workId: string) {
   return useQuery({
     queryKey: canvasKeys.candidates(workId),
-    refetchInterval: 2_000,
     queryFn: async ({ signal }) => {
       const response = await coreClient<CandidatesResponse>(`/works/${workId}/candidates`, { signal })
       return response.candidates.map((candidate) => ({

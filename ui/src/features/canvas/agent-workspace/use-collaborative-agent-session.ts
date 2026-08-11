@@ -159,7 +159,6 @@ export function useCollaborativeAgentSession(workId: string) {
       onError: (error) => {
         const message = error instanceof Error ? error.message : '无法创建 Agent Run'
         updateTurn(setTurns, clientId, (turn) => ({ ...turn, error: message, status: 'failed' }))
-        toast.error(message)
       },
     })
   }, [activeTurn, createRun, streamRun, turns])
@@ -175,7 +174,6 @@ export function useCollaborativeAgentSession(workId: string) {
         updateTurn(setTurns, pendingInput.clientId, (turn) => ({ ...turn, status: 'running' }))
         streamRun(pendingInput.clientId, pendingInput.runId, pendingInput.lastSequence)
       },
-      onError: (error) => toast.error(error instanceof Error ? error.message : '提交回答失败'),
     })
   }, [pendingInput, respondToRun, streamRun])
 

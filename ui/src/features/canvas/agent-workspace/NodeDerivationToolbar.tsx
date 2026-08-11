@@ -1,7 +1,6 @@
 import { NodeToolbar, Position, useStore } from '@xyflow/react'
 import { Archive, Bomb, LoaderCircle } from 'lucide-react'
 import { memo, useCallback, useMemo } from 'react'
-import { toast } from 'sonner'
 
 import {
   type NodeDerivationTarget,
@@ -132,8 +131,7 @@ export const NodeDerivationToolbar = memo(function NodeDerivationToolbar({
       model,
     }, {
       onSuccess: (run) => streamRun(run.id, targetNodeId, definition.target),
-      onError: (error) => {
-        toast.error(error instanceof Error ? error.message : '无法创建节点派生任务')
+      onError: () => {
         dismissNodeAgentRun(targetNodeId)
       },
     })

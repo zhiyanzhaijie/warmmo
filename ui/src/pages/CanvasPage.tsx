@@ -1,6 +1,8 @@
 import { ReactFlowProvider } from '@xyflow/react'
 import { useCallback, useMemo, useState } from 'react'
+import { ErrorBoundary, type FallbackProps } from 'react-error-boundary'
 import { useParams } from 'react-router-dom'
+import { QueryErrorResetBoundary } from '@tanstack/react-query'
 
 import '@xyflow/react/dist/style.css'
 import '@/features/canvas/canvas.css'
@@ -28,9 +30,15 @@ export function CanvasPage() {
 
   return (
     <ReactFlowProvider>
-      <FlowNodeStoreProvider key={workId}>
-        <CanvasWorkspace workId={workId} />
-      </FlowNodeStoreProvider>
+      <QueryErrorResetBoundary>
+        {({ reset }) => (
+          <ErrorBoundary fallbackRender={CanvasErrorFallback} onReset={reset}>
+            <FlowNodeStoreProvider key={workId}>
+              <CanvasWorkspace workId={workId} />
+            </FlowNodeStoreProvider>
+          </ErrorBoundary>
+        )}
+      </QueryErrorResetBoundary>
     </ReactFlowProvider>
   )
 }
@@ -102,6 +110,11 @@ function CanvasWorkspace({ workId }: { workId: string }) {
     archiveOptions,
   )
 
+  const criticalQueryError = [nodesQuery, edgesQuery, archivesQuery]
+    .find((query) => query.isError && query.data === undefined)
+    ?.error
+  if (criticalQueryError !== undefined) throw criticalQueryError
+
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-canvas text-ink">
       <CanvasSurface
@@ -133,6 +146,26 @@ function CanvasWorkspace({ workId }: { workId: string }) {
       />
       <NodeDerivationToolbar workId={workId} model={model} />
       <NodeDetailSheet workId={workId} />
+    </main>
+  )
+}
+
+function CanvasErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
+  return (
+    <main className="grid h-dvh place-items-center bg-canvas px-space-lg text-ink">
+      <section className="w-full max-w-md rounded-sm border border-error/30 bg-canvas-elevated p-space-xl text-center shadow-floating">
+        <h1 className="text-heading-lg">画布暂时无法加载</h1>
+        <p className="mt-space-sm text-body-md text-error" role="alert">
+          {error instanceof Error ? error.message : '画布数据读取失败'}
+        </p>
+        <button
+          className="mt-space-lg h-9 rounded-sm bg-primary px-space-md text-button-md text-on-primary hover:opacity-85"
+          type="button"
+          onClick={resetErrorBoundary}
+        >
+          重试
+        </button>
+      </section>
     </main>
   )
 }

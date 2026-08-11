@@ -22,8 +22,7 @@ func NewRuntimeController(runtimeService *application.RuntimeService, logger *sl
 func (c *RuntimeController) GetInfo(response http.ResponseWriter, request *http.Request) {
 	requestID, err := newRequestID()
 	if err != nil {
-		c.logger.Error("generate request id", "error", err)
-		writeJSON(response, http.StatusInternalServerError, map[string]string{"message": "runtime unavailable"})
+		writeAppError(response, c.logger, "generate request id", err)
 		return
 	}
 
