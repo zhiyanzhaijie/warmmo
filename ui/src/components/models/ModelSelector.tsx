@@ -1,9 +1,31 @@
 import { useEffect, useMemo } from 'react'
 
 import { useAvailableModels } from '@/apis/model-apis'
+import { DeepSeekLogo, OpenAILogo } from '@/components/svgs/model_provider'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import type { EnabledModel, ModelCapability, ModelReference } from '../../types/provider'
+
+const providerLogos: Record<string, React.ComponentType<React.ComponentProps<'svg'>>> = {
+  deepseek: DeepSeekLogo,
+  openai: OpenAILogo,
+}
+
+function ProviderLogo({ providerId, size = 14 }: { providerId: string; size?: number }) {
+  const Logo = providerLogos[providerId]
+  if (Logo !== undefined) {
+    return <Logo className="shrink-0 text-mute" style={{ width: size, height: size }} />
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="grid shrink-0 select-none place-items-center rounded-[3px] bg-hairline-soft font-mono uppercase text-mute"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.62) }}
+    >
+      {providerId.charAt(0)}
+    </span>
+  )
+}
 
 interface ModelSelectorProps {
   capability: ModelCapability
@@ -67,9 +89,12 @@ export function ModelSelector({
     >
       <SelectTrigger className={cn('w-auto min-w-44 border-transparent bg-transparent hover:bg-hairline-soft', className)} aria-label={ariaLabel ?? `选择${capability === 'text' ? '文本' : capability === 'image' ? '图像' : '嵌入'}模型`}>
         <SelectValue placeholder={placeholder}>
-          {compact && selectedValue !== undefined
-            ? selectedModel?.modelName ?? value?.modelId
-            : undefined}
+          {compact && selectedValue !== undefined ? (
+            <span className="flex min-w-0 items-center gap-space-xs">
+              <ProviderLogo providerId={selectedModel?.providerId ?? value?.providerId ?? ''} size={13} />
+              <span className="truncate">{selectedModel?.modelName ?? value?.modelId}</span>
+            </span>
+          ) : undefined}
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
@@ -78,7 +103,10 @@ export function ModelSelector({
         ) : null}
         {models.map((model) => (
           <SelectItem key={toModelValue(model)} value={toModelValue(model)}>
-            {model.providerName} · {model.modelName}
+            <span className="flex min-w-0 items-center gap-space-xs">
+              <ProviderLogo providerId={model.providerId} size={14} />
+              <span className="truncate">{model.modelName}</span>
+            </span>
           </SelectItem>
         ))}
       </SelectContent>

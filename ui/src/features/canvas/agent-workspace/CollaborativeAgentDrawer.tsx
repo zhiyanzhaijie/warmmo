@@ -1,12 +1,12 @@
 import { Check, BrainCircuit, History, MapPin, Plus, Sparkles } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CollaborativeAgentTarget } from '@/apis/canvas-apis'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import {
-	Reasoning,
-	ReasoningContent,
-	ReasoningTrigger,
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
 } from '@/components/ai-elements/reasoning'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Button } from '@/components/ui/button'
@@ -30,12 +30,13 @@ import {
 import { CollaborativeAgentPromptInput } from '@/features/canvas/agent-workspace/CollaborativeAgentPromptInput'
 import { CollaborativeAgentProgress } from '@/features/canvas/agent-workspace/CollaborativeAgentProgress'
 import {
-	useAgentStreamText,
+  useAgentStreamText,
 } from '@/features/canvas/agent-workspace/agent-stream-store'
 import {
   createCanvasPromptValueFromText,
   type CanvasPromptValue,
 } from '@/features/canvas/agent-workspace/CanvasPromptEditor'
+import { useInitialPromptStore } from '@/features/canvas/agent-workspace/initial-prompt-store'
 import {
   useCollaborativeAgentSession,
   type CollaborativeTurn,
@@ -50,6 +51,7 @@ import { useFocusNode } from '@/features/canvas/flownode/use-focus-node'
 import type { CanvasNode } from '@/types/canvas'
 import type { AgentEvent } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
+import { Warmmo, WarmmoAnimated } from '@/components/svgs/warmmo'
 
 interface CollaborativeAgentDrawerProps {
   canvasNodes: CanvasNode[]
@@ -127,6 +129,30 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
     cancelContextNodePicker()
   }, [cancelContextNodePicker, isContextPicking, open])
 
+  // 首页创建作品时携带的初始 prompt：取走即清，打开 drawer，
+  // 待模型/会话/上下文能力就绪后自动发起首轮对话；能力不可用时预填输入框。
+  const initialPromptRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const text = useInitialPromptStore.getState().takeInitialPrompt(workId)?.trim()
+    if (text === undefined || text === '') return
+    initialPromptRef.current = text
+    setOpen(true)
+  }, [])
+
+  useEffect(() => {
+    const text = initialPromptRef.current
+    if (text === undefined || contextAgentPending) return
+    if (!canUseContextAgent) {
+      initialPromptRef.current = undefined
+      setPrompt(createCanvasPromptValueFromText(text))
+      setComposerVersion((current) => current + 1)
+      return
+    }
+    if (model === null || activeTurn !== undefined || conversationSessionId === '') return
+    initialPromptRef.current = undefined
+    run({ contextNodeIds: [], model, prompt: text, target: 'collaborative-targeted' })
+  }, [activeTurn, canUseContextAgent, contextAgentPending, conversationSessionId, model, run])
+
   useEffect(() => {
     const availableNodeIds = new Set(canvasNodes.map((node) => node.id))
     for (const nodeId of collaborativeContextNodeIds) {
@@ -194,12 +220,12 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
               <DrawerTrigger asChild>
                 <Button
                   aria-label="打开全局创作 Agent"
-                  className="bg-canvas-elevated/95 text-ink backdrop-blur-sm hover:bg-hairline-soft"
+                  className="text-ink backdrop-blur-sm hover:bg-hairline-soft"
                   disabled={contextAgentPending || !canUseContextAgent}
                   size="icon-lg"
-                  variant="outline"
+                  variant="ghost"
                 >
-                  <BrainCircuit aria-hidden="true" size={17} />
+                  <Warmmo className='size-8' />
                 </Button>
               </DrawerTrigger>
             </span>
@@ -215,100 +241,101 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
           resizable
           showOverlay={false}
         >
-        <DrawerHeader className="flex h-12 items-center gap-space-xs px-space-sm py-0 pr-12">
-          <span className="grid size-7 place-items-center rounded-sm bg-primary text-on-primary">
-            <Sparkles aria-hidden="true" size={14} />
-          </span>
-          <DrawerTitle className="sr-only">全局创作 Agent</DrawerTitle>
-          <DrawerDescription className="sr-only">与全局 Agent 闲聊或进行创作</DrawerDescription>
-          <span className="min-w-0 flex-1 truncate text-body-sm text-body">{activeSession?.title ?? '新会话'}</span>
-          <DropdownMenu>
+          <DrawerHeader className="flex h-12 items-center gap-space-xs px-space-sm py-0 pr-12">
+            {
+              activeTurn?.status == 'running' ? <WarmmoAnimated className='size-8' /> :
+                <Warmmo className='size-8' />
+            }
+            <DrawerTitle className="sr-only">全局创作 Agent</DrawerTitle>
+            <DrawerDescription className="sr-only">与全局 Agent 闲聊或进行创作</DrawerDescription>
+            <span className="min-w-0 flex-1 truncate text-body-sm text-body">{activeSession?.title ?? '新会话'}</span>
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button aria-label="查看历史会话" disabled={activeTurn !== undefined} size="icon-sm" variant="ghost">
+                      <History aria-hidden="true" size={15} />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>历史会话</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuLabel>画布历史会话</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {(conversation?.sessions ?? []).length === 0 ? (
+                  <DropdownMenuItem disabled>暂无历史会话</DropdownMenuItem>
+                ) : (conversation?.sessions ?? []).map((session) => (
+                  <DropdownMenuItem key={session.id} onSelect={() => handleSelectSession(session.id)}>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-body-sm text-ink">{session.title}</p>
+                      <p className="truncate text-mono-caption text-mute">{session.turnCount} 轮 · {session.modelId || '模型未记录'} · {formatSessionTime(session.updatedAt)}</p>
+                    </div>
+                    {session.id === conversationSessionId ? <Check aria-hidden="true" size={14} /> : null}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Tooltip>
               <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <Button aria-label="查看历史会话" disabled={activeTurn !== undefined} size="icon-sm" variant="ghost">
-                    <History aria-hidden="true" size={15} />
-                  </Button>
-                </DropdownMenuTrigger>
+                <Button
+                  aria-label="新建会话"
+                  disabled={activeTurn !== undefined}
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={clearConversation}
+                >
+                  <Plus aria-hidden="true" size={15} />
+                </Button>
               </TooltipTrigger>
-              <TooltipContent>历史会话</TooltipContent>
+              <TooltipContent>新建会话</TooltipContent>
             </Tooltip>
-            <DropdownMenuContent align="end" className="w-72">
-              <DropdownMenuLabel>画布历史会话</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {(conversation?.sessions ?? []).length === 0 ? (
-                <DropdownMenuItem disabled>暂无历史会话</DropdownMenuItem>
-              ) : (conversation?.sessions ?? []).map((session) => (
-                <DropdownMenuItem key={session.id} onSelect={() => handleSelectSession(session.id)}>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-body-sm text-ink">{session.title}</p>
-                    <p className="truncate text-mono-caption text-mute">{session.turnCount} 轮 · {session.modelId || '模型未记录'} · {formatSessionTime(session.updatedAt)}</p>
-                  </div>
-                  {session.id === conversationSessionId ? <Check aria-hidden="true" size={14} /> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label="新建会话"
-                disabled={activeTurn !== undefined}
-                size="icon-sm"
-                variant="ghost"
-                onClick={clearConversation}
-              >
-                <Plus aria-hidden="true" size={15} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>新建会话</TooltipContent>
-          </Tooltip>
-        </DrawerHeader>
+          </DrawerHeader>
 
-        <div ref={setScrollViewport} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          {turns.length === 0 ? (
-            <CollaborativeAgentEmptyState mode={mode} onSelect={selectStarter} />
-          ) : (
-            <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-space-xl px-space-lg py-space-xl">
-              {turns.map((turn) => (
-                <CollaborativeConversationTurn
-                  key={turn.clientId}
-                  onLocateCandidate={locateCandidate}
-                  turn={turn}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+          <div ref={setScrollViewport} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            {turns.length === 0 ? (
+              <CollaborativeAgentEmptyState mode={mode} onSelect={selectStarter} />
+            ) : (
+              <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-space-xl px-space-lg py-space-xl">
+                {turns.map((turn) => (
+                  <CollaborativeConversationTurn
+                    key={turn.clientId}
+                    onLocateCandidate={locateCandidate}
+                    turn={turn}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
 
-        <div className="shrink-0 border-t border-hairline bg-canvas-elevated p-space-sm">
-          <CollaborativeAgentPromptInput
-            key={pendingInput?.approvalEventId ?? composerVersion}
-            attachmentNodeIds={contextNodeIds}
-            attachmentNodes={contextNodes}
-            availableContextNodes={canvasNodes}
-            canSubmit={canSubmit}
-            contextUsage={contextUsage}
-            contextWindowTokens={activeSession?.contextWindowTokens}
-            modelId={activeSession?.modelId || (model === null ? undefined : `${model.providerId}:${model.modelId}`)}
-            isContextPicking={isContextPicking}
-            isResponding={responding}
-            isStreaming={activeTurn?.status === 'running'}
-            isSubmitting={activeTurn?.status === 'submitting'}
-            mode={mode}
-            model={model}
-            pendingInput={pendingInput}
-            prompt={prompt}
-            onContextNodeAdd={addContextNode}
-            onContextNodeRemove={removeContextNode}
-            onContextPickerToggle={toggleContextNodePicker}
-            onModeChange={setMode}
-            onModelChange={onModelChange}
-            onPromptChange={updatePrompt}
-            onRespond={respond}
-            onSubmit={submit}
-          />
-        </div>
+          <div className="shrink-0 border-t border-hairline bg-canvas-elevated p-space-sm">
+            <CollaborativeAgentPromptInput
+              key={pendingInput?.approvalEventId ?? composerVersion}
+              attachmentNodeIds={contextNodeIds}
+              attachmentNodes={contextNodes}
+              availableContextNodes={canvasNodes}
+              canSubmit={canSubmit}
+              contextUsage={contextUsage}
+              contextWindowTokens={activeSession?.contextWindowTokens}
+              modelId={activeSession?.modelId || (model === null ? undefined : `${model.providerId}:${model.modelId}`)}
+              isContextPicking={isContextPicking}
+              isResponding={responding}
+              isStreaming={activeTurn?.status === 'running'}
+              isSubmitting={activeTurn?.status === 'submitting'}
+              mode={mode}
+              model={model}
+              pendingInput={pendingInput}
+              prompt={prompt}
+              onContextNodeAdd={addContextNode}
+              onContextNodeRemove={removeContextNode}
+              onContextPickerToggle={toggleContextNodePicker}
+              onModeChange={setMode}
+              onModelChange={onModelChange}
+              onPromptChange={updatePrompt}
+              onRespond={respond}
+              onSubmit={submit}
+            />
+          </div>
         </DrawerContent>
       </Drawer>
     </TooltipProvider>
@@ -459,66 +486,66 @@ function isCollaborationTimelineEvent(type: string) {
 }
 
 function reasoningStatusLabel(isStreaming: boolean, duration?: number) {
-	if (isStreaming) {
-		return (
-			<Shimmer
-				as="span"
-				className="font-medium [--color-background:var(--color-ink)] [--color-muted-foreground:var(--color-mute)]"
-				duration={1.5}
-				spread={8}
-			>
-				正在思考
-			</Shimmer>
-		)
-	}
-	return <span>{duration === undefined ? '思考过程' : `思考了 ${duration} 秒`}</span>
+  if (isStreaming) {
+    return (
+      <Shimmer
+        as="span"
+        className="font-medium [--color-background:var(--color-ink)] [--color-muted-foreground:var(--color-mute)]"
+        duration={1.5}
+        spread={8}
+      >
+        正在思考
+      </Shimmer>
+    )
+  }
+  return <span>{duration === undefined ? '思考过程' : `思考了 ${duration} 秒`}</span>
 }
 
 const CollaborativeCandidateMilestones = memo(function CollaborativeCandidateMilestones({
-	events,
-	onLocateCandidate,
+  events,
+  onLocateCandidate,
 }: {
-	events: CollaborativeTurn['events']
-	onLocateCandidate: (candidateId: string) => void
+  events: CollaborativeTurn['events']
+  onLocateCandidate: (candidateId: string) => void
 }) {
-	if (events.length === 0) return null
-	return (
-		<div aria-live="polite" className="space-y-space-xs border-t border-hairline pt-space-sm">
-			{events.map((event) => {
-				const candidateId = typeof event.data?.candidateId === 'string' ? event.data.candidateId : null
-				if (candidateId === null) return null
-				const meta = event.data?.meta as Record<string, unknown> | undefined
-				const title = typeof meta?.title === 'string' ? meta.title : '新候选节点'
-				const ordinal = typeof meta?.ordinal === 'number' && typeof meta?.total === 'number'
-					? `${meta.ordinal}/${meta.total}`
-					: null
-				return (
-					<div key={event.id} className="flex min-w-0 items-center gap-space-xs text-body-sm text-body">
-						<span className="grid size-5 shrink-0 place-items-center rounded-full bg-link-soft text-link">
-							<Check aria-hidden="true" size={12} strokeWidth={2.25} />
-						</span>
-						<span className="min-w-0 flex-1 truncate">
-							已生成候选「{title}」{ordinal === null ? null : ` · ${ordinal}`}
-						</span>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									aria-label={`定位候选 ${title}`}
-									className="shrink-0"
-									size="icon-sm"
-									variant="ghost"
-									onClick={() => onLocateCandidate(candidateId)}
-								>
-									<MapPin aria-hidden="true" size={14} />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>在画布中定位</TooltipContent>
-						</Tooltip>
-					</div>
-				)
-			})}
-		</div>
-	)
+  if (events.length === 0) return null
+  return (
+    <div aria-live="polite" className="space-y-space-xs border-t border-hairline pt-space-sm">
+      {events.map((event) => {
+        const candidateId = typeof event.data?.candidateId === 'string' ? event.data.candidateId : null
+        if (candidateId === null) return null
+        const meta = event.data?.meta as Record<string, unknown> | undefined
+        const title = typeof meta?.title === 'string' ? meta.title : '新候选节点'
+        const ordinal = typeof meta?.ordinal === 'number' && typeof meta?.total === 'number'
+          ? `${meta.ordinal}/${meta.total}`
+          : null
+        return (
+          <div key={event.id} className="flex min-w-0 items-center gap-space-xs text-body-sm text-body">
+            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-link-soft text-link">
+              <Check aria-hidden="true" size={12} strokeWidth={2.25} />
+            </span>
+            <span className="min-w-0 flex-1 truncate">
+              已生成候选「{title}」{ordinal === null ? null : ` · ${ordinal}`}
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={`定位候选 ${title}`}
+                  className="shrink-0"
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => onLocateCandidate(candidateId)}
+                >
+                  <MapPin aria-hidden="true" size={14} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>在画布中定位</TooltipContent>
+            </Tooltip>
+          </div>
+        )
+      })}
+    </div>
+  )
 })
 
 const StreamingCollaborativeResponse = memo(function StreamingCollaborativeResponse({
@@ -545,33 +572,33 @@ const StreamingCollaborativeResponse = memo(function StreamingCollaborativeRespo
 })
 
 function formatCollaborativeResponse(response: string) {
-  if (!response.trimStart().startsWith('{')) return response
-  try {
-    const proposal = JSON.parse(response) as {
-      nodes?: Array<{ content?: string; kind?: string; reason?: string; title?: string }>
-      updates?: Array<{ content?: string; reason?: string; title?: string }>
-    }
-    const sections: string[] = []
-    if (Array.isArray(proposal.nodes) && proposal.nodes.length > 0) {
-      sections.push('## 新节点')
-      for (const node of proposal.nodes) {
-        sections.push(`### ${node.title ?? '未命名节点'}${node.kind === undefined ? '' : ` · ${node.kind}`}`)
-        if (node.reason !== undefined) sections.push(`> ${node.reason}`)
-        if (node.content !== undefined) sections.push(node.content)
-      }
-    }
-    if (Array.isArray(proposal.updates) && proposal.updates.length > 0) {
-      sections.push('## 节点更新')
-      for (const update of proposal.updates) {
-        sections.push(`### ${update.title ?? '节点更新'}`)
-        if (update.reason !== undefined) sections.push(`> ${update.reason}`)
-        if (update.content !== undefined) sections.push(update.content)
-      }
-    }
-    return sections.length === 0 ? response : sections.join('\n\n')
-  } catch {
-    return response
-  }
+  // if (!response.trimStart().startsWith('{')) return response
+  // try {
+  //   const proposal = JSON.parse(response) as {
+  //     nodes?: Array<{ content?: string; kind?: string; reason?: string; title?: string }>
+  //     updates?: Array<{ content?: string; reason?: string; title?: string }>
+  //   }
+  //   const sections: string[] = []
+  //   if (Array.isArray(proposal.nodes) && proposal.nodes.length > 0) {
+  //     sections.push('## 新节点')
+  //     for (const node of proposal.nodes) {
+  //       sections.push(`### ${node.title ?? '未命名节点'}${node.kind === undefined ? '' : ` · ${node.kind}`}`)
+  //       if (node.reason !== undefined) sections.push(`> ${node.reason}`)
+  //       if (node.content !== undefined) sections.push(node.content)
+  //     }
+  //   }
+  //   if (Array.isArray(proposal.updates) && proposal.updates.length > 0) {
+  //     sections.push('## 节点更新')
+  //     for (const update of proposal.updates) {
+  //       sections.push(`### ${update.title ?? '节点更新'}`)
+  //       if (update.reason !== undefined) sections.push(`> ${update.reason}`)
+  //       if (update.content !== undefined) sections.push(update.content)
+  //     }
+  //   }
+  //   return sections.length === 0 ? response : sections.join('\n\n')
+  // } catch {
+  return response
+  // }
 }
 
 function formatSessionTime(value: string) {

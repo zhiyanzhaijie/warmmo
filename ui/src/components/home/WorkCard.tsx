@@ -1,4 +1,4 @@
-import { Archive, ArrowUpRight, LoaderCircle, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { Archive, LoaderCircle, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -50,7 +50,6 @@ export function WorkCard({ work, onEdit, onArchive }: WorkCardProps) {
                   {work.folderName || '未分类'} · {work.nodeCount} 个节点 · {formatUpdatedAt(work.updatedAt)}
                 </p>
               </div>
-              {onEdit === undefined ? <ArrowUpRight className="shrink-0 text-faint transition-colors group-hover:text-ink" size={16} aria-hidden="true" /> : null}
             </div>
           </div>
         </Link>

@@ -15,12 +15,12 @@ export function RecentWorks({ works, onCreateBlank }: RecentWorksProps) {
     <section aria-labelledby="recent-works-title">
       <div className="mb-space-md flex items-center justify-between">
         <div>
-          <p className="font-mono text-mono-eyebrow uppercase text-mute">Recent</p>
-          <h2 id="recent-works-title" className="mt-space-xxs text-heading-md">最近工作</h2>
+          <p className="font-mono text-mono-eyebrow uppercase text-mute">最近</p>
+          <h2 id="recent-works-title" className="mt-space-xxs text-heading-md">所作</h2>
         </div>
         <Link className="flex items-center gap-space-xs text-button-md text-body no-underline hover:text-ink" to="/workspace">
           <span>全部工作</span>
-          <ArrowRight size={15} aria-hidden="true" />
+          <ArrowRight size={12} aria-hidden="true" />
         </Link>
       </div>
 

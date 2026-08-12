@@ -1,6 +1,8 @@
-import { Archive, Folder, LoaderCircle, Plus, RotateCcw } from 'lucide-react'
+import { Archive, ArrowRight, Folder, LoaderCircle, Plus, RotateCcw } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+
+import { CoreApiError } from '@/lib/api/core-api-error'
 
 import { useUpdateWork, useWorkFolders, useWorks } from '../apis/work-apis'
 import { WorkCard } from '../components/home/WorkCard'
@@ -74,7 +76,7 @@ export function WorkspacePage() {
           </div>
         ) : null}
         {works.isPending ? <WorkspaceLoading /> : null}
-        {works.isError ? <WorkspaceError onRetry={() => void works.refetch()} /> : null}
+        {works.isError ? <WorkspaceError error={works.error} onRetry={() => void works.refetch()} /> : null}
         {works.isSuccess && visibleWorks.length === 0 ? <WorkspaceEmpty onCreate={() => setEditor({ mode: 'create' })} filtered={works.data.length > 0} /> : null}
         {works.isSuccess && visibleWorks.length > 0 ? (
           <div className="grid grid-cols-1 gap-x-space-lg gap-y-space-xl sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -116,14 +118,25 @@ function WorkspaceLoading() {
   )
 }
 
-function WorkspaceError({ onRetry }: { onRetry: () => void }) {
+function WorkspaceError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const unreachable = error instanceof CoreApiError && error.status === 0
   return (
     <div className="flex min-h-64 flex-col items-center justify-center text-center">
-      <p className="text-label-sm text-ink">暂时无法读取工作列表</p>
-      <p className="mt-space-xs text-body-sm text-mute">请确认 Warmmo Core 正在运行。</p>
-      <button className="mt-space-md flex h-9 cursor-pointer items-center gap-space-xs rounded-sm bg-hairline-soft px-space-sm text-button-md text-ink hover:bg-hairline" type="button" onClick={onRetry}>
-        <RotateCcw size={14} aria-hidden="true" /> 重试
-      </button>
+      <p className="text-label-sm text-ink">{unreachable ? '无法连接本地 Core' : '暂时无法读取工作列表'}</p>
+      <p className="mt-space-xs text-body-sm text-mute">
+        {unreachable ? '请确认 Warmmo Core 正在运行。' : error instanceof Error ? error.message : '未知错误'}
+      </p>
+      <div className="mt-space-md flex items-center gap-space-md">
+        <button className="flex h-9 cursor-pointer items-center gap-space-xs rounded-sm bg-hairline-soft px-space-sm text-button-md text-ink hover:bg-hairline" type="button" onClick={onRetry}>
+          <RotateCcw size={14} aria-hidden="true" /> 重试
+        </button>
+        {unreachable ? (
+          <Link className="flex items-center gap-space-xxs text-label-sm text-link no-underline hover:underline" to="/runtime">
+            检查 Core 状态
+            <ArrowRight size={13} aria-hidden="true" />
+          </Link>
+        ) : null}
+      </div>
     </div>
   )
 }

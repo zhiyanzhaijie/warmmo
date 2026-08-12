@@ -206,13 +206,6 @@ export const NodeAgentPromptInput = memo(function NodeAgentPromptInput({
           {isAnswerMode ? (
             <span className="px-space-xs text-body-sm text-mute">等待你的决定</span>
           ) : <PromptInputTools>
-            <PromptInputButton
-              aria-label="附加素材"
-              disabled
-              tooltip="附件上传将在 Agent 接口支持后开放"
-            >
-              <Paperclip size={15} />
-            </PromptInputButton>
             <ModelSelector
               capability="text"
               value={model}
@@ -222,10 +215,18 @@ export const NodeAgentPromptInput = memo(function NodeAgentPromptInput({
               className="h-8 min-w-0 max-w-44 border-transparent bg-hairline-soft px-space-xs text-body-sm"
               ariaLabel="选择当前节点使用的文本模型"
             />
+            <PromptInputButton
+              aria-label="附加素材"
+              disabled
+              tooltip="附件上传将在 Agent 接口支持后开放"
+            >
+              <Paperclip size={15} />
+            </PromptInputButton>
+
           </PromptInputTools>}
           <PromptInputSubmit
             aria-label={isAnswerMode ? '继续 Agent 执行' : status === 'submitted' || status === 'streaming' ? 'Agent 指令运行中' : '运行 Agent 指令'}
-            className="bg-primary text-on-primary hover:opacity-85"
+            className="bg-primary rounded-md text-on-primary hover:opacity-85"
             disabled={isAnswerMode ? responseText === '' || isResponding : !canSubmit}
             size={isAnswerMode ? 'sm' : 'icon-sm'}
             status={status}
