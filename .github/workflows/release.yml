@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix, for example 0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  core:
+    name: Core ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Validate release configuration
+        env:
+          WARMMO_WEB_ORIGIN: ${{ vars.WARMMO_WEB_ORIGIN }}
+        run: |
+          if [ -z "$WARMMO_WEB_ORIGIN" ]; then
+            echo 'Set WARMMO_WEB_ORIGIN to the exact production Origin.' >&2
+            exit 1
+          fi
+          if [[ ! "$WARMMO_WEB_ORIGIN" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+            echo 'WARMMO_WEB_ORIGIN must be an exact https Origin without a path.' >&2
+            exit 1
+          fi
+
+      - name: Resolve release version
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          version="${REQUESTED_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo 'Version must look like 0.1.0 or 0.1.0-rc.1.' >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build release archive
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          WARMMO_WEB_ORIGIN: ${{ vars.WARMMO_WEB_ORIGIN }}
+          WARMMO_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          package="warmmo-core_${WARMMO_VERSION}_${GOOS}_${GOARCH}"
+          executable='warmmo-core'
+          if [ "$GOOS" = 'windows' ]; then executable='warmmo-core.exe'; fi
+
+          mkdir -p "dist/${package}/bin"
+          cp -R core/skills "dist/${package}/skills"
+          go build \
+            -C core \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${WARMMO_VERSION} -X main.allowedOrigin=${WARMMO_WEB_ORIGIN}" \
+            -o "../dist/${package}/bin/${executable}" \
+            ./cmd/warmmo
+
+          if [ "$GOOS" = 'windows' ]; then
+            cp scripts/release/start-warmmo-core.cmd "dist/${package}/start-warmmo-core.cmd"
+            cd dist
+            zip -qr "${package}.zip" "${package}"
+          else
+            if [ "$GOOS" = 'darwin' ]; then
+              cp scripts/release/start-warmmo-core.command "dist/${package}/start-warmmo-core.command"
+              chmod 755 "dist/${package}/start-warmmo-core.command"
+            else
+              cp scripts/release/start-warmmo-core.sh "dist/${package}/start-warmmo-core.sh"
+              chmod 755 "dist/${package}/start-warmmo-core.sh"
+            fi
+            tar -C dist -czf "${GITHUB_WORKSPACE}/dist/${package}.tar.gz" "${package}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warmmo-core-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warmmo-core-${{ matrix.goos }}-${{ matrix.goarch }}-zip
+          path: dist/*.zip
+          if-no-files-found: ignore
+
+  publish:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum * > SHA256SUMS
+
+      - name: Resolve release version
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          version="${REQUESTED_VERSION#v}"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: release/*
