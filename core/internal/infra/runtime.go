@@ -27,7 +27,7 @@ import (
 	"warmmo/core/internal/domain/ai"
 )
 
-func Run(logger *slog.Logger, version string) error {
+func Run(logger *slog.Logger, version, allowedOrigin string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -134,9 +134,13 @@ func Run(logger *slog.Logger, version string) error {
 	canvasService := application.NewCanvasService(canvasRepository)
 	canvasService.SetCandidateDecisionHandler(agentService.ResumeAfterCandidateDecision)
 	canvasController := httpapi.NewCanvasController(canvasService, logger)
+	localSecurity, err := httpapi.NewLocalSecurityFromEnvironment(allowedOrigin)
+	if err != nil {
+		return err
+	}
 	server := &http.Server{
 		Addr:              "127.0.0.1:8787",
-		Handler:           httpapi.NewRouter(runtimeController, providerController, workController, agentController, canvasController),
+		Handler:           httpapi.NewRouter(runtimeController, providerController, workController, agentController, canvasController, localSecurity),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      0,

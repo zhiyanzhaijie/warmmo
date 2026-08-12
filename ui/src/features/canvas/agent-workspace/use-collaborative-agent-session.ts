@@ -16,6 +16,7 @@ import {
 	replaceAgentStreamText,
 } from '@/features/canvas/agent-workspace/agent-stream-store'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
+import { openCoreEventStream, type CoreEventStream } from '@/lib/api/core-event-stream'
 import type { AgentEvent } from '@/types/canvas'
 import type { AgentConversationSession, AgentConversationTurn } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
@@ -43,6 +44,8 @@ export interface CollaborativePendingInput {
   runId: string
 }
 
+const streamedAgentEventTypeSet = new Set(streamedAgentEventTypes)
+
 export function useCollaborativeAgentSession(workId: string) {
   const queryClient = useQueryClient()
   const conversation = useAgentConversation(workId)
@@ -50,7 +53,7 @@ export function useCollaborativeAgentSession(workId: string) {
   const respondToRun = useRespondToAgentRun()
   const [turns, setTurns] = useState<CollaborativeTurn[]>([])
   const [conversationSessionId, setConversationSessionId] = useState('')
-  const eventSourcesRef = useRef(new Map<string, EventSource>())
+  const eventSourcesRef = useRef(new Map<string, CoreEventStream>())
   const streamMessageIdsRef = useRef(new Set<string>())
   const activeTurn = turns.findLast((turn) =>
     turn.status === 'submitting' || turn.status === 'running' || turn.status === 'waiting_input')
@@ -72,18 +75,15 @@ export function useCollaborativeAgentSession(workId: string) {
 
   const streamRun = useCallback((clientId: string, runId: string, afterSequence = 0, follow = false) => {
     eventSourcesRef.current.get(runId)?.close()
-    const source = new EventSource(
-      `/api/v1/agent-runs/${runId}/events?afterSequence=${afterSequence}${follow ? '&follow=true' : ''}`,
-    )
-    eventSourcesRef.current.set(runId, source)
+    let source: CoreEventStream
     const closeSource = () => {
       source.close()
       if (eventSourcesRef.current.get(runId) === source) eventSourcesRef.current.delete(runId)
     }
-    const receive = (message: MessageEvent<string>) => {
+    const receive = (data: string) => {
       let event: AgentEvent
       try {
-        event = JSON.parse(message.data) as AgentEvent
+        event = JSON.parse(data) as AgentEvent
       } catch {
         closeSource()
         updateTurn(setTurns, clientId, (turn) => ({
@@ -121,18 +121,23 @@ export function useCollaborativeAgentSession(workId: string) {
       }
     }
 
-    for (const type of streamedAgentEventTypes) source.addEventListener(type, receive as EventListener)
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) return
-      closeSource()
-      flushAgentStream(clientId)
-      updateTurn(setTurns, clientId, (turn) => ({
-        ...turn,
-        error: '过程流连接已断开',
-        status: 'failed',
-      }))
-      toast.error('过程流连接已断开')
-    }
+    const query = `afterSequence=${afterSequence}${follow ? '&follow=true' : ''}`
+    source = openCoreEventStream(`/agent-runs/${runId}/events?${query}`, {
+      onMessage: (message) => {
+        if (streamedAgentEventTypeSet.has(message.event)) receive(message.data)
+      },
+      onError: () => {
+        closeSource()
+        flushAgentStream(clientId)
+        updateTurn(setTurns, clientId, (turn) => ({
+          ...turn,
+          error: '过程流连接已断开',
+          status: 'failed',
+        }))
+        toast.error('过程流连接已断开')
+      },
+    })
+    eventSourcesRef.current.set(runId, source)
   }, [queryClient, workId])
 
   // Candidate accept/reject happens outside the drawer's SSE connection. Keep

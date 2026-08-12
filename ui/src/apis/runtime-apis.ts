@@ -11,6 +11,9 @@ export function useRuntimeInfo() {
       const data = await coreClient<RuntimeInfo>('/runtime', { signal })
       return { data, latencyMs: Math.round(performance.now() - startedAt) }
     },
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     staleTime: 5_000,
   })
 

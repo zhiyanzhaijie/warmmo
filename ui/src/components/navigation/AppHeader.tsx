@@ -54,10 +54,10 @@ export function AppHeader() {
         </nav>
 
         <div className="flex items-center justify-end gap-space-xs">
-          <div className="flex h-9 items-center gap-space-xs px-space-xs text-body-sm text-mute" title={statusLabel}>
+          <Link className="flex h-9 items-center gap-space-xs px-space-xs text-body-sm text-mute no-underline hover:text-ink" to="/runtime" title={statusLabel}>
             <span className={`size-1.5 rounded-full ${isReady ? 'bg-link' : state.status === 'loading' ? 'bg-warning' : 'bg-error'}`} />
             <span className="hidden lg:inline">{statusLabel}</span>
-          </div>
+          </Link>
           <ThemeMenu />
         </div>
         <span

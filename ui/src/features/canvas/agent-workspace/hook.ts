@@ -6,14 +6,17 @@ import { canvasKeys, type NodeDerivationTarget } from '@/apis/canvas-apis'
 import { chapterArchiveKeys } from '@/apis/chapter-archive-apis'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
+import { openCoreEventStream, type CoreEventStream } from '@/lib/api/core-event-stream'
 import type { AgentEvent } from '@/types/canvas'
+
+const streamedAgentEventTypeSet = new Set(streamedAgentEventTypes)
 
 export function useNodeDerivationAgentRunStream(workId: string) {
   const queryClient = useQueryClient()
   const attachNodeAgentRun = useFlowNodeStore((state) => state.actions.attachNodeAgentRun)
   const appendNodeAgentEvent = useFlowNodeStore((state) => state.actions.appendNodeAgentEvent)
   const dismissNodeAgentRun = useFlowNodeStore((state) => state.actions.dismissNodeAgentRun)
-  const eventSourcesRef = useRef(new Map<string, EventSource>())
+  const eventSourcesRef = useRef(new Map<string, CoreEventStream>())
 
   useEffect(() => () => {
     for (const source of eventSourcesRef.current.values()) source.close()
@@ -24,17 +27,16 @@ export function useNodeDerivationAgentRunStream(workId: string) {
     eventSourcesRef.current.get(nodeId)?.close()
     attachNodeAgentRun(nodeId, runId)
 
-    const source = new EventSource(`/api/v1/agent-runs/${runId}/events`)
-    eventSourcesRef.current.set(nodeId, source)
+    let source: CoreEventStream
     const closeSource = () => {
       source.close()
       if (eventSourcesRef.current.get(nodeId) === source) eventSourcesRef.current.delete(nodeId)
     }
 
-    const receive = (message: MessageEvent<string>) => {
+    const receive = (data: string) => {
       let event: AgentEvent
       try {
-        event = JSON.parse(message.data) as AgentEvent
+        event = JSON.parse(data) as AgentEvent
       } catch {
         closeSource()
         const message = '过程流返回了无法解析的数据'
@@ -75,14 +77,17 @@ export function useNodeDerivationAgentRunStream(workId: string) {
       }
     }
 
-    for (const type of streamedAgentEventTypes) source.addEventListener(type, receive as EventListener)
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) return
-      closeSource()
-      const message = '过程流连接已断开'
-      toast.error(message)
-      dismissNodeAgentRun(nodeId)
-    }
+    source = openCoreEventStream(`/agent-runs/${runId}/events`, {
+      onMessage: (message) => {
+        if (streamedAgentEventTypeSet.has(message.event)) receive(message.data)
+      },
+      onError: () => {
+        closeSource()
+        toast.error('过程流连接已断开')
+        dismissNodeAgentRun(nodeId)
+      },
+    })
+    eventSourcesRef.current.set(nodeId, source)
   }, [appendNodeAgentEvent, attachNodeAgentRun, dismissNodeAgentRun, queryClient, workId])
 
   return { streamRun }

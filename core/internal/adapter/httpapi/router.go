@@ -2,8 +2,9 @@ package httpapi
 
 import "net/http"
 
-func NewRouter(runtimeController *RuntimeController, providerController *ProviderController, workController *WorkController, agentController *AgentController, canvasController *CanvasController) http.Handler {
+func NewRouter(runtimeController *RuntimeController, providerController *ProviderController, workController *WorkController, agentController *AgentController, canvasController *CanvasController, security *LocalSecurity) http.Handler {
 	router := http.NewServeMux()
+	router.HandleFunc("POST /api/v1/auth/session", security.Session)
 	router.HandleFunc("GET /api/v1/runtime", runtimeController.GetInfo)
 	router.HandleFunc("GET /api/v1/model-catalog", providerController.GetCatalog)
 	router.HandleFunc("GET /api/v1/agent-providers", providerController.ListConfigurations)
@@ -50,9 +51,9 @@ func NewRouter(runtimeController *RuntimeController, providerController *Provide
 	router.HandleFunc("POST /api/v1/works/{workID}/candidates/{candidateID}/accept", canvasController.AcceptCandidate)
 	router.HandleFunc("POST /api/v1/works/{workID}/candidates/{candidateID}/reject", canvasController.RejectCandidate)
 
-	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	return security.Protect(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
 		response.Header().Set("X-Content-Type-Options", "nosniff")
 		router.ServeHTTP(response, request)
-	})
+	}))
 }

@@ -1,6 +1,8 @@
 import { ofetch } from 'ofetch'
 
 import { CoreApiError } from './core-api-error'
+import { coreApiBaseURL } from './core-config'
+import { authenticatedCoreFetch } from './core-fetch'
 
 interface CoreErrorPayload {
   message?: string
@@ -8,7 +10,7 @@ interface CoreErrorPayload {
 }
 
 export const coreClient = ofetch.create({
-  baseURL: '/api/v1',
+  baseURL: coreApiBaseURL,
   retry: 0,
   timeout: 10_000,
 
@@ -36,7 +38,7 @@ export const coreClient = ofetch.create({
       payload?.code,
     )
   },
-})
+}, { fetch: authenticatedCoreFetch })
 
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
