@@ -25,6 +25,7 @@ export function useWorks() {
       const response = await coreClient<WorksResponse>('/works', { signal })
       return response.works
     },
+    retry: false,
   })
 }
 

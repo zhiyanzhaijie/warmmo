@@ -49,13 +49,14 @@ export function useAgentConversation(workId: string) {
   })
 }
 
-export function useCanvasNodes(workId: string) {
+export function useCanvasNodes(workId: string, enabled = true) {
   return useQuery({
     queryKey: canvasKeys.nodes(workId),
     queryFn: async ({ signal }) => {
       const response = await coreClient<NodesResponse>(`/works/${workId}/nodes`, { signal })
       return response.nodes
     },
+    enabled: enabled && workId.trim() !== '',
   })
 }
 
