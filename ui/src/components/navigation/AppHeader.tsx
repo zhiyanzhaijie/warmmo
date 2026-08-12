@@ -1,10 +1,11 @@
-import { House, PanelsTopLeft, Settings, Waypoints } from 'lucide-react'
+import { House, PanelsTopLeft, Settings } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 
 import { useRuntimeInfo } from '@/apis/runtime-apis'
 
 import { ThemeMenu } from '../theme/ThemeMenu'
+import { Warmmo, WarmmoAnimated } from '../svgs/warmmo'
 
 const navigationItems = [
   { key: 'home', label: '首页', href: '/', icon: House },
@@ -32,8 +33,8 @@ export function AppHeader() {
     <header className="sticky top-0 z-20 bg-canvas">
       <div className="relative mx-auto grid h-16 max-w-app grid-cols-[1fr_auto_1fr] items-center px-space-lg">
         <Link className="flex w-fit items-center gap-space-xs text-label-sm text-ink no-underline transition-opacity hover:opacity-70" to="/" aria-label="Warmmo 首页">
-          <Waypoints size={19} aria-hidden="true" />
-          <span className="hidden sm:inline">Warmmo</span>
+          <Warmmo />
+          <span className="hidden sm:inline">屋墨</span>
         </Link>
 
         <nav className="flex h-full items-center gap-space-xs" aria-label="主导航">
