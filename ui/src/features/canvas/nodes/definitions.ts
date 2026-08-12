@@ -164,6 +164,20 @@ export type CanvasNodeKind = keyof typeof nodeDefinitions
 
 export const canvasNodeKinds = Object.keys(nodeDefinitions) as CanvasNodeKind[]
 
+const chapterArchiveProtectedNodeKinds = new Set<CanvasNodeKind>([
+  'chapter-outline',
+  'section-outline',
+  'chapter-section',
+])
+
+export function isChapterArchiveProtectedNodeKind(kind: CanvasNodeKind) {
+  return chapterArchiveProtectedNodeKinds.has(kind)
+}
+
+export function isCanvasNodeKind(value: unknown): value is CanvasNodeKind {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(nodeDefinitions, value)
+}
+
 export const creatableNodeKinds = canvasNodeKinds.filter(
   (kind) => nodeDefinitions[kind].creationMode === 'manual',
 )

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -54,10 +55,7 @@ func newToolNameCodec(tools []*genai.Tool) (toolNameCodec, error) {
 			if _, exists := codec.internalToExternal[name]; exists {
 				return toolNameCodec{}, fmt.Errorf("duplicate function tool %q", name)
 			}
-			external := name
-			if !isProviderToolName(name) {
-				external = "warmmo__" + hex.EncodeToString([]byte(name))
-			}
+			external := providerToolName(name)
 			if previous, exists := codec.externalToInternal[external]; exists {
 				return toolNameCodec{}, fmt.Errorf("function tool names %q and %q encode to the same provider name %q", previous, name, external)
 			}
@@ -89,10 +87,31 @@ func (c toolNameCodec) internal(name string) (string, error) {
 	if internal, ok := c.externalToInternal[name]; ok {
 		return internal, nil
 	}
+	if internal, ok := c.legacyInternal(name); ok {
+		return internal, nil
+	}
 	if len(c.externalToInternal) == 0 && isProviderToolName(name) {
 		return name, nil
 	}
 	return "", fmt.Errorf("model returned unknown function tool %q", name)
+}
+
+func (c toolNameCodec) legacyInternal(name string) (string, bool) {
+	const legacyPrefix = "warmmo__"
+	legacyName := strings.TrimPrefix(name, legacyPrefix)
+	if legacyName == name || legacyName == "" {
+		return "", false
+	}
+	if decoded, err := hex.DecodeString(legacyName); err == nil {
+		internal := string(decoded)
+		if _, registered := c.internalToExternal[internal]; registered {
+			return internal, true
+		}
+	}
+	if internal, registered := c.externalToInternal[legacyName]; registered {
+		return internal, true
+	}
+	return "", false
 }
 
 func isProviderToolName(name string) bool {
@@ -100,13 +119,33 @@ func isProviderToolName(name string) bool {
 		return false
 	}
 	for _, char := range []byte(name) {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') || char == '_' || char == '-' {
+		if isProviderToolNameChar(char) {
 			continue
 		}
 		return false
 	}
 	return true
+}
+
+func providerToolName(name string) string {
+	if isProviderToolName(name) {
+		return name
+	}
+	var encoded strings.Builder
+	encoded.Grow(len(name))
+	for _, char := range []byte(name) {
+		if isProviderToolNameChar(char) {
+			encoded.WriteByte(char)
+		} else {
+			encoded.WriteByte('_')
+		}
+	}
+	return encoded.String()
+}
+
+func isProviderToolNameChar(char byte) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+		(char >= '0' && char <= '9') || char == '_' || char == '-'
 }
 
 func NewLLM(config ModelConfig, client *http.Client) adkmodel.LLM {
@@ -212,6 +251,10 @@ func buildChatRequest(request *adkmodel.LLMRequest, fallbackModel string, stream
 	if err != nil {
 		return chatRequest{}, err
 	}
+	if len(result.Tools) > 0 {
+		parallelToolCalls := false
+		result.ParallelToolCalls = &parallelToolCalls
+	}
 	return result, nil
 }
 
@@ -247,6 +290,7 @@ func convertContent(content *genai.Content, codecs ...toolNameCodec) ([]chatMess
 		role = string(genai.RoleUser)
 	}
 	var text strings.Builder
+	var reasoning strings.Builder
 	functionCalls := make([]chatToolCall, 0)
 	functionResponses := make([]chatMessage, 0)
 	for _, part := range content.Parts {
@@ -282,7 +326,11 @@ func convertContent(content *genai.Content, codecs ...toolNameCodec) ([]chatMess
 				ToolCallID: part.FunctionResponse.ID,
 			})
 		case part.Text != "":
-			text.WriteString(part.Text)
+			if role == string(genai.RoleModel) && part.Thought {
+				reasoning.WriteString(part.Text)
+			} else {
+				text.WriteString(part.Text)
+			}
 		case hasUnsupportedPart(part):
 			return nil, fmt.Errorf("OpenAI-compatible model does not support this content part")
 		}
@@ -292,13 +340,17 @@ func convertContent(content *genai.Content, codecs ...toolNameCodec) ([]chatMess
 		if len(functionResponses) > 0 {
 			return nil, fmt.Errorf("model content cannot contain function responses")
 		}
-		if text.Len() == 0 && len(functionCalls) == 0 {
+		if text.Len() == 0 && reasoning.Len() == 0 && len(functionCalls) == 0 {
 			return nil, nil
 		}
 		message := chatMessage{Role: "assistant", ToolCalls: functionCalls}
 		if text.Len() > 0 {
 			value := text.String()
 			message.Content = &value
+		}
+		if reasoning.Len() > 0 {
+			value := reasoning.String()
+			message.ReasoningContent = &value
 		}
 		return []chatMessage{message}, nil
 	}
@@ -380,6 +432,7 @@ func newTextMessage(role, value string) chatMessage {
 func streamChatResponse(body io.Reader, yield func(*adkmodel.LLMResponse, error) bool, codecs ...toolNameCodec) {
 	codec := firstToolNameCodec(codecs)
 	accumulator := newStreamAccumulator(codec)
+	completed := false
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -392,6 +445,7 @@ func streamChatResponse(body io.Reader, yield func(*adkmodel.LLMResponse, error)
 			continue
 		}
 		if data == "[DONE]" {
+			completed = true
 			break
 		}
 		var chunk chatChunk
@@ -411,13 +465,23 @@ func streamChatResponse(body io.Reader, yield func(*adkmodel.LLMResponse, error)
 				continue
 			}
 			accumulator.received = true
-			if choice.FinishReason != nil {
+			if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
 				accumulator.finishReason = *choice.FinishReason
+				completed = true
 			}
 			if choice.Delta.Content != "" {
 				accumulator.text.WriteString(choice.Delta.Content)
 				if !yield(&adkmodel.LLMResponse{
 					Content: genai.NewContentFromText(choice.Delta.Content, genai.RoleModel), Partial: true,
+				}, nil) {
+					return
+				}
+			}
+			if choice.Delta.ReasoningContent != "" {
+				accumulator.reasoning.WriteString(choice.Delta.ReasoningContent)
+				if !yield(&adkmodel.LLMResponse{
+					Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: choice.Delta.ReasoningContent, Thought: true}}},
+					Partial: true,
 				}, nil) {
 					return
 				}
@@ -429,6 +493,10 @@ func streamChatResponse(body io.Reader, yield func(*adkmodel.LLMResponse, error)
 	}
 	if err := scanner.Err(); err != nil {
 		yield(nil, fmt.Errorf("read model stream: %w", err))
+		return
+	}
+	if !completed {
+		yield(nil, errors.New("model provider stream ended before completion"))
 		return
 	}
 	response, err := accumulator.finalResponse()
@@ -454,20 +522,28 @@ func completeChatResponse(body io.Reader, yield func(*adkmodel.LLMResponse, erro
 		yield(nil, fmt.Errorf("model provider returned no choices"))
 		return
 	}
-	content, err := completionContent(response.Choices[0].Message, codec)
+	choice := response.Choices[0]
+	if err := terminalFinishError(choice.FinishReason); err != nil {
+		yield(nil, err)
+		return
+	}
+	content, err := completionContent(choice.Message, codec)
 	if err != nil {
 		yield(nil, err)
 		return
 	}
 	yield(&adkmodel.LLMResponse{
 		Content: content, UsageMetadata: response.Usage.metadata(),
-		FinishReason: finishReason(response.Choices[0].FinishReason), TurnComplete: true,
+		FinishReason: finishReason(choice.FinishReason), TurnComplete: true,
 	}, nil)
 }
 
 func completionContent(message chatCompletionMessage, codecs ...toolNameCodec) (*genai.Content, error) {
 	codec := firstToolNameCodec(codecs)
-	parts := make([]*genai.Part, 0, len(message.ToolCalls)+1)
+	parts := make([]*genai.Part, 0, len(message.ToolCalls)+2)
+	if message.ReasoningContent != "" {
+		parts = append(parts, &genai.Part{Text: message.ReasoningContent, Thought: true})
+	}
 	if message.Content != "" {
 		parts = append(parts, genai.NewPartFromText(message.Content))
 	}
@@ -484,6 +560,7 @@ func completionContent(message chatCompletionMessage, codecs ...toolNameCodec) (
 type streamAccumulator struct {
 	received     bool
 	text         strings.Builder
+	reasoning    strings.Builder
 	toolCalls    map[int]*chatToolCall
 	toolOrder    []int
 	usage        *chatUsage
@@ -492,7 +569,10 @@ type streamAccumulator struct {
 }
 
 func newStreamAccumulator(codecs ...toolNameCodec) *streamAccumulator {
-	return &streamAccumulator{toolCalls: make(map[int]*chatToolCall), codec: firstToolNameCodec(codecs)}
+	return &streamAccumulator{
+		toolCalls: make(map[int]*chatToolCall),
+		codec:     firstToolNameCodec(codecs),
+	}
 }
 
 func (a *streamAccumulator) addToolCall(delta chatToolCallDelta) {
@@ -513,10 +593,16 @@ func (a *streamAccumulator) addToolCall(delta chatToolCallDelta) {
 }
 
 func (a *streamAccumulator) finalResponse() (*adkmodel.LLMResponse, error) {
-	if !a.received && a.text.Len() == 0 && len(a.toolCalls) == 0 {
+	if !a.received && a.text.Len() == 0 && a.reasoning.Len() == 0 && len(a.toolCalls) == 0 {
 		return nil, fmt.Errorf("model provider returned an empty stream")
 	}
-	parts := make([]*genai.Part, 0, len(a.toolCalls)+1)
+	if err := terminalFinishError(a.finishReason); err != nil {
+		return nil, err
+	}
+	parts := make([]*genai.Part, 0, len(a.toolCalls)+2)
+	if a.reasoning.Len() > 0 {
+		parts = append(parts, &genai.Part{Text: a.reasoning.String(), Thought: true})
+	}
 	if a.text.Len() > 0 {
 		parts = append(parts, genai.NewPartFromText(a.text.String()))
 	}
@@ -538,6 +624,17 @@ func (a *streamAccumulator) finalResponse() (*adkmodel.LLMResponse, error) {
 	}, nil
 }
 
+func terminalFinishError(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "length":
+		return errors.New("model provider exhausted the configured output token budget")
+	case "content_filter":
+		return errors.New("model provider stopped generation because of its content filter")
+	default:
+		return nil
+	}
+}
+
 func (c chatToolCall) functionCall(codecs ...toolNameCodec) (*genai.FunctionCall, error) {
 	codec := firstToolNameCodec(codecs)
 	arguments := strings.TrimSpace(c.Function.Arguments)
@@ -546,7 +643,7 @@ func (c chatToolCall) functionCall(codecs ...toolNameCodec) (*genai.FunctionCall
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return nil, fmt.Errorf("decode function call %q arguments: %w", c.Function.Name, err)
+		return nil, fmt.Errorf("decode function call %q (call %q) arguments: %w", c.Function.Name, c.ID, err)
 	}
 	if args == nil {
 		args = make(map[string]any)
@@ -574,17 +671,18 @@ func finishReason(value string) genai.FinishReason {
 }
 
 type chatRequest struct {
-	Model          string              `json:"model"`
-	Messages       []chatMessage       `json:"messages"`
-	Stream         bool                `json:"stream"`
-	StreamOptions  *chatStreamOptions  `json:"stream_options,omitempty"`
-	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
-	Tools          []chatTool          `json:"tools,omitempty"`
-	Temperature    *float32            `json:"temperature,omitempty"`
-	TopP           *float32            `json:"top_p,omitempty"`
-	MaxTokens      int32               `json:"max_tokens,omitempty"`
-	Stop           []string            `json:"stop,omitempty"`
-	codec          toolNameCodec       `json:"-"`
+	Model             string              `json:"model"`
+	Messages          []chatMessage       `json:"messages"`
+	Stream            bool                `json:"stream"`
+	StreamOptions     *chatStreamOptions  `json:"stream_options,omitempty"`
+	ResponseFormat    *chatResponseFormat `json:"response_format,omitempty"`
+	Tools             []chatTool          `json:"tools,omitempty"`
+	ParallelToolCalls *bool               `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float32            `json:"temperature,omitempty"`
+	TopP              *float32            `json:"top_p,omitempty"`
+	MaxTokens         int32               `json:"max_tokens,omitempty"`
+	Stop              []string            `json:"stop,omitempty"`
+	codec             toolNameCodec       `json:"-"`
 }
 
 type chatStreamOptions struct {
@@ -596,11 +694,12 @@ type chatResponseFormat struct {
 }
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    *string        `json:"content,omitempty"`
-	Name       string         `json:"name,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	Role             string         `json:"role"`
+	Content          *string        `json:"content,omitempty"`
+	ReasoningContent *string        `json:"reasoning_content,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatTool struct {
@@ -630,8 +729,9 @@ type chatChunk struct {
 		Index        int     `json:"index"`
 		FinishReason *string `json:"finish_reason"`
 		Delta        struct {
-			Content   string              `json:"content"`
-			ToolCalls []chatToolCallDelta `json:"tool_calls"`
+			Content          string              `json:"content"`
+			ReasoningContent string              `json:"reasoning_content"`
+			ToolCalls        []chatToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *chatUsage `json:"usage,omitempty"`
@@ -659,9 +759,10 @@ type chatCompletion struct {
 }
 
 type chatCompletionMessage struct {
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	ToolCalls []chatToolCall `json:"tool_calls"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content"`
+	ReasoningContent string         `json:"reasoning_content"`
+	ToolCalls        []chatToolCall `json:"tool_calls"`
 }
 
 type chatUsage struct {

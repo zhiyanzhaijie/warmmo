@@ -99,9 +99,18 @@ func (r *DurableChildRunner) Resume(
 	return outcome, runErr
 }
 
-func containsAgent(values []string, target string) bool {
+func (r *DurableChildRunner) Continue(
+	ctx context.Context,
+	turnID string,
+	response map[string]any,
+	emit adk.LLMTurnEmitter,
+) (adk.LLMTurnOutcome, error) {
+	return r.base.Continue(ctx, turnID, response, emit)
+}
+
+func containsAgent(values []appharness.ChildContract, target string) bool {
 	for _, value := range values {
-		if value == target {
+		if value.AgentID == target {
 			return true
 		}
 	}

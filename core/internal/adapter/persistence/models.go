@@ -48,22 +48,23 @@ type workModel struct {
 func (workModel) TableName() string { return "works" }
 
 type agentRunModel struct {
-	ID                 string                `gorm:"primaryKey"`
-	WorkID             string                `gorm:"index:idx_agent_run_work_created,priority:1;not null"`
-	Status             string                `gorm:"index;not null"`
-	Prompt             string                `gorm:"not null"`
-	Target             string                `gorm:"not null"`
-	TargetNodeID       string                `gorm:"not null;default:''"`
-	TargetNodeRevision int64                 `gorm:"not null;default:0"`
-	ProviderID         string                `gorm:"not null"`
-	ModelID            string                `gorm:"not null"`
-	ContextNodeIDs     []string              `gorm:"column:context_node_ids_json;serializer:json;not null"`
-	ErrorMessage       string                `gorm:"not null;default:''"`
-	CreatedAt          time.Time             `gorm:"index:idx_agent_run_work_created,priority:2,sort:desc;not null"`
-	UpdatedAt          time.Time             `gorm:"not null"`
-	Events             []agentRunEventModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	Responses          []agentResponseModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	Candidates         []agentCandidateModel `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	ID                    string                `gorm:"primaryKey"`
+	WorkID                string                `gorm:"index:idx_agent_run_work_created,priority:1;not null"`
+	Status                string                `gorm:"index;not null"`
+	Prompt                string                `gorm:"not null"`
+	Target                string                `gorm:"not null"`
+	TargetNodeID          string                `gorm:"not null;default:''"`
+	TargetNodeRevision    int64                 `gorm:"not null;default:0"`
+	ProviderID            string                `gorm:"not null"`
+	ModelID               string                `gorm:"not null"`
+	ConversationSessionID string                `gorm:"index;not null;default:''"`
+	ContextNodeIDs        []string              `gorm:"column:context_node_ids_json;serializer:json;not null"`
+	ErrorMessage          string                `gorm:"not null;default:''"`
+	CreatedAt             time.Time             `gorm:"index:idx_agent_run_work_created,priority:2,sort:desc;not null"`
+	UpdatedAt             time.Time             `gorm:"not null"`
+	Events                []agentRunEventModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	Responses             []agentResponseModel  `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	Candidates            []agentCandidateModel `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
 }
 
 func (agentRunModel) TableName() string { return "agent_runs" }
@@ -112,6 +113,35 @@ type agentSessionScopedStateModel struct {
 	State     map[string]any `gorm:"column:state_json;serializer:json;not null"`
 	UpdatedAt time.Time      `gorm:"not null"`
 }
+
+type agentConversationModel struct {
+	ID        string    `gorm:"primaryKey"`
+	WorkID    string    `gorm:"uniqueIndex;not null"`
+	CreatedAt time.Time `gorm:"not null"`
+	UpdatedAt time.Time `gorm:"index;not null"`
+}
+
+func (agentConversationModel) TableName() string { return "agent_conversations" }
+
+type agentConversationTurnModel struct {
+	ID                string    `gorm:"primaryKey"`
+	ConversationID    string    `gorm:"index:idx_agent_conversation_turn_order,priority:1;not null"`
+	RunID             string    `gorm:"index;not null"`
+	SessionID         string    `gorm:"index;not null;default:''"`
+	AgentID           string    `gorm:"index;not null"`
+	AgentName         string    `gorm:"not null"`
+	ProviderID        string    `gorm:"not null;default:''"`
+	ModelID           string    `gorm:"not null;default:''"`
+	UserContent       string    `gorm:"not null"`
+	AssistantContent  string    `gorm:"not null"`
+	Status            string    `gorm:"not null"`
+	InputTokens       int64     `gorm:"not null;default:0"`
+	CachedInputTokens int64     `gorm:"not null;default:0"`
+	OutputTokens      int64     `gorm:"not null;default:0"`
+	CreatedAt         time.Time `gorm:"index:idx_agent_conversation_turn_order,priority:2;not null"`
+}
+
+func (agentConversationTurnModel) TableName() string { return "agent_conversation_turns" }
 
 func (agentSessionScopedStateModel) TableName() string { return "agent_session_scoped_states" }
 
@@ -256,6 +286,22 @@ type agentCandidateModel struct {
 }
 
 func (agentCandidateModel) TableName() string { return "agent_candidates" }
+
+type agentProposalEdgeModel struct {
+	ID                string    `gorm:"primaryKey"`
+	RunID             string    `gorm:"index;not null"`
+	WorkID            string    `gorm:"uniqueIndex:idx_proposal_edge_unique,priority:1;index:idx_proposal_edge_work_status,priority:1;not null"`
+	SourceCandidateID string    `gorm:"uniqueIndex:idx_proposal_edge_unique,priority:2;index;not null;default:''"`
+	SourceNodeID      string    `gorm:"uniqueIndex:idx_proposal_edge_unique,priority:3;not null;default:''"`
+	TargetCandidateID string    `gorm:"uniqueIndex:idx_proposal_edge_unique,priority:4;index;not null;default:''"`
+	TargetNodeID      string    `gorm:"uniqueIndex:idx_proposal_edge_unique,priority:5;not null;default:''"`
+	Kind              string    `gorm:"uniqueIndex:idx_proposal_edge_unique,priority:6;not null"`
+	Status            string    `gorm:"index:idx_proposal_edge_work_status,priority:2;not null;default:pending"`
+	CreatedAt         time.Time `gorm:"not null"`
+	ResolvedAt        *time.Time
+}
+
+func (agentProposalEdgeModel) TableName() string { return "agent_proposal_edges" }
 
 type canvasNodeModel struct {
 	ID               string                   `gorm:"primaryKey"`

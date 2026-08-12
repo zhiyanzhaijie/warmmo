@@ -22,12 +22,13 @@ type AgentController struct {
 }
 
 type createAgentRunRequest struct {
-	Prompt         string   `json:"prompt"`
-	ContextNodeIDs []string `json:"contextNodeIds"`
-	Target         string   `json:"target"`
-	TargetNodeID   string   `json:"targetNodeId"`
-	ProviderID     string   `json:"providerId"`
-	ModelID        string   `json:"modelId"`
+	Prompt                string   `json:"prompt"`
+	ContextNodeIDs        []string `json:"contextNodeIds"`
+	Target                string   `json:"target"`
+	TargetNodeID          string   `json:"targetNodeId"`
+	ProviderID            string   `json:"providerId"`
+	ModelID               string   `json:"modelId"`
+	ConversationSessionID string   `json:"conversationSessionId"`
 }
 
 type respondToAgentRunRequest struct {
@@ -54,7 +55,8 @@ func (c *AgentController) CreateRun(response http.ResponseWriter, request *http.
 	run, err := c.app.CreateRun(agent.RunInput{
 		WorkID: request.PathValue("workID"), Prompt: input.Prompt, Target: input.Target,
 		TargetNodeID: input.TargetNodeID, ProviderID: input.ProviderID, ModelID: input.ModelID,
-		ContextNodeIDs: input.ContextNodeIDs,
+		ConversationSessionID: input.ConversationSessionID,
+		ContextNodeIDs:        input.ContextNodeIDs,
 	})
 	if err != nil {
 		writeAppError(response, c.logger, "create agent run", err)
@@ -70,6 +72,24 @@ func (c *AgentController) GetRun(response http.ResponseWriter, request *http.Req
 		return
 	}
 	writeJSON(response, http.StatusOK, run)
+}
+
+func (c *AgentController) GetConversation(response http.ResponseWriter, request *http.Request) {
+	limit := 20
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeInvalidRequest(response, "INVALID_CONVERSATION_LIMIT", "会话数量限制无效", errors.New("limit must be between 1 and 100"))
+			return
+		}
+		limit = parsed
+	}
+	snapshot, err := c.app.ListConversation(request.Context(), request.PathValue("workID"), limit)
+	if err != nil {
+		writeAppError(response, c.logger, "list agent conversation", err)
+		return
+	}
+	writeJSON(response, http.StatusOK, snapshot)
 }
 
 func (c *AgentController) StreamEvents(response http.ResponseWriter, request *http.Request) {

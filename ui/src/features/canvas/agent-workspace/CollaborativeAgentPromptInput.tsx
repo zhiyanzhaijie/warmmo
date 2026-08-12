@@ -1,5 +1,5 @@
 import type { ChatStatus } from 'ai'
-import { Compass, Feather, Paperclip } from 'lucide-react'
+import { Compass, Feather } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react'
 
 import type { CollaborativeAgentTarget } from '@/apis/canvas-apis'
@@ -11,9 +11,20 @@ import {
   ConfirmationTitle,
 } from '@/components/ai-elements/confirmation'
 import {
+  Context,
+  ContextCacheUsage,
+  ContextContent,
+  ContextContentBody,
+  ContextContentFooter,
+  ContextContentHeader,
+  ContextInputUsage,
+  ContextOutputUsage,
+  ContextReasoningUsage,
+  ContextTrigger,
+} from '@/components/ai-elements/context'
+import {
   PromptInput,
   PromptInputBody,
-  PromptInputButton,
   PromptInputFooter,
   PromptInputHeader,
   PromptInputSubmit,
@@ -35,6 +46,7 @@ import type {
   PendingAgentInput,
 } from '@/features/canvas/agent-workspace/types'
 import type { EnabledModel } from '@/types/provider'
+import type { AgentConversationUsage } from '@/types/canvas'
 
 const modes: Array<{
   icon: typeof Feather
@@ -50,6 +62,9 @@ interface CollaborativeAgentPromptInputProps {
   attachmentNodes: CanvasContextNode[]
   availableContextNodes: CanvasContextNode[]
   canSubmit: boolean
+  contextUsage?: AgentConversationUsage
+  contextWindowTokens?: number | null
+  modelId?: string
   isContextPicking: boolean
   isResponding: boolean
   isStreaming: boolean
@@ -73,6 +88,9 @@ export const CollaborativeAgentPromptInput = memo(function CollaborativeAgentPro
   attachmentNodes,
   availableContextNodes,
   canSubmit,
+  contextUsage,
+  contextWindowTokens,
+  modelId,
   isContextPicking,
   isResponding,
   isStreaming,
@@ -109,6 +127,18 @@ export const CollaborativeAgentPromptInput = memo(function CollaborativeAgentPro
   }, [attachmentNodeIds])
 
   const responseText = [selectedOption, answer.trim()].filter(Boolean).join('\n')
+  const usedTokens = (contextUsage?.inputTokens ?? 0) + (contextUsage?.outputTokens ?? 0)
+  const contextUsageDetails = {
+    inputTokens: contextUsage?.inputTokens ?? 0,
+    inputTokenDetails: {
+      noCacheTokens: Math.max((contextUsage?.inputTokens ?? 0) - (contextUsage?.cachedInputTokens ?? 0), 0),
+      cacheReadTokens: contextUsage?.cachedInputTokens ?? 0,
+      cacheWriteTokens: 0,
+    },
+    outputTokens: contextUsage?.outputTokens ?? 0,
+    outputTokenDetails: { textTokens: contextUsage?.outputTokens ?? 0, reasoningTokens: 0 },
+    totalTokens: usedTokens,
+  }
   const status: ChatStatus = isSubmitting || isResponding
     ? 'submitted'
     : isStreaming
@@ -241,14 +271,39 @@ export const CollaborativeAgentPromptInput = memo(function CollaborativeAgentPro
                 className="h-8 min-w-0 max-w-44 border-transparent bg-hairline-soft px-space-xs text-body-sm"
                 ariaLabel="选择全局 Agent 使用的文本模型"
               />
-              <PromptInputButton
-                aria-label="附加素材"
-                disabled
-                size="icon-sm"
-                tooltip="附件上传将在 Agent 接口支持后开放"
+              <Context
+                maxTokens={contextWindowTokens ?? Math.max(usedTokens, 1)}
+                modelId={modelId}
+                usage={contextUsageDetails}
+                usedTokens={contextWindowTokens === null || contextWindowTokens === undefined ? 0 : usedTokens}
               >
-                <Paperclip size={15} />
-              </PromptInputButton>
+                <ContextTrigger
+                  aria-label="查看模型上下文用量"
+                  className="size-8 shrink-0 p-0 text-mute hover:bg-hairline-soft hover:text-ink [&>span]:sr-only [&>svg]:size-4"
+                />
+                <ContextContent align="end" side="top" sideOffset={8}>
+                  {contextWindowTokens === null || contextWindowTokens === undefined ? (
+                    <ContextContentHeader>
+                      <div className="flex items-center justify-between gap-space-sm text-body-sm">
+                        <span className="text-ink">模型上下文</span>
+                        <span className="font-mono text-mute">{formatTokens(usedTokens)} tokens</span>
+                      </div>
+                    </ContextContentHeader>
+                  ) : <ContextContentHeader />}
+                  <ContextContentBody>
+                    <ContextInputUsage />
+                    <ContextOutputUsage />
+                    <ContextReasoningUsage />
+                    <ContextCacheUsage />
+                  </ContextContentBody>
+                  <ContextContentFooter>
+                    <span className="text-mute">上下文窗口</span>
+                    <span>{contextWindowTokens === null || contextWindowTokens === undefined
+                      ? '由 provider/model 决定'
+                      : `${formatTokens(contextWindowTokens)} tokens`}</span>
+                  </ContextContentFooter>
+                </ContextContent>
+              </Context>
             </PromptInputTools>
           )}
           <PromptInputSubmit
@@ -265,3 +320,8 @@ export const CollaborativeAgentPromptInput = memo(function CollaborativeAgentPro
     </TooltipProvider>
   )
 })
+
+function formatTokens(value: number) {
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}K`
+  return String(value)
+}

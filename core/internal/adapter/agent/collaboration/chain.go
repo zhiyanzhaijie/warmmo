@@ -26,6 +26,7 @@ type WritingCollaborationChain struct {
 type TurnRunner interface {
 	Run(context.Context, adk.LLMTurnRequest, adk.LLMTurnEmitter) (adk.LLMTurnOutcome, error)
 	Resume(context.Context, string, string, adk.LLMTurnEmitter) (adk.LLMTurnOutcome, error)
+	Continue(context.Context, string, map[string]any, adk.LLMTurnEmitter) (adk.LLMTurnOutcome, error)
 }
 
 func NewWritingCollaborationChain(
@@ -55,30 +56,32 @@ func (c *WritingCollaborationChain) Recover(
 	// interrupted model call without either is deliberately not replayed.
 	pending, err := c.checkpoints.FindPendingCheckpoint(ctx, input.RunID)
 	if err == nil {
-		if pending.Status != appharness.TurnAwaitingUser || pending.Pending == nil {
+		if pending.AgentID == CanvasOrchestratorDefinitionID && pending.Status == appharness.TurnAwaitingChild {
+			// The root remains paused while its child is recovered from a typed handoff below.
+		} else if pending.Status != appharness.TurnAwaitingUser || pending.Pending == nil {
 			return writing.RunResult{}, fmt.Errorf("run %s has an unsupported pending checkpoint status %q", input.RunID, pending.Status)
-		}
-		if pending.Snapshot == nil {
+		} else if pending.Snapshot == nil {
 			return writing.RunResult{}, errors.New("pending recovery checkpoint has no turn snapshot")
+		} else {
+			var question struct {
+				Question string   `json:"question"`
+				Options  []string `json:"options"`
+			}
+			if decodeErr := json.Unmarshal(pending.Pending.Payload, &question); decodeErr != nil {
+				return writing.RunResult{}, fmt.Errorf("decode pending recovery question: %w", decodeErr)
+			}
+			if strings.TrimSpace(question.Question) == "" {
+				return writing.RunResult{}, errors.New("pending recovery question is empty")
+			}
+			if err := emit(writing.EventApprovalRequired, map[string]any{
+				"question": question.Question, "options": question.Options,
+				"role":     roleForAgentName(pending.Snapshot.AgentName),
+				"toolName": pending.Pending.ToolName, "toolCallId": pending.Pending.ToolCallID,
+			}); err != nil {
+				return writing.RunResult{}, err
+			}
+			return writing.RunResult{}, writing.ErrApprovalRequired
 		}
-		var question struct {
-			Question string   `json:"question"`
-			Options  []string `json:"options"`
-		}
-		if decodeErr := json.Unmarshal(pending.Pending.Payload, &question); decodeErr != nil {
-			return writing.RunResult{}, fmt.Errorf("decode pending recovery question: %w", decodeErr)
-		}
-		if strings.TrimSpace(question.Question) == "" {
-			return writing.RunResult{}, errors.New("pending recovery question is empty")
-		}
-		if err := emit(writing.EventApprovalRequired, map[string]any{
-			"question": question.Question, "options": question.Options,
-			"role":     roleForAgentName(pending.Snapshot.AgentName),
-			"toolName": pending.Pending.ToolName, "toolCallId": pending.Pending.ToolCallID,
-		}); err != nil {
-			return writing.RunResult{}, err
-		}
-		return writing.RunResult{}, writing.ErrApprovalRequired
 	} else if !errors.Is(err, appharness.ErrCheckpointNotFound) {
 		return writing.RunResult{}, fmt.Errorf("inspect recovery checkpoint: %w", err)
 	}
@@ -120,6 +123,78 @@ func (c *WritingCollaborationChain) Recover(
 	return c.continueFromCreator(ctx, input, plannerArtifact, plan, creatorArtifact, creatorSkill, emit)
 }
 
+func (c *WritingCollaborationChain) RecoverCreator(
+	ctx context.Context,
+	input writing.RunInput,
+	task string,
+	skillID string,
+	outputKind string,
+	emit writing.Emitter,
+) (writing.RunResult, error) {
+	plan, err := directCreatorPlan(input.Target, task, skillID, outputKind)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	creatorSkill, err := c.loadCreatorSkill(ctx, plan)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	pending, pendingErr := c.checkpoints.FindPendingCheckpoint(ctx, input.RunID)
+	if pendingErr == nil && pending.AgentID == CreatorDefinitionID && pending.Status == appharness.TurnAwaitingUser {
+		if pending.Snapshot == nil {
+			return writing.RunResult{}, errors.New("pending creator checkpoint has no snapshot")
+		}
+		return recoverApproval(pending, writing.RoleCreator, emit)
+	}
+	if pendingErr != nil && !errors.Is(pendingErr, appharness.ErrCheckpointNotFound) {
+		return writing.RunResult{}, pendingErr
+	}
+	artifact, found, err := c.findOptionalArtifact(ctx, input.RunID, CreatorDefinitionID, artifactKindForPlan(plan))
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	if !found {
+		return writing.RunResult{}, errors.New("direct creator was interrupted before producing a typed handoff")
+	}
+	return c.finishDirectCreator(artifact, creatorSkill, emit)
+}
+
+func (c *WritingCollaborationChain) RecoverArtifact(
+	ctx context.Context,
+	ref appharness.ArtifactRef,
+	emit writing.Emitter,
+) (writing.RunResult, error) {
+	artifact, err := c.artifacts.GetArtifact(ctx, ref.ID)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	if artifact.Ref.Kind != ref.Kind || artifact.Ref.SchemaVersion != ref.SchemaVersion {
+		return writing.RunResult{}, errors.New("delegated artifact does not match the root checkpoint handoff")
+	}
+	checkpoint, err := c.checkpoints.GetCheckpoint(ctx, artifact.TurnID)
+	if err != nil {
+		return writing.RunResult{}, fmt.Errorf("load delegated artifact turn: %w", err)
+	}
+	if checkpoint.Snapshot == nil || strings.TrimSpace(checkpoint.Snapshot.SkillID) == "" {
+		return writing.RunResult{}, errors.New("delegated artifact turn has no skill snapshot")
+	}
+	skill, err := c.skills.Load(ctx, checkpoint.Snapshot.SkillID)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	switch artifact.AgentID {
+	case CreatorDefinitionID:
+		return c.finishDirectCreator(artifact, skill, emit)
+	case WriterDefinitionID:
+		if err := emit(writing.EventRoleCompleted, map[string]any{"role": writing.RoleWriter, "artifact": artifact.Ref}); err != nil {
+			return writing.RunResult{}, err
+		}
+		return resultFromArtifact(artifact, skill, writing.RoleWriter, emit)
+	default:
+		return writing.RunResult{}, fmt.Errorf("root handoff references unsupported agent %q", artifact.AgentID)
+	}
+}
+
 func (c *WritingCollaborationChain) findArtifact(ctx context.Context, runID, agentID, kind string) (appharness.Artifact, error) {
 	artifact, err := c.artifacts.FindArtifact(ctx, runID, kind)
 	if err != nil {
@@ -154,6 +229,17 @@ func (c *WritingCollaborationChain) Run(
 	input writing.RunInput,
 	emit writing.Emitter,
 ) (writing.RunResult, error) {
+	return c.RunDelegated(ctx, input, "", input.Prompt, nil, emit)
+}
+
+func (c *WritingCollaborationChain) RunDelegated(
+	ctx context.Context,
+	input writing.RunInput,
+	parentTurnID string,
+	task string,
+	childInput map[string]any,
+	emit writing.Emitter,
+) (writing.RunResult, error) {
 	if !writing.IsCollaborativeTarget(input.Target) {
 		return writing.RunResult{}, fmt.Errorf("writing collaboration chain does not support target %q", input.Target)
 	}
@@ -168,13 +254,15 @@ func (c *WritingCollaborationChain) Run(
 		return writing.RunResult{}, err
 	}
 	plannerPrompt, err := encodePrompt(map[string]any{
-		"request": input.Prompt, "runTarget": input.Target, "context": contextEnvelope(input),
+		"request": strings.TrimSpace(task), "originalRequest": input.Prompt,
+		"delegateInput": childInput, "runTarget": input.Target, "context": contextEnvelope(input),
 	})
 	if err != nil {
 		return writing.RunResult{}, err
 	}
 	plannerArtifact, err := c.runTurn(ctx, input, PlannerDefinitionID, plannerSkill, CollaborationPlanArtifact,
-		plannerInstruction(plannerSkill), plannerPrompt, writing.RolePlanner, "", "", emit)
+		plannerInstruction(plannerSkill), plannerPrompt, writing.RolePlanner, false,
+		parentAgentID(parentTurnID), parentTurnID, emit)
 	if err != nil {
 		return writing.RunResult{}, err
 	}
@@ -183,6 +271,102 @@ func (c *WritingCollaborationChain) Run(
 		return writing.RunResult{}, fmt.Errorf("validate planner artifact: %w", err)
 	}
 	return c.continueFromPlan(ctx, input, plannerArtifact, plan, emit)
+}
+
+func (c *WritingCollaborationChain) RunCreator(
+	ctx context.Context,
+	input writing.RunInput,
+	parentTurnID string,
+	task string,
+	skillID string,
+	outputKind string,
+	childInput map[string]any,
+	emit writing.Emitter,
+) (writing.RunResult, error) {
+	plan, err := directCreatorPlan(input.Target, task, skillID, outputKind)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	creatorSkill, err := c.loadCreatorSkill(ctx, plan)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	if err := emit(writing.EventRoleStarted, map[string]any{"role": writing.RoleCreator, "skillId": creatorSkill.ID}); err != nil {
+		return writing.RunResult{}, err
+	}
+	if err := emit(writing.EventGenerationStarted, map[string]any{"mode": "direct-delegation", "role": writing.RoleCreator}); err != nil {
+		return writing.RunResult{}, err
+	}
+	artifactKind := artifactKindForPlan(plan)
+	prompt, err := encodePrompt(map[string]any{
+		"request": task, "originalRequest": input.Prompt, "context": contextEnvelope(input),
+		"delegateInput": childInput, "expectedArtifactKind": artifactKind,
+	})
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	artifact, err := c.runTurn(ctx, input, CreatorDefinitionID, creatorSkill, artifactKind,
+		directCreatorInstruction(creatorSkill, artifactKind), prompt, writing.RoleCreator, false,
+		CanvasOrchestratorDefinitionID, parentTurnID, emit)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	return c.finishDirectCreator(artifact, creatorSkill, emit)
+}
+
+func (c *WritingCollaborationChain) ResumeCreator(
+	ctx context.Context,
+	input writing.RunInput,
+	answer string,
+	task string,
+	skillID string,
+	outputKind string,
+	emit writing.Emitter,
+) (writing.RunResult, error) {
+	plan, err := directCreatorPlan(input.Target, task, skillID, outputKind)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	creatorSkill, err := c.loadCreatorSkill(ctx, plan)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	outcome, err := c.runner.Resume(ctx, input.RunID, answer, func(event adk.LLMTurnEvent) error {
+		return projectEvent(event, writing.RoleCreator, emit)
+	})
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	if outcome.Status == appharness.TurnAwaitingUser {
+		return writing.RunResult{}, writing.ErrApprovalRequired
+	}
+	if outcome.Status != appharness.TurnCompleted || outcome.Artifact == nil {
+		return writing.RunResult{}, fmt.Errorf("resumed creator did not submit an artifact: status=%s reason=%s", outcome.Status, outcome.StopReason)
+	}
+	artifact, err := c.artifacts.GetArtifact(ctx, outcome.Artifact.ID)
+	if err != nil {
+		return writing.RunResult{}, err
+	}
+	if artifact.AgentID != CreatorDefinitionID || artifact.Ref.Kind != artifactKindForPlan(plan) {
+		return writing.RunResult{}, fmt.Errorf("resumed creator returned unexpected artifact %q from %q", artifact.Ref.Kind, artifact.AgentID)
+	}
+	return c.finishDirectCreator(artifact, creatorSkill, emit)
+}
+
+func (c *WritingCollaborationChain) finishDirectCreator(
+	artifact appharness.Artifact,
+	skill writing.Skill,
+	emit writing.Emitter,
+) (writing.RunResult, error) {
+	if artifact.Ref.Kind == ProposalArtifact {
+		if err := writing.ValidateProposalSet(string(artifact.Payload)); err != nil {
+			return writing.RunResult{}, fmt.Errorf("validate creator artifact: %w", err)
+		}
+	}
+	if err := emit(writing.EventRoleCompleted, map[string]any{"role": writing.RoleCreator, "artifact": artifact.Ref}); err != nil {
+		return writing.RunResult{}, err
+	}
+	return resultFromArtifact(artifact, skill, writing.RoleCreator, emit)
 }
 
 func (c *WritingCollaborationChain) Resume(
@@ -274,7 +458,7 @@ func (c *WritingCollaborationChain) continueFromPlan(
 		return writing.RunResult{}, err
 	}
 	creatorArtifact, err := c.runTurn(ctx, input, CreatorDefinitionID, creatorSkill, creatorKind,
-		creatorInstruction(creatorSkill, creatorKind), creatorPrompt, writing.RoleCreator,
+		creatorInstruction(creatorSkill, creatorKind), creatorPrompt, writing.RoleCreator, false,
 		PlannerDefinitionID, plannerArtifact.TurnID, emit)
 	if err != nil {
 		return writing.RunResult{}, err
@@ -321,7 +505,7 @@ func (c *WritingCollaborationChain) continueFromCreator(
 		return writing.RunResult{}, err
 	}
 	writerArtifact, err := c.runTurn(ctx, input, WriterDefinitionID, writerSkill, PolishedProseArtifact,
-		writerInstruction(writerSkill), writerPrompt, writing.RoleWriter,
+		writerInstruction(writerSkill), writerPrompt, writing.RoleWriter, false,
 		PlannerDefinitionID, plannerArtifact.TurnID, emit)
 	if err != nil {
 		return writing.RunResult{}, err
@@ -353,6 +537,7 @@ func (c *WritingCollaborationChain) runTurn(
 	instruction string,
 	prompt string,
 	role writing.AgentRole,
+	publishConversation bool,
 	parentAgentID string,
 	parentTurnID string,
 	emit writing.Emitter,
@@ -373,9 +558,11 @@ func (c *WritingCollaborationChain) runTurn(
 		AgentName: registered.Definition.Name, Description: registered.Definition.Description,
 		Instruction: instruction, DefinitionVersion: registered.Definition.Version, DefinitionHash: registered.Hash,
 		ProviderID: input.ProviderID, ModelID: input.ModelID,
-		UserID: "work:" + input.WorkID, SessionID: uuid.NewString(), Prompt: prompt,
-		AllowedTools: allowedTools,
-		ControlTools: append([]string(nil), registered.Definition.ControlTools...),
+		UserID: "work:" + input.WorkID, SessionID: uuid.NewString(), ConversationSessionID: input.ConversationSessionID, Prompt: prompt,
+		ConversationUserContent: input.Prompt, PublishConversation: publishConversation,
+		AllowedTools:    allowedTools,
+		ControlTools:    append([]string(nil), registered.Definition.ControlTools...),
+		AllowedChildren: append([]appharness.ChildContract(nil), registered.Definition.AllowedChildren...),
 		ToolInvocation: agentcore.ToolInvocation{
 			RunID: input.RunID, TurnID: turnID, WorkID: input.WorkID, SkillID: skill.ID, SkillVersion: skill.Version,
 		},
@@ -456,7 +643,7 @@ func encodePrompt(payload any) (string, error) {
 func plannerInstruction(skill writing.Skill) string {
 	return `You are Warmmo's Planner. Build one concrete collaboration plan from the request and evidence.
 Use read tools only when evidence is needed. Do not write final fiction or mutate canvas content.
-When the plan is complete, call submit_artifact exactly once with kind collaboration_plan_v1 and the plan object.
+When the plan is complete, call submit_artifact exactly once with the CollaborationPlan fields directly. The artifact kind is fixed by the tool contract; do not add a kind or artifact wrapper.
 Do not return the plan as final text. The plan must route exploration to story-brainstorm/advice and prose to prose-creator.` +
 		"\n\n# Active Skill\n" + skill.Instructions
 }
@@ -464,13 +651,39 @@ Do not return the plan as final text. The plan must route exploration to story-b
 func creatorInstruction(skill writing.Skill, artifactKind string) string {
 	return `You are Warmmo's Creator. Consume the approved plan artifact and create exactly its requested deliverable.
 Do not alter the plan or perform the Writer role. Read the minimum relevant context with the allowed tools.
-When complete, call submit_artifact exactly once using the required kind ` + artifactKind + `.
+When complete, call submit_artifact exactly once with the artifact fields directly. The required artifact kind is ` + artifactKind + ` and is fixed by the tool contract; do not add a kind or artifact wrapper.
 Do not return the artifact as final text.` + "\n\n# Active Skill\n" + skill.Instructions
+}
+
+func directCreatorInstruction(skill writing.Skill, artifactKind string) string {
+	return `You are Warmmo's Creator. Complete all deliverables in the delegated task exactly as requested, in one typed artifact.
+Do not create a plan or perform another agent's role. Read only the minimum relevant canvas evidence.
+When complete, call submit_artifact exactly once with the artifact fields directly. The required artifact kind is ` + artifactKind + ` and is fixed by the tool contract; do not add a kind or artifact wrapper.
+Do not return the artifact as final text.` + "\n\n# Active Skill\n" + skill.Instructions
+}
+
+func directCreatorPlan(target, task, skillID, outputKind string) (writing.CollaborationPlan, error) {
+	plan := writing.CollaborationPlan{
+		Intent: strings.TrimSpace(task), Brief: strings.TrimSpace(task), CreatorTarget: target,
+		CreatorSkillID: strings.TrimSpace(skillID), OutputKind: strings.TrimSpace(outputKind),
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		return writing.CollaborationPlan{}, err
+	}
+	return writing.ParseCollaborationPlan(string(encoded), target)
+}
+
+func parentAgentID(parentTurnID string) string {
+	if strings.TrimSpace(parentTurnID) == "" {
+		return ""
+	}
+	return CanvasOrchestratorDefinitionID
 }
 
 func writerInstruction(skill writing.Skill) string {
 	return `You are Warmmo's Writer. Polish only the supplied draft while preserving facts, viewpoint, chronology, names and outcomes.
-When complete, call submit_artifact exactly once with kind polished_prose_v1 and the polished prose string.
+When complete, call submit_artifact exactly once as {"value":"the complete polished prose"}. The artifact kind is fixed by the tool contract.
 Do not return the prose as final text.` + "\n\n# Active Skill\n" + skill.Instructions
 }
 
@@ -517,7 +730,7 @@ func resultFromArtifact(artifact appharness.Artifact, skill writing.Skill, role 
 		if content == "" {
 			return writing.RunResult{}, errors.New("text artifact is empty")
 		}
-		if err := emit(writing.EventMessageDelta, map[string]string{"delta": content}); err != nil {
+		if err := emit(writing.EventMessageDelta, map[string]any{"delta": content, "replace": true}); err != nil {
 			return writing.RunResult{}, err
 		}
 	}
@@ -537,6 +750,14 @@ func projectEvent(event adk.LLMTurnEvent, role writing.AgentRole, emit writing.E
 	switch event.Type {
 	case adk.LLMEventMessageDelta:
 		return nil
+	case adk.LLMEventReasoningStarted:
+		return emit(writing.EventReasoningStarted, map[string]any{"role": role})
+	case adk.LLMEventReasoningDelta:
+		return emit(writing.EventReasoningDelta, map[string]any{"delta": event.Text, "role": role})
+	case adk.LLMEventReasoningCompleted:
+		return emit(writing.EventReasoningCompleted, map[string]any{"role": role})
+	case adk.LLMEventArtifactDelta:
+		return emit(writing.EventMessageDelta, map[string]any{"delta": event.Text, "preview": true})
 	case adk.LLMEventToolRequested:
 		return emit(writing.EventToolRequested, data)
 	case adk.LLMEventToolStarted:

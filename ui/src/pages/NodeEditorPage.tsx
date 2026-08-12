@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { useCanvasNode, useUpdateCanvasNode } from '@/apis/canvas-apis'
 import { NodeDocument } from '@/features/canvas/node-detail/NodeDocument'
+import { isChapterArchiveProtectedNodeKind } from '@/features/canvas/nodes/definitions'
 import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 
 export function NodeEditorPage() {
@@ -12,7 +13,6 @@ export function NodeEditorPage() {
   const navigate = useNavigate()
   const nodeQuery = useCanvasNode(workId, nodeId)
   const updateNode = useUpdateCanvasNode(workId, nodeId)
-  const archiveLocks = useArchiveLocks(workId)
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
 
@@ -23,8 +23,11 @@ export function NodeEditorPage() {
   }, [nodeQuery.data])
 
   const node = nodeQuery.data
-  const isArchiveLocked = archiveLocks.lockedNodeIds.has(nodeId)
-  const canEditNode = archiveLocks.isResolved && !isArchiveLocked
+  const archiveProtected = node !== undefined && isChapterArchiveProtectedNodeKind(node.kind)
+  const archiveLocks = useArchiveLocks(workId, archiveProtected)
+  const isArchiveLocked = archiveProtected && archiveLocks.lockedNodeIds.has(nodeId)
+  const archiveStateResolved = !archiveProtected || archiveLocks.isResolved
+  const canEditNode = node !== undefined && archiveStateResolved && !isArchiveLocked
   const dirty = node !== undefined && (title !== node.title || content !== node.content)
   const valid = title.trim() !== ''
 
@@ -50,10 +53,10 @@ export function NodeEditorPage() {
         </button>
 
         <div className="flex items-center gap-space-xs">
-          {!canEditNode ? (
+          {node !== undefined && !canEditNode ? (
             <span className="mr-space-xs inline-flex items-center gap-space-xs text-body-sm text-mute">
               <LockKeyhole aria-hidden="true" size={14} />
-              {!archiveLocks.isResolved
+              {!archiveStateResolved
                 ? archiveLocks.isError ? '无法确认归档状态' : '正在确认归档状态'
                 : '已归档锁定'}
             </span>

@@ -37,6 +37,17 @@ const (
 	NodeKindManuscript     NodeKind = "manuscript"
 )
 
+var manuallyCreatableNodeKinds = []NodeKind{
+	NodeKindCharacter,
+	NodeKindItem,
+	NodeKindLocation,
+	NodeKindTime,
+	NodeKindWorld,
+	NodeKindMechanism,
+	NodeKindEvent,
+	NodeKindChapterOutline,
+}
+
 func ParseNodeKind(value string) (NodeKind, bool) {
 	kind := NodeKind(strings.TrimSpace(value))
 	return kind, IsValidNodeKind(kind)
@@ -54,13 +65,16 @@ func IsValidNodeKind(kind NodeKind) bool {
 }
 
 func IsManuallyCreatableNodeKind(kind NodeKind) bool {
-	switch kind {
-	case NodeKindCharacter, NodeKindItem, NodeKindLocation, NodeKindTime, NodeKindWorld,
-		NodeKindMechanism, NodeKindEvent, NodeKindChapterOutline:
-		return true
-	default:
-		return false
+	for _, candidate := range manuallyCreatableNodeKinds {
+		if candidate == kind {
+			return true
+		}
 	}
+	return false
+}
+
+func ManuallyCreatableNodeKinds() []NodeKind {
+	return append([]NodeKind(nil), manuallyCreatableNodeKinds...)
 }
 
 func IsDerivedNodeKind(kind NodeKind) bool {

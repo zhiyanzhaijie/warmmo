@@ -9,7 +9,6 @@ import {
 } from '@/apis/canvas-apis'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { isTextEntryTarget } from '@/features/canvas/keyboard'
-import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 
 interface CanvasHistoryActions {
   canUndo: boolean
@@ -21,8 +20,8 @@ interface CanvasHistoryActions {
 }
 
 export function useCanvasHistoryActions(workId: string): CanvasHistoryActions {
-  const archiveLocks = useArchiveLocks(workId)
   const selectedNodeIds = useFlowNodeStore((state) => state.selectedSourceNodeIds)
+  const nodes = useFlowNodeStore((state) => state.nodes)
   const edges = useFlowNodeStore((state) => state.edges)
   const selectedEdges = useMemo(() => edges.filter((edge) =>
     edge.selected && edge.data?.persisted === true), [edges])
@@ -35,6 +34,7 @@ export function useCanvasHistoryActions(workId: string): CanvasHistoryActions {
   const historyBusy = isUndoPending || isRedoPending
   const canUndo = history.data?.canUndo === true && !historyBusy
   const canRedo = history.data?.canRedo === true && !historyBusy
+  const nodeBySourceId = useMemo(() => new Map(nodes.map((node) => [node.data.sourceId, node])), [nodes])
 
   const undo = useCallback(() => {
     if (canUndo) undoMutation()
@@ -46,20 +46,23 @@ export function useCanvasHistoryActions(workId: string): CanvasHistoryActions {
 
   const deleteSelectedNodes = useCallback(() => {
     if (selectedNodeIds.length === 0 || isDeletePending) return
-    if (!archiveLocks.isResolved || selectedNodeIds.some((nodeId) => archiveLocks.lockedNodeIds.has(nodeId))) return
+    if (selectedNodeIds.some((nodeId) => {
+      const node = nodeBySourceId.get(nodeId)
+      return node === undefined || !node.data.archiveStateResolved || node.data.archiveLocked
+    })) return
     if (selectedNodeIds.length > 1 && !window.confirm(`删除选中的 ${selectedNodeIds.length} 个节点？`)) return
     deleteNodes(selectedNodeIds)
-  }, [archiveLocks.isResolved, archiveLocks.lockedNodeIds, deleteNodes, isDeletePending, selectedNodeIds])
+  }, [deleteNodes, isDeletePending, nodeBySourceId, selectedNodeIds])
 
   const deleteSelectedEdges = useCallback(() => {
     if (selectedEdgeIds.length === 0 || isEdgeDeletePending) return
-    if (
-      !archiveLocks.isResolved
-      || selectedEdges.some((edge) => archiveLocks.lockedNodeIds.has(edge.target))
-    ) return
+    if (selectedEdges.some((edge) => {
+      const target = nodeBySourceId.get(edge.target)
+      return target === undefined || !target.data.archiveStateResolved || target.data.archiveLocked
+    })) return
     if (selectedEdgeIds.length > 1 && !window.confirm(`删除选中的 ${selectedEdgeIds.length} 条连接？`)) return
     deleteEdges(selectedEdgeIds)
-  }, [archiveLocks.isResolved, archiveLocks.lockedNodeIds, deleteEdges, isEdgeDeletePending, selectedEdgeIds, selectedEdges])
+  }, [deleteEdges, isEdgeDeletePending, nodeBySourceId, selectedEdgeIds, selectedEdges])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {

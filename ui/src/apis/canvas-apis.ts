@@ -11,6 +11,7 @@ import type {
   CanvasNodeKind,
   CanvasNodePosition,
   CanvasNodeVersion,
+  AgentConversationSnapshot,
 } from '@/types/canvas'
 import type { ModelReference } from '@/types/provider'
 
@@ -37,6 +38,15 @@ export const canvasKeys = {
   edges: (workId: string) => ['canvas', workId, 'edges'] as const,
   candidates: (workId: string) => ['canvas', workId, 'candidates'] as const,
   history: (workId: string) => ['canvas', workId, 'history'] as const,
+  conversation: (workId: string) => ['canvas', workId, 'agent-conversation'] as const,
+}
+
+export function useAgentConversation(workId: string) {
+  return useQuery({
+    queryKey: canvasKeys.conversation(workId),
+    queryFn: ({ signal }) => coreClient<AgentConversationSnapshot>(`/works/${workId}/agent-conversation`, { signal }),
+    enabled: workId.trim() !== '',
+  })
 }
 
 export function useCanvasNodes(workId: string) {
@@ -351,6 +361,7 @@ export function useCreateCollaborativeAgentRun(workId: string) {
       target: CollaborativeAgentTarget
       contextNodeIds: string[]
       model: ModelReference
+      conversationSessionId: string
     }) => {
       if (!contextAgent.isAvailable) {
         return Promise.reject(new Error('配置 embedding 模型后才能使用画布上下文 Agent'))
@@ -363,6 +374,7 @@ export function useCreateCollaborativeAgentRun(workId: string) {
           target: input.target,
           providerId: input.model.providerId,
           modelId: input.model.modelId,
+          conversationSessionId: input.conversationSessionId,
         },
       })
     },

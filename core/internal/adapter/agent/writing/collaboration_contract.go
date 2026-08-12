@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"warmmo/core/internal/domain/canvas"
 )
 
 func ParseCollaborationPlan(value, runTarget string) (CollaborationPlan, error) {
@@ -89,14 +91,24 @@ func ValidateProposalSet(value string) error {
 	if len(proposal.Nodes) == 0 && len(proposal.Updates) == 0 {
 		return errors.New("proposal set must contain at least one node or update")
 	}
-	if len(proposal.Nodes) > 1 {
-		return errors.New("proposal set must contain at most one node per generation")
+	if len(proposal.Nodes) > MaxProposalNodes {
+		return fmt.Errorf("proposal set must contain at most %d nodes", MaxProposalNodes)
 	}
+	clientIDs := make(map[string]struct{}, len(proposal.Nodes))
 	for index, node := range proposal.Nodes {
-		if strings.TrimSpace(node.ClientID) == "" || strings.TrimSpace(node.Kind) == "" ||
+		clientID := strings.TrimSpace(node.ClientID)
+		kind, validKind := canvas.ParseNodeKind(node.Kind)
+		if clientID == "" ||
 			strings.TrimSpace(node.Title) == "" || strings.TrimSpace(node.Content) == "" {
 			return fmt.Errorf("proposal node %d requires clientId, kind, title, and content", index)
 		}
+		if !validKind || !canvas.IsManuallyCreatableNodeKind(kind) {
+			return fmt.Errorf("proposal node %d has unsupported creatable kind %q", index, node.Kind)
+		}
+		if _, exists := clientIDs[clientID]; exists {
+			return fmt.Errorf("proposal node %d repeats clientId %q", index, clientID)
+		}
+		clientIDs[clientID] = struct{}{}
 	}
 	for index, update := range proposal.Updates {
 		if strings.TrimSpace(update.NodeID) == "" || update.BaseRevision < 1 ||
@@ -107,6 +119,12 @@ func ValidateProposalSet(value string) error {
 	for index, edge := range proposal.Edges {
 		if strings.TrimSpace(edge.SourceID) == "" || strings.TrimSpace(edge.TargetID) == "" || strings.TrimSpace(edge.Kind) == "" {
 			return fmt.Errorf("proposal edge %d requires sourceId, targetId, and kind", index)
+		}
+		if edge.SourceID == edge.TargetID {
+			return fmt.Errorf("proposal edge %d cannot connect an endpoint to itself", index)
+		}
+		if edge.Kind != "generated_from" {
+			return fmt.Errorf("proposal edge %d has unsupported kind %q", index, edge.Kind)
 		}
 	}
 	return nil

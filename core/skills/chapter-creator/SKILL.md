@@ -14,7 +14,7 @@ allowed_tools:
 
 Create a proposal, not a direct canvas mutation. The Planner's brief and context manifest are authoritative.
 
-Return exactly one ProposalSet JSON object with at most one new node per generation. `proposalId` is omitted because the service assigns it when persistence is implemented:
+Return exactly one ProposalSet JSON object containing every node required by the delegated task, up to 20 new nodes. Use one complete proposal instead of asking the orchestrator to delegate once per node. `proposalId` is omitted because the service assigns it during persistence:
 
 ```json
 {

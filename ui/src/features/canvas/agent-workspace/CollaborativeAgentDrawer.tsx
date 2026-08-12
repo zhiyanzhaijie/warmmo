@@ -1,8 +1,14 @@
-import { BrainCircuit, MapPin, Plus, Sparkles } from 'lucide-react'
+import { Check, BrainCircuit, History, MapPin, Plus, Sparkles } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { type CollaborativeAgentTarget } from '@/apis/canvas-apis'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
+import {
+	Reasoning,
+	ReasoningContent,
+	ReasoningTrigger,
+} from '@/components/ai-elements/reasoning'
+import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Button } from '@/components/ui/button'
 import {
   Drawer,
@@ -13,9 +19,19 @@ import {
   DrawerTrigger,
 } from '@/components/ui/drawer'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { CollaborativeAgentPromptInput } from '@/features/canvas/agent-workspace/CollaborativeAgentPromptInput'
 import { CollaborativeAgentProgress } from '@/features/canvas/agent-workspace/CollaborativeAgentProgress'
-import { useAgentStreamText } from '@/features/canvas/agent-workspace/agent-stream-store'
+import {
+	useAgentStreamText,
+} from '@/features/canvas/agent-workspace/agent-stream-store'
 import {
   createCanvasPromptValueFromText,
   type CanvasPromptValue,
@@ -32,6 +48,7 @@ import {
 } from '@/features/canvas/flownode/store'
 import { useFocusNode } from '@/features/canvas/flownode/use-focus-node'
 import type { CanvasNode } from '@/types/canvas'
+import type { AgentEvent } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
 interface CollaborativeAgentDrawerProps {
@@ -49,6 +66,10 @@ const starterPrompts = [
   '为当前故事提出三个可继续发展的方向',
 ]
 
+const sessionTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit',
+})
+
 export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   canvasNodes,
   model,
@@ -65,12 +86,15 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   const {
     activeTurn,
     canUseContextAgent,
-    clear,
+    conversation,
+    conversationSessionId,
+    createConversationSession,
     contextAgentPending,
     pendingInput,
     responding,
     respond,
     run,
+    selectSession,
     turns,
   } = useCollaborativeAgentSession(workId)
   const focusNode = useFocusNode()
@@ -83,6 +107,8 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   const contextNodes = useMemo(() => canvasNodes.filter((node) => contextNodeIds.has(node.id)), [canvasNodes, contextNodeIds])
   const isContextPicking = isCollaborativeContextNodePicker(canvasInteractionMode)
   const canSubmit = model !== null && prompt.requestText.trim() !== '' && activeTurn === undefined && canUseContextAgent
+  const activeSession = conversation?.sessions.find((session) => session.id === conversationSessionId)
+  const contextUsage = activeSession?.latestUsage ?? [...turns].reverse().find((turn) => turn.usage !== undefined)?.usage
 
   const updatePrompt = useCallback((value: CanvasPromptValue) => {
     setPrompt(value)
@@ -132,12 +158,20 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   }, [focusNode])
 
   const clearConversation = useCallback(() => {
-    clear()
+    createConversationSession()
     setPrompt(emptyPrompt)
     clearContextNodes()
     if (isContextPicking) cancelContextNodePicker()
     setComposerVersion((current) => current + 1)
-  }, [cancelContextNodePicker, clear, clearContextNodes, isContextPicking])
+  }, [cancelContextNodePicker, clearContextNodes, createConversationSession, isContextPicking])
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    selectSession(sessionId)
+    setPrompt(emptyPrompt)
+    clearContextNodes()
+    if (isContextPicking) cancelContextNodePicker()
+    setComposerVersion((current) => current + 1)
+  }, [cancelContextNodePicker, clearContextNodes, isContextPicking, selectSession])
 
   const availabilityLabel = contextAgentPending
     ? '正在检查上下文能力'
@@ -187,12 +221,39 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
           </span>
           <DrawerTitle className="sr-only">全局创作 Agent</DrawerTitle>
           <DrawerDescription className="sr-only">与全局 Agent 闲聊或进行创作</DrawerDescription>
-          <div className="flex-1" />
+          <span className="min-w-0 flex-1 truncate text-body-sm text-body">{activeSession?.title ?? '新会话'}</span>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button aria-label="查看历史会话" disabled={activeTurn !== undefined} size="icon-sm" variant="ghost">
+                    <History aria-hidden="true" size={15} />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>历史会话</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuLabel>画布历史会话</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {(conversation?.sessions ?? []).length === 0 ? (
+                <DropdownMenuItem disabled>暂无历史会话</DropdownMenuItem>
+              ) : (conversation?.sessions ?? []).map((session) => (
+                <DropdownMenuItem key={session.id} onSelect={() => handleSelectSession(session.id)}>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-body-sm text-ink">{session.title}</p>
+                    <p className="truncate text-mono-caption text-mute">{session.turnCount} 轮 · {session.modelId || '模型未记录'} · {formatSessionTime(session.updatedAt)}</p>
+                  </div>
+                  {session.id === conversationSessionId ? <Check aria-hidden="true" size={14} /> : null}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 aria-label="新建会话"
-                disabled={activeTurn !== undefined || turns.length === 0}
+                disabled={activeTurn !== undefined}
                 size="icon-sm"
                 variant="ghost"
                 onClick={clearConversation}
@@ -227,6 +288,9 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
             attachmentNodes={contextNodes}
             availableContextNodes={canvasNodes}
             canSubmit={canSubmit}
+            contextUsage={contextUsage}
+            contextWindowTokens={activeSession?.contextWindowTokens}
+            modelId={activeSession?.modelId || (model === null ? undefined : `${model.providerId}:${model.modelId}`)}
             isContextPicking={isContextPicking}
             isResponding={responding}
             isStreaming={activeTurn?.status === 'running'}
@@ -300,31 +364,14 @@ const CollaborativeConversationTurn = memo(function CollaborativeConversationTur
       </Message>
       <Message from="assistant" className="max-w-full">
         <MessageContent className="w-full gap-space-md text-body-md leading-6">
-          <CollaborativeAgentProgress turn={turn} />
-          {candidateEvents.map((event) => {
-            const candidateId = typeof event.data?.candidateId === 'string' ? event.data.candidateId : null
-            const meta = event.data?.meta as Record<string, unknown> | undefined
-            const title = typeof meta?.title === 'string' ? meta.title : '新候选节点'
-            const ordinal = typeof meta?.ordinal === 'number' && typeof meta?.total === 'number'
-              ? `（${meta.ordinal}/${meta.total}）`
-              : ''
-            if (candidateId === null) return null
-            return (
-              <div key={event.id} className="flex items-center gap-space-sm border-l border-link/40 pl-space-sm text-body-sm text-body">
-                <span>已生成候选「{title}」{ordinal}</span>
-                <Button
-                  className="ml-auto shrink-0"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onLocateCandidate(candidateId)}
-                >
-                  <MapPin aria-hidden="true" size={13} />
-                  定位
-                </Button>
-              </div>
-            )
-          })}
+          <CollaborativeTurnTimeline turn={turn} />
           <StreamingCollaborativeResponse messageId={turn.clientId} running={turn.status === 'running'} />
+          {turn.historyResponse === undefined ? null : (
+            <MessageResponse className="text-body-md leading-6 text-ink" mode="static">
+              {formatCollaborativeResponse(turn.historyResponse)}
+            </MessageResponse>
+          )}
+          <CollaborativeCandidateMilestones events={candidateEvents} onLocateCandidate={onLocateCandidate} />
           {turn.error === undefined ? null : (
             <p className="border-l border-error pl-space-sm text-body-sm text-error" role="alert">{turn.error}</p>
           )}
@@ -332,6 +379,146 @@ const CollaborativeConversationTurn = memo(function CollaborativeConversationTur
       </Message>
     </div>
   )
+})
+
+type TurnTimelineItem =
+  | { id: string; type: 'reasoning'; text: string; streaming: boolean }
+  | { id: string; type: 'collaboration'; events: AgentEvent[] }
+
+const CollaborativeTurnTimeline = memo(function CollaborativeTurnTimeline({
+  turn,
+}: {
+  turn: CollaborativeTurn
+}) {
+  const items = useMemo(() => buildTurnTimeline(turn.events), [turn.events])
+  return items.map((item, index) => {
+    if (item.type === 'reasoning') {
+      return (
+        <Reasoning
+          key={item.id}
+          className="mb-0 border-l border-hairline pl-space-sm"
+          defaultOpen={item.streaming}
+          isStreaming={item.streaming}
+        >
+          <ReasoningTrigger
+            className="w-fit gap-space-xs text-body-sm text-mute"
+            getThinkingMessage={reasoningStatusLabel}
+          />
+          {item.text === '' ? null : (
+            <ReasoningContent className="mt-space-xs max-h-56 overflow-y-auto pr-space-xs text-body-sm leading-6 text-mute">
+              {item.text}
+            </ReasoningContent>
+          )}
+        </Reasoning>
+      )
+    }
+    const isLast = index === items.length - 1
+    return (
+      <CollaborativeAgentProgress
+        key={item.id}
+        turn={{ ...turn, events: item.events, status: isLast ? turn.status : 'completed' }}
+      />
+    )
+  })
+})
+
+function buildTurnTimeline(events: AgentEvent[]): TurnTimelineItem[] {
+  const reasoningEvents = events.filter((event) => event.type.startsWith('reasoning.'))
+  const collaborationEvents = events.filter((event) => isCollaborationTimelineEvent(event.type))
+  const items: Array<TurnTimelineItem & { sequence: number }> = []
+
+  if (reasoningEvents.length > 0) {
+    const lastLifecycleEvent = reasoningEvents.findLast((event) =>
+      event.type === 'reasoning.started' || event.type === 'reasoning.completed')
+    items.push({
+      id: 'reasoning',
+      type: 'reasoning',
+      text: reasoningEvents.flatMap((event) =>
+        event.type === 'reasoning.delta' && typeof event.data?.delta === 'string' ? [event.data.delta] : []).join('\n\n'),
+      streaming: lastLifecycleEvent?.type === 'reasoning.started',
+      sequence: reasoningEvents[0].sequence,
+    })
+  }
+  if (collaborationEvents.length > 0) {
+    items.push({
+      id: 'collaboration',
+      type: 'collaboration',
+      events: collaborationEvents,
+      sequence: collaborationEvents[0].sequence,
+    })
+  }
+  return items.sort((left, right) => left.sequence - right.sequence)
+}
+
+function isCollaborationTimelineEvent(type: string) {
+  return type === 'context.preparing' || type === 'context.ready' ||
+    type === 'plan.started' || type === 'plan.completed' ||
+    type === 'role.started' || type === 'role.handoff' || type === 'role.completed' ||
+    type === 'tool.requested' || type === 'tool.started' ||
+    type === 'tool.completed' || type === 'tool.failed'
+}
+
+function reasoningStatusLabel(isStreaming: boolean, duration?: number) {
+	if (isStreaming) {
+		return (
+			<Shimmer
+				as="span"
+				className="font-medium [--color-background:var(--color-ink)] [--color-muted-foreground:var(--color-mute)]"
+				duration={1.5}
+				spread={8}
+			>
+				正在思考
+			</Shimmer>
+		)
+	}
+	return <span>{duration === undefined ? '思考过程' : `思考了 ${duration} 秒`}</span>
+}
+
+const CollaborativeCandidateMilestones = memo(function CollaborativeCandidateMilestones({
+	events,
+	onLocateCandidate,
+}: {
+	events: CollaborativeTurn['events']
+	onLocateCandidate: (candidateId: string) => void
+}) {
+	if (events.length === 0) return null
+	return (
+		<div aria-live="polite" className="space-y-space-xs border-t border-hairline pt-space-sm">
+			{events.map((event) => {
+				const candidateId = typeof event.data?.candidateId === 'string' ? event.data.candidateId : null
+				if (candidateId === null) return null
+				const meta = event.data?.meta as Record<string, unknown> | undefined
+				const title = typeof meta?.title === 'string' ? meta.title : '新候选节点'
+				const ordinal = typeof meta?.ordinal === 'number' && typeof meta?.total === 'number'
+					? `${meta.ordinal}/${meta.total}`
+					: null
+				return (
+					<div key={event.id} className="flex min-w-0 items-center gap-space-xs text-body-sm text-body">
+						<span className="grid size-5 shrink-0 place-items-center rounded-full bg-link-soft text-link">
+							<Check aria-hidden="true" size={12} strokeWidth={2.25} />
+						</span>
+						<span className="min-w-0 flex-1 truncate">
+							已生成候选「{title}」{ordinal === null ? null : ` · ${ordinal}`}
+						</span>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									aria-label={`定位候选 ${title}`}
+									className="shrink-0"
+									size="icon-sm"
+									variant="ghost"
+									onClick={() => onLocateCandidate(candidateId)}
+								>
+									<MapPin aria-hidden="true" size={14} />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>在画布中定位</TooltipContent>
+						</Tooltip>
+					</div>
+				)
+			})}
+		</div>
+	)
 })
 
 const StreamingCollaborativeResponse = memo(function StreamingCollaborativeResponse({
@@ -346,10 +533,10 @@ const StreamingCollaborativeResponse = memo(function StreamingCollaborativeRespo
   if (response === '') return null
   return (
     <MessageResponse
-      animated
+      animated={{ animation: 'fadeIn', duration: 180, sep: 'word', stagger: 12 }}
       className="text-body-md leading-6 text-ink"
       isAnimating={running}
-      mode={running ? 'streaming' : 'static'}
+      mode="streaming"
       parseIncompleteMarkdown
     >
       {formattedResponse}
@@ -385,4 +572,10 @@ function formatCollaborativeResponse(response: string) {
   } catch {
     return response
   }
+}
+
+function formatSessionTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return sessionTimeFormatter.format(date)
 }

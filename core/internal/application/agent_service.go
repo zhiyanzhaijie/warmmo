@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	agent "warmmo/core/internal/application/agent"
+	appharness "warmmo/core/internal/application/harness"
 	"warmmo/core/internal/domain/canvas"
 )
 
@@ -55,12 +56,13 @@ type AgentStore interface {
 }
 
 type AgentService struct {
-	ctx     context.Context
-	store   AgentStore
-	engine  agent.Engine
-	logger  *slog.Logger
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	ctx          context.Context
+	store        AgentStore
+	engine       agent.Engine
+	logger       *slog.Logger
+	mu           sync.Mutex
+	cancels      map[string]context.CancelFunc
+	conversation appharness.ConversationStore
 }
 
 type executionMode uint8
@@ -71,8 +73,19 @@ const (
 	executionRecover
 )
 
-func NewAgentService(ctx context.Context, store AgentStore, engine agent.Engine, logger *slog.Logger) *AgentService {
-	return &AgentService{ctx: ctx, store: store, engine: engine, logger: logger, cancels: make(map[string]context.CancelFunc)}
+func NewAgentService(ctx context.Context, store AgentStore, engine agent.Engine, logger *slog.Logger, conversationReaders ...appharness.ConversationStore) *AgentService {
+	var conversation appharness.ConversationStore
+	if len(conversationReaders) > 0 {
+		conversation = conversationReaders[0]
+	}
+	return &AgentService{ctx: ctx, store: store, engine: engine, logger: logger, cancels: make(map[string]context.CancelFunc), conversation: conversation}
+}
+
+func (s *AgentService) ListConversation(ctx context.Context, workID string, limit int) (appharness.ConversationSnapshot, error) {
+	if s.conversation == nil {
+		return appharness.ConversationSnapshot{WorkID: strings.TrimSpace(workID), Sessions: []appharness.ConversationSession{}}, nil
+	}
+	return s.conversation.ListSessions(ctx, strings.TrimSpace(workID), limit)
 }
 
 func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
@@ -82,6 +95,7 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 	input.TargetNodeID = strings.TrimSpace(input.TargetNodeID)
 	input.ProviderID = strings.TrimSpace(input.ProviderID)
 	input.ModelID = strings.TrimSpace(input.ModelID)
+	input.ConversationSessionID = strings.TrimSpace(input.ConversationSessionID)
 	input.ContextNodeIDs = uniqueNodeIDs(input.ContextNodeIDs)
 	if input.WorkID == "" || input.Prompt == "" || input.Target == "" || input.ProviderID == "" || input.ModelID == "" {
 		return agent.Run{}, fmt.Errorf("%w: workId, prompt, target, providerId and modelId are required", ErrInvalidAgentRun)
@@ -97,6 +111,9 @@ func (s *AgentService) CreateRun(input agent.RunInput) (agent.Run, error) {
 		return agent.Run{}, fmt.Errorf("%w: targetNodeId is required", ErrInvalidAgentRun)
 	}
 	if agent.IsCollaborativeTarget(input.Target) {
+		if input.ConversationSessionID == "" {
+			input.ConversationSessionID = uuid.NewString()
+		}
 		globalContext, err := s.store.GetGlobalContextNodeReferences(input.WorkID)
 		if err != nil {
 			return agent.Run{}, err
@@ -243,7 +260,7 @@ func (s *AgentService) ResumeAfterCandidateDecision(ctx context.Context, workID,
 	}
 	input := agent.RunInput{
 		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
-		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
+		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ConversationSessionID: run.ConversationSessionID,
 		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs), UserResponses: responses,
 		CollaborativeCandidates: candidates,
 	}
@@ -283,7 +300,7 @@ func (s *AgentService) RespondToRun(runID, approvalEventID, answer string) (agen
 	}
 	input := agent.RunInput{
 		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
-		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
+		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ConversationSessionID: run.ConversationSessionID,
 		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs),
 	}
 	if agent.IsCollaborativeTarget(run.Target) {
@@ -542,7 +559,7 @@ func (s *AgentService) RecoverInterruptedRuns() error {
 func (s *AgentService) recoveryInput(run agent.Run) (agent.RunInput, error) {
 	input := agent.RunInput{
 		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
-		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID,
+		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ConversationSessionID: run.ConversationSessionID,
 		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs),
 	}
 	if !agent.IsCollaborativeTarget(run.Target) {

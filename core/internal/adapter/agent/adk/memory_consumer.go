@@ -29,7 +29,7 @@ func (e *LLMTurnExecutor) consumeMemoryBestEffort(
 	outcome LLMTurnOutcome,
 	emit LLMTurnEmitter,
 ) {
-	if !request.Memory.Remember || outcome.Status != appharness.TurnCompleted || outcome.Artifact == nil || e.memories == nil {
+	if !request.PublishConversation || !request.Memory.Remember || outcome.Status != appharness.TurnCompleted || outcome.Artifact == nil || e.memories == nil {
 		return
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)

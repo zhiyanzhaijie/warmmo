@@ -32,9 +32,10 @@ const (
 	CandidateStatusAccepted = appagent.CandidateStatusAccepted
 	CandidateStatusRejected = appagent.CandidateStatusRejected
 
-	RolePlanner = appagent.RolePlanner
-	RoleCreator = appagent.RoleCreator
-	RoleWriter  = appagent.RoleWriter
+	RolePlanner      = appagent.RolePlanner
+	RoleCreator      = appagent.RoleCreator
+	RoleWriter       = appagent.RoleWriter
+	RoleOrchestrator = appagent.RoleOrchestrator
 
 	EventRunQueued            = appagent.EventRunQueued
 	EventRunStarted           = appagent.EventRunStarted
@@ -58,6 +59,9 @@ const (
 	EventRunResumed           = appagent.EventRunResumed
 	EventGenerationStarted    = appagent.EventGenerationStarted
 	EventMessageDelta         = appagent.EventMessageDelta
+	EventReasoningStarted     = appagent.EventReasoningStarted
+	EventReasoningDelta       = appagent.EventReasoningDelta
+	EventReasoningCompleted   = appagent.EventReasoningCompleted
 	EventValidationCompleted  = appagent.EventValidationCompleted
 	EventCandidateCreated     = appagent.EventCandidateCreated
 	EventCandidateDecision    = appagent.EventCandidateDecision
@@ -86,6 +90,9 @@ type CollaborationPlan = appagent.CollaborationPlan
 type ProposalSet = appagent.ProposalSet
 type ProposalNode = appagent.ProposalNode
 type ProposalUpdate = appagent.ProposalUpdate
+
+const MaxProposalNodes = appagent.MaxProposalNodes
+
 type ProposalEdge = appagent.ProposalEdge
 type EventType = appagent.EventType
 type Run = appagent.Run

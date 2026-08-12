@@ -130,12 +130,10 @@ export const CanvasSurface = memo(function CanvasSurface({
     setContextPickReservations((current) => current.size === 0 ? current : new Set())
   }, [contextNodePickerTargetNodeId])
   const deleteEdge = useCallback((edgeId: string, targetNodeId: string) => {
-    if (
-      !archiveLocks.isResolved
-      || archiveLocks.lockedNodeIds.has(targetNodeId)
-    ) return
+    const target = nodes.find((node) => node.data.sourceId === targetNodeId)
+    if (target === undefined || !target.data.archiveStateResolved || target.data.archiveLocked) return
     deleteEdges([edgeId])
-  }, [archiveLocks.isResolved, archiveLocks.lockedNodeIds, deleteEdges])
+  }, [deleteEdges, nodes])
   const renderedEdges = useMemo<CanvasFlowEdge[]>(() => edges.map((edge) => {
     const archiveLocked = archiveLocks.lockedNodeIds.has(edge.target)
     return {

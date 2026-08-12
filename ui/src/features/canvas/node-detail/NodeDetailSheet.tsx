@@ -13,6 +13,7 @@ import {
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { NodeDocument } from '@/features/canvas/node-detail/NodeDocument'
 import { NodeVersionControl } from '@/features/canvas/node-detail/NodeVersionControl'
+import { isChapterArchiveProtectedNodeKind } from '@/features/canvas/nodes/definitions'
 import { useArchiveLocks } from '@/features/canvas/story-spine/use-archive-locks'
 
 export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workId: string }) {
@@ -20,9 +21,12 @@ export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workI
   const nodeId = useFlowNodeStore((state) => state.previewNodeId)
   const closePreview = useFlowNodeStore((state) => state.actions.closePreview)
   const nodeQuery = useCanvasNode(workId, nodeId)
-  const archiveLocks = useArchiveLocks(workId)
-  const isArchiveLocked = nodeId !== null && archiveLocks.lockedNodeIds.has(nodeId)
-  const canMutateNode = archiveLocks.isResolved && !isArchiveLocked
+  const node = nodeQuery.data
+  const archiveProtected = node !== undefined && isChapterArchiveProtectedNodeKind(node.kind)
+  const archiveLocks = useArchiveLocks(workId, archiveProtected)
+  const isArchiveLocked = archiveProtected && nodeId !== null && archiveLocks.lockedNodeIds.has(nodeId)
+  const archiveStateResolved = !archiveProtected || archiveLocks.isResolved
+  const canMutateNode = node !== undefined && archiveStateResolved && !isArchiveLocked
 
   return (
     <Sheet
@@ -37,23 +41,23 @@ export const NodeDetailSheet = memo(function NodeDetailSheet({ workId }: { workI
             <SheetTitle className="text-label-sm">节点预览</SheetTitle>
             <SheetDescription>完整内容只读视图</SheetDescription>
           </div>
-          {nodeQuery.data !== undefined ? (
+          {node !== undefined ? (
             <div className="mr-10 ml-auto flex min-w-0 items-center gap-space-sm">
               {!canMutateNode ? (
                 <span className="inline-flex h-9 items-center gap-space-xs text-body-sm text-mute">
                   <LockKeyhole aria-hidden="true" size={14} />
-                  {!archiveLocks.isResolved
+                  {!archiveStateResolved
                     ? archiveLocks.isError ? '无法确认归档状态' : '正在确认归档状态'
                     : '已归档锁定'}
                 </span>
-              ) : <NodeVersionControl workId={workId} node={nodeQuery.data} />}
+              ) : <NodeVersionControl workId={workId} node={node} />}
               {canMutateNode ? <button
                 className="flex h-9 shrink-0 items-center gap-space-xs rounded-sm border border-hairline px-space-sm text-button-md text-ink transition-colors hover:bg-hairline-soft"
                 type="button"
                 aria-label="全屏编辑"
                 onClick={() => {
                   closePreview()
-                  navigate(`/works/${workId}/nodes/${nodeQuery.data.id}/edit`, {
+                  navigate(`/works/${workId}/nodes/${node.id}/edit`, {
                     state: { fromCanvas: true },
                   })
                 }}

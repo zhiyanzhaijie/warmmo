@@ -49,7 +49,7 @@ func (r *AgentRepository) ListCollaborativeCandidates(runID string) ([]appagent.
 	}
 	candidates := make([]appagent.CollaborativeCandidate, len(models))
 	for i, model := range models {
-		candidates[i] = appagent.CollaborativeCandidate{CandidateID: model.ID, Status: appagent.CandidateStatus(model.Status), Kind: model.Kind, Title: model.Title, AcceptedNodeID: model.AcceptedNodeID}
+		candidates[i] = appagent.CollaborativeCandidate{CandidateID: model.ID, Status: appagent.CandidateStatus(model.Status), Kind: normalizeLegacyCanvasKind(model.Kind), Title: model.Title, AcceptedNodeID: model.AcceptedNodeID}
 	}
 	return candidates, nil
 }
@@ -179,6 +179,60 @@ func (r *AgentRepository) GetGlobalContextNodeReferences(workID string) ([]appag
 		global[i] = appagent.NodeReference{ID: model.ID, Type: model.Kind}
 	}
 	return global, nil
+}
+
+// BuildContext returns a compact authoritative canvas snapshot for the model
+// context layer. It is deliberately bounded; the canvas.get_nodes and
+// story_spine.context tools remain available for deeper, targeted reads.
+func (r *AgentRepository) BuildContext(ctx context.Context, workID string, maxBytes int) (string, error) {
+	if r == nil || r.database == nil || strings.TrimSpace(workID) == "" || maxBytes <= 0 {
+		return "", nil
+	}
+	type contextNode struct {
+		Kind    string
+		Title   string
+		Content string
+	}
+	var nodes []contextNode
+	if err := r.database.WithContext(ctx).Model(&canvasNodeModel{}).
+		Select("kind, title, content").Where("work_id = ? AND kind IN ?", workID,
+		[]canvas.NodeKind{canvas.NodeKindWorld, canvas.NodeKindMechanism, canvas.NodeKindEvent}).
+		Order("CASE kind WHEN 'world' THEN 1 WHEN 'mechanism' THEN 2 WHEN 'event' THEN 3 ELSE 4 END, created_at, id").
+		Find(&nodes).Error; err != nil {
+		return "", fmt.Errorf("read canvas global context: %w", err)
+	}
+	var archives []chapterArchiveModel
+	if err := r.database.WithContext(ctx).Where("work_id = ? AND is_current = ?", workID, true).
+		Select("outline_title, summary").Order("created_at DESC, revision DESC, id DESC").Limit(8).Find(&archives).Error; err != nil {
+		return "", fmt.Errorf("read canvas story spine context: %w", err)
+	}
+	var builder strings.Builder
+	appendLine := func(line string) bool {
+		line = strings.TrimSpace(line)
+		if line == "" || builder.Len()+len(line)+1 > maxBytes {
+			return false
+		}
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+		return true
+	}
+	appendLine("# Canvas Global Context")
+	appendLine("Authoritative current Canvas context. Prefer this over conversation history and recalled memory.")
+	if len(archives) > 0 && appendLine("## Story Spine") {
+		for _, archive := range archives {
+			if !appendLine("- " + truncateStorySpineDatabaseContext(archive.OutlineTitle, 512) + ": " + truncateStorySpineDatabaseContext(archive.Summary, 1800)) {
+				break
+			}
+		}
+	}
+	if len(nodes) > 0 && appendLine("## Worldview") {
+		for _, node := range nodes {
+			if !appendLine("- [" + node.Kind + "] " + truncateStorySpineDatabaseContext(node.Title, 512) + ": " + truncateStorySpineDatabaseContext(node.Content, 1800)) {
+				break
+			}
+		}
+	}
+	return strings.TrimSpace(builder.String()), nil
 }
 
 func (r *AgentRepository) SearchStorySpineDatabase(ctx context.Context, workID, query string, limit int) ([]appagent.StorySpineSearchResult, error) {
@@ -324,7 +378,7 @@ func (r *AgentRepository) CreateRun(input appagent.RunInput) (appagent.Run, erro
 	now := time.Now().UTC()
 	run := appagent.Run{
 		ID: input.RunID, WorkID: input.WorkID, Status: appagent.RunStatusQueued,
-		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, TargetNodeRevision: input.TargetNodeRevision, ProviderID: input.ProviderID, ModelID: input.ModelID,
+		Prompt: input.Prompt, Target: input.Target, TargetNodeID: input.TargetNodeID, TargetNodeRevision: input.TargetNodeRevision, ProviderID: input.ProviderID, ModelID: input.ModelID, ConversationSessionID: input.ConversationSessionID,
 		ContextNodeIDs: append([]string{}, input.ContextNodeIDs...), CreatedAt: now, UpdatedAt: now,
 	}
 	model := runModelFromDomain(run)
@@ -521,9 +575,9 @@ func (r *AgentRepository) CompleteReadOnly(run appagent.Run, result appagent.Run
 	})
 }
 
-// CompleteCollaborativeProposal persists each proposed new node as an
-// independent pending candidate. The proposal remains reviewable; accepting a
-// candidate is what creates the durable canvas node.
+// CompleteCollaborativeProposal persists proposed nodes and existing-node
+// revisions as independent pending candidates. The proposal remains
+// reviewable; accepting a candidate is what changes the durable canvas.
 func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result appagent.RunResult) error {
 	var proposal appagent.ProposalSet
 	decoder := json.NewDecoder(strings.NewReader(result.Content))
@@ -531,11 +585,11 @@ func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result
 	if err := decoder.Decode(&proposal); err != nil {
 		return fmt.Errorf("%w: decode collaborative proposal: %v", appagent.ErrProjectionTerminal, err)
 	}
-	if len(proposal.Nodes) == 0 {
-		return fmt.Errorf("%w: collaborative proposal has no new nodes", appagent.ErrProjectionTerminal)
+	if len(proposal.Nodes) == 0 && len(proposal.Updates) == 0 {
+		return fmt.Errorf("%w: collaborative proposal has no nodes or updates", appagent.ErrProjectionTerminal)
 	}
-	if len(proposal.Nodes) > 1 {
-		return fmt.Errorf("%w: collaborative proposal has more than one node", appagent.ErrProjectionTerminal)
+	if len(proposal.Nodes) > appagent.MaxProposalNodes {
+		return fmt.Errorf("%w: collaborative proposal exceeds %d nodes", appagent.ErrProjectionTerminal, appagent.MaxProposalNodes)
 	}
 	now := time.Now().UTC()
 	return r.database.Transaction(func(tx *gorm.DB) error {
@@ -543,22 +597,75 @@ func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result
 		if err != nil || completed {
 			return err
 		}
-		created := make([]map[string]any, 0, len(proposal.Nodes))
-		models := make([]agentCandidateModel, 0, len(proposal.Nodes))
+		created := make([]map[string]any, 0, len(proposal.Nodes)+len(proposal.Updates))
+		models := make([]agentCandidateModel, 0, len(proposal.Nodes)+len(proposal.Updates))
+		clientCandidates := make(map[string]string, len(proposal.Nodes))
+		var pending int64
+		if err := tx.Model(&agentCandidateModel{}).
+			Where("work_id = ? AND status = ?", run.WorkID, appagent.CandidateStatusPending).
+			Count(&pending).Error; err != nil {
+			return fmt.Errorf("count pending collaborative candidates: %w", err)
+		}
+		clientIDs := make(map[string]struct{}, len(proposal.Nodes))
 		for index, node := range proposal.Nodes {
-			clientID, kind := strings.TrimSpace(node.ClientID), strings.TrimSpace(node.Kind)
+			clientID := strings.TrimSpace(node.ClientID)
+			kind, validKind := canvas.ParseNodeKind(node.Kind)
 			title, content := strings.TrimSpace(node.Title), strings.TrimSpace(node.Content)
-			if clientID == "" || kind == "" || title == "" || content == "" {
+			if clientID == "" || title == "" || content == "" {
 				return fmt.Errorf("%w: collaborative proposal node %d is incomplete", appagent.ErrProjectionTerminal, index)
 			}
+			if !validKind || !canvas.IsManuallyCreatableNodeKind(kind) {
+				return fmt.Errorf("%w: collaborative proposal node %d has unsupported creatable kind %q", appagent.ErrProjectionTerminal, index, node.Kind)
+			}
+			if _, exists := clientIDs[clientID]; exists {
+				return fmt.Errorf("%w: collaborative proposal node %d repeats clientId %q", appagent.ErrProjectionTerminal, index, clientID)
+			}
+			clientIDs[clientID] = struct{}{}
+			kindValue := string(kind)
 			candidateID := uuid.NewString()
-			x := 520 + float64(index%8)*36
-			y := 80 + float64(index/8)*220
-			models = append(models, agentCandidateModel{ID: candidateID, RunID: run.ID, WorkID: run.WorkID, SkillID: result.SkillID, SkillVersion: result.SkillVersion, Status: string(appagent.CandidateStatusPending), Kind: kind, Title: title, Content: content, X: x, Y: y, CreatedAt: now, CandidateType: "node"})
-			created = append(created, map[string]any{"candidateId": candidateID, "clientId": clientID, "kind": kind, "title": title, "ordinal": index + 1, "total": len(proposal.Nodes), "x": x, "y": y})
+			x := 520 + float64(pending%8)*36
+			y := 80 + float64(pending/8)*220
+			models = append(models, agentCandidateModel{ID: candidateID, RunID: run.ID, WorkID: run.WorkID, SkillID: result.SkillID, SkillVersion: result.SkillVersion, Status: string(appagent.CandidateStatusPending), Kind: kindValue, Title: title, Content: content, X: x, Y: y, CreatedAt: now, CandidateType: "node"})
+			clientCandidates[clientID] = candidateID
+			created = append(created, map[string]any{"candidateId": candidateID, "candidateType": "node", "clientId": clientID, "kind": kindValue, "title": title, "ordinal": index + 1, "total": len(proposal.Nodes), "x": x, "y": y})
+			pending++
+		}
+		for index, update := range proposal.Updates {
+			nodeID := strings.TrimSpace(update.NodeID)
+			title, content := strings.TrimSpace(update.Title), strings.TrimSpace(update.Content)
+			if nodeID == "" || update.BaseRevision < 1 || title == "" || content == "" {
+				return fmt.Errorf("%w: collaborative proposal update %d is incomplete", appagent.ErrProjectionTerminal, index)
+			}
+			node, err := getCanvasNode(tx, run.WorkID, nodeID)
+			if err != nil {
+				return fmt.Errorf("collaborative proposal update %d target node: %w", index, err)
+			}
+			if node.Revision != update.BaseRevision {
+				return fmt.Errorf("%w: collaborative proposal update %d targets node %q at revision %d, expected %d", canvas.ErrRevisionConflict, index, nodeID, node.Revision, update.BaseRevision)
+			}
+			kind, validKind := canvas.ParseNodeKind(normalizeLegacyCanvasKind(node.Kind))
+			if !validKind {
+				return fmt.Errorf("%w: collaborative proposal update %d targets node %q with unsupported kind %q", appagent.ErrProjectionTerminal, index, nodeID, node.Kind)
+			}
+			candidateID := uuid.NewString()
+			x := node.X + 320 + float64(pending%8)*36
+			y := node.Y + float64(pending/8)*36
+			models = append(models, agentCandidateModel{
+				ID: candidateID, RunID: run.ID, WorkID: run.WorkID,
+				SkillID: result.SkillID, SkillVersion: result.SkillVersion,
+				Status: string(appagent.CandidateStatusPending), Kind: string(kind),
+				Title: title, Content: content, X: x, Y: y, CreatedAt: now,
+				CandidateType: "version", NodeID: node.ID, BaseVersionID: node.CurrentVersionID,
+				Reason: strings.Join(proposal.Reasons, "\n"),
+			})
+			created = append(created, map[string]any{"candidateId": candidateID, "candidateType": "version", "nodeId": node.ID, "kind": string(kind), "title": title, "baseRevision": update.BaseRevision, "x": x, "y": y})
+			pending++
 		}
 		if err := tx.Create(&models).Error; err != nil {
 			return fmt.Errorf("create collaborative candidates: %w", err)
+		}
+		if err := persistProposalEdges(tx, run, proposal, clientCandidates, now); err != nil {
+			return fmt.Errorf("validate collaborative proposal edges: %w", err)
 		}
 		if err := completeRun(tx, run.ID, now); err != nil {
 			return err
@@ -567,7 +674,7 @@ func (r *AgentRepository) CompleteCollaborativeProposal(run appagent.Run, result
 			return err
 		}
 		for _, metadata := range created {
-			if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateId": metadata["candidateId"], "meta": map[string]any{"clientId": metadata["clientId"], "kind": metadata["kind"], "title": metadata["title"], "ordinal": metadata["ordinal"], "total": metadata["total"], "position": map[string]any{"x": metadata["x"], "y": metadata["y"]}}, "mode": "collaborative-proposal"}, now); err != nil {
+			if _, err := appendEvent(tx, run.ID, appagent.EventCandidateCreated, map[string]any{"candidateId": metadata["candidateId"], "meta": metadata, "mode": "collaborative-proposal"}, now); err != nil {
 				return err
 			}
 		}
@@ -1214,11 +1321,11 @@ func appendEvent(tx *gorm.DB, runID string, eventType appagent.EventType, data a
 }
 
 func runFromModel(model agentRunModel) appagent.Run {
-	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, TargetNodeRevision: model.TargetNodeRevision, ProviderID: model.ProviderID, ModelID: model.ModelID, ContextNodeIDs: append([]string{}, model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
+	return appagent.Run{ID: model.ID, WorkID: model.WorkID, Status: appagent.RunStatus(model.Status), Prompt: model.Prompt, Target: model.Target, TargetNodeID: model.TargetNodeID, TargetNodeRevision: model.TargetNodeRevision, ProviderID: model.ProviderID, ModelID: model.ModelID, ConversationSessionID: model.ConversationSessionID, ContextNodeIDs: append([]string{}, model.ContextNodeIDs...), ErrorMessage: model.ErrorMessage, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt}
 }
 
 func runModelFromDomain(run appagent.Run) agentRunModel {
-	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, TargetNodeRevision: run.TargetNodeRevision, ProviderID: run.ProviderID, ModelID: run.ModelID, ContextNodeIDs: append([]string{}, run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
+	return agentRunModel{ID: run.ID, WorkID: run.WorkID, Status: string(run.Status), Prompt: run.Prompt, Target: run.Target, TargetNodeID: run.TargetNodeID, TargetNodeRevision: run.TargetNodeRevision, ProviderID: run.ProviderID, ModelID: run.ModelID, ConversationSessionID: run.ConversationSessionID, ContextNodeIDs: append([]string{}, run.ContextNodeIDs...), ErrorMessage: run.ErrorMessage, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
 }
 
 func eventFromModel(model agentRunEventModel) appagent.Event {

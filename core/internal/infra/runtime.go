@@ -83,9 +83,10 @@ func Run(logger *slog.Logger, version string) error {
 	agentArtifactStore := persistence.NewAgentArtifactStore(database)
 	agentToolCallStore := persistence.NewAgentToolCallStore(database)
 	agentMemoryStore := persistence.NewAgentMemoryStore(database)
-	turnExecutor := adk.NewLLMTurnExecutor(
+	agentConversationStore := persistence.NewAgentConversationStore(database)
+	turnExecutor := adk.NewLLMTurnExecutorWithConversation(
 		toolRegistry, modelResolver, agentSessionService, agentCheckpointStore, agentArtifactStore, agentToolCallStore,
-		agentMemoryStore,
+		agentMemoryStore, agentConversationStore, agentRepository,
 	)
 	definitionRegistry, err := collaboration.NewDefinitionRegistry()
 	if err != nil {
@@ -109,17 +110,23 @@ func Run(logger *slog.Logger, version string) error {
 	if err != nil {
 		return err
 	}
+	canvasOrchestrator, err := collaboration.NewCanvasOrchestrator(
+		definitionRegistry, durableTurnRunner, writingChain, agentCheckpointStore,
+	)
+	if err != nil {
+		return err
+	}
 	nonCollaborativeChain, err := collaboration.NewNonCollaborativeChain(
 		definitionRegistry, durableTurnRunner, agentArtifactStore, agentCheckpointStore, skillCatalog,
 	)
 	if err != nil {
 		return err
 	}
-	agentEngine, err := collaboration.NewEngine(writingChain, nonCollaborativeChain)
+	agentEngine, err := collaboration.NewEngine(canvasOrchestrator, nonCollaborativeChain)
 	if err != nil {
 		return err
 	}
-	agentService := application.NewAgentService(ctx, agentRepository, agentEngine, logger)
+	agentService := application.NewAgentService(ctx, agentRepository, agentEngine, logger, agentConversationStore)
 	if err := agentService.RecoverInterruptedRuns(); err != nil {
 		logger.Error("recover interrupted agent runs", "error", err)
 	}

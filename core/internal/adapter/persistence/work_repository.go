@@ -155,6 +155,7 @@ func (r *WorkRepository) Delete(ctx context.Context, workID string) error {
 			label string
 			model any
 		}{
+			{"agent proposal edges", &agentProposalEdgeModel{}},
 			{"agent candidates", &agentCandidateModel{}},
 			{"agent runs", &agentRunModel{}},
 			{"chapter archive sections", &chapterArchiveSectionModel{}},

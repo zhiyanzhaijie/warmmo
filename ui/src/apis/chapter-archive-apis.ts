@@ -28,9 +28,10 @@ export const chapterArchiveKeys = {
   ] as const,
 }
 
-export function useCurrentChapterArchives(workId: string) {
+export function useCurrentChapterArchives(workId: string, enabled = true) {
   return useQuery({
     queryKey: chapterArchiveKeys.current(workId),
+    enabled,
     queryFn: async ({ signal }) => {
       const encodedWorkId = encodeURIComponent(workId)
       const response = await coreClient<ChapterArchiveVisibilityResponse>(

@@ -85,7 +85,8 @@ func (c *NonCollaborativeChain) Run(ctx context.Context, input writing.RunInput,
 		AgentName: registered.Definition.Name, Description: registered.Definition.Description,
 		Instruction: nonCollaborativeInstruction(skill, artifactKind), DefinitionVersion: registered.Definition.Version,
 		DefinitionHash: registered.Hash, ProviderID: input.ProviderID, ModelID: input.ModelID,
-		UserID: "work:" + input.WorkID, SessionID: uuid.NewString(), Prompt: prompt,
+		UserID: "work:" + input.WorkID, SessionID: uuid.NewString(), ConversationSessionID: input.ConversationSessionID, Prompt: prompt,
+		ConversationUserContent: input.Prompt, PublishConversation: true,
 		AllowedTools: allowedTools, ControlTools: registered.Definition.ControlTools,
 		ToolInvocation: agentcore.ToolInvocation{RunID: input.RunID, TurnID: turnID, WorkID: input.WorkID, SkillID: skill.ID, SkillVersion: skill.Version},
 		Budget:         registered.Definition.Budget, Context: registered.Definition.Context, Memory: registered.Definition.Memory,
@@ -214,7 +215,7 @@ func artifactResult(input writing.RunInput, skill writing.Skill, kind string, ar
 		}
 		result.Title, result.Content = strings.TrimSpace(update.Title), strings.TrimSpace(update.Content)
 	}
-	if err := emit(writing.EventMessageDelta, map[string]string{"delta": result.Content}); err != nil {
+	if err := emit(writing.EventMessageDelta, map[string]any{"delta": result.Content, "replace": true}); err != nil {
 		return writing.RunResult{}, err
 	}
 	if err := emit(writing.EventSkillCompleted, map[string]any{"skillId": skill.ID, "version": skill.Version}); err != nil {
@@ -283,7 +284,7 @@ func nonCollaborativePrompt(input writing.RunInput, skill writing.Skill) map[str
 }
 
 func nonCollaborativeInstruction(skill writing.Skill, artifactKind string) string {
-	return strings.TrimSpace(skill.Instructions) + "\n\nYou are a Warmmo canvas workflow agent. Read the minimum authoritative context with tools and preserve supplied facts. Any instruction above to return JSON describes the artifact payload, not a direct model response. You must call submit_artifact exactly once with kind " + artifactKind + ". Do not return the artifact as final text."
+	return strings.TrimSpace(skill.Instructions) + "\n\nYou are a Warmmo canvas workflow agent. Read the minimum authoritative context with tools and preserve supplied facts. Any instruction above to return JSON describes the artifact payload, not a direct model response. You must call submit_artifact exactly once with the artifact fields directly. The artifact kind is fixed as " + artifactKind + "; do not add a kind or artifact wrapper. Do not return the artifact as final text."
 }
 
 func skillFromSnapshot(snapshot appharness.TurnSnapshot) writing.Skill {

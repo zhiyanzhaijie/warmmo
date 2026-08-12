@@ -12,9 +12,9 @@ allowed_tools:
 ---
 # Entity Creator
 
-Create complete new entity proposals. Do not update an existing node and do not write directly to the canvas.
+Create complete reviewable entity proposals. For an explicit request to rewrite an existing entity node, return one complete update for that node instead of creating a duplicate. Never write directly to the canvas.
 
-Return exactly one ProposalSet JSON object using this exact shape. Each generation must contain at most one new node; after the user reviews it, a later generation may create the next node.
+Return exactly one ProposalSet JSON object using this exact shape. Include every entity required by the delegated task in the same proposal, up to 20 new nodes; do not require one delegation per entity.
 
 ```json
 {

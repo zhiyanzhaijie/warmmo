@@ -116,14 +116,17 @@ func (d *Database) initialize() error {
 	if err := d.AutoMigrate(
 		&schemaMetadataModel{}, &providerConfigurationModel{},
 		&workFolderModel{}, &workModel{},
-		&agentRunModel{}, &agentRunEventModel{}, &agentResponseModel{}, &agentCandidateModel{},
-		&agentSessionModel{}, &agentSessionEventModel{}, &agentSessionScopedStateModel{}, &agentTurnCheckpointModel{}, &agentArtifactModel{}, &agentProductProjectionModel{}, &agentToolCallModel{}, &agentChildRunModel{}, &agentMemoryModel{},
+		&agentRunModel{}, &agentRunEventModel{}, &agentResponseModel{}, &agentCandidateModel{}, &agentProposalEdgeModel{},
+		&agentSessionModel{}, &agentSessionEventModel{}, &agentSessionScopedStateModel{}, &agentConversationModel{}, &agentConversationTurnModel{}, &agentTurnCheckpointModel{}, &agentArtifactModel{}, &agentProductProjectionModel{}, &agentToolCallModel{}, &agentChildRunModel{}, &agentMemoryModel{},
 		&canvasNodeModel{}, &canvasNodeVersionModel{}, &canvasEdgeModel{},
 		&canvasActionModel{}, &canvasHistoryStateModel{},
 		&chapterArchiveModel{}, &chapterArchiveSectionModel{},
 		&knowledgeVectorDocumentModel{}, &knowledgeIndexJobModel{},
 	); err != nil {
 		return fmt.Errorf("migrate gorm schema: %w", err)
+	}
+	if err := d.normalizeLegacyCanvasKinds(); err != nil {
+		return err
 	}
 	if err := d.initializeVectorSchema(); err != nil {
 		return err
@@ -134,6 +137,16 @@ func (d *Database) initialize() error {
 	}
 	if err := os.Chmod(d.path, 0o600); err != nil {
 		return fmt.Errorf("secure sqlite database: %w", err)
+	}
+	return nil
+}
+
+func (d *Database) normalizeLegacyCanvasKinds() error {
+	if err := d.Model(&canvasNodeModel{}).Where("kind = ?", "worldview").Update("kind", "world").Error; err != nil {
+		return fmt.Errorf("normalize legacy canvas node kinds: %w", err)
+	}
+	if err := d.Model(&agentCandidateModel{}).Where("kind = ?", "worldview").Update("kind", "world").Error; err != nil {
+		return fmt.Errorf("normalize legacy canvas candidate kinds: %w", err)
 	}
 	return nil
 }

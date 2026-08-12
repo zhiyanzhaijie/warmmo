@@ -3,17 +3,20 @@ package collaboration
 import (
 	"time"
 
+	appagent "warmmo/core/internal/application/agent"
 	appharness "warmmo/core/internal/application/harness"
+	"warmmo/core/internal/domain/canvas"
 )
 
 const (
-	PlannerDefinitionID        = "writing.planner"
-	CreatorDefinitionID        = "writing.creator"
-	WriterDefinitionID         = "writing.writer"
-	NodeUpdateDefinitionID     = "writing.node_update"
-	SectionOutlineDefinitionID = "writing.section_outline_batch"
-	ChapterSectionDefinitionID = "writing.chapter_section"
-	ChapterArchiveDefinitionID = "writing.chapter_archive"
+	CanvasOrchestratorDefinitionID = "canvas.orchestrator"
+	PlannerDefinitionID            = "writing.planner"
+	CreatorDefinitionID            = "writing.creator"
+	WriterDefinitionID             = "writing.writer"
+	NodeUpdateDefinitionID         = "writing.node_update"
+	SectionOutlineDefinitionID     = "writing.section_outline_batch"
+	ChapterSectionDefinitionID     = "writing.chapter_section"
+	ChapterArchiveDefinitionID     = "writing.chapter_archive"
 
 	CollaborationPlanArtifact   = "collaboration_plan_v1"
 	ProposalArtifact            = "proposal_v1"
@@ -30,14 +33,31 @@ func Definitions() []appharness.AgentDefinition {
 	readTools := []string{"canvas.get_nodes", "canvas.search_context", "story_spine.context", "workspace.search"}
 	definitions := []appharness.AgentDefinition{
 		{
+			ID: CanvasOrchestratorDefinitionID, Version: "1", Name: "canvas_orchestrator",
+			Description: "Handles one canvas conversation turn and delegates only when specialist work is required.", Tier: appharness.AgentTierChat,
+			Model: appharness.ModelPolicy{Hint: "chat"}, Prompt: appharness.PromptSpec{ID: "canvas.orchestrator.v1"},
+			Tools: append([]string(nil), readTools...), ControlTools: []string{"ask_user", "delegate_agent"},
+			AllowedChildren: []appharness.ChildContract{
+				{AgentID: PlannerDefinitionID, InputSchema: plannerDelegateInputSchema()},
+				{AgentID: CreatorDefinitionID, InputSchema: creatorDelegateInputSchema()},
+			},
+			Budget:  budget(8, 10, 1, 3*time.Minute),
+			Context: contextPolicy("recall", 64*1024, 8*1024, 10),
+			Memory:  appharness.MemoryPolicy{Recall: true, Remember: true},
+			Output:  appharness.OutputContract{Kind: appharness.OutputKindText},
+		},
+		{
 			ID: PlannerDefinitionID, Version: "1", Name: "writing_planner",
 			Description: "Plans one Warmmo writing collaboration turn.", Tier: appharness.AgentTierReasoning,
 			Model: appharness.ModelPolicy{Hint: "reasoning"}, Prompt: appharness.PromptSpec{ID: "writing.planner.v1"},
 			Tools: append([]string(nil), readTools...), ControlTools: []string{"ask_user"},
-			AllowedChildren: []string{CreatorDefinitionID, WriterDefinitionID},
-			Budget:          budget(8, 12, 1, 3*time.Minute),
-			Context:         contextPolicy("recall", 64*1024, 8*1024, 8),
-			Memory:          appharness.MemoryPolicy{Recall: true, Remember: true},
+			AllowedChildren: []appharness.ChildContract{
+				{AgentID: CreatorDefinitionID, InputSchema: creatorDelegateInputSchema()},
+				{AgentID: WriterDefinitionID, InputSchema: map[string]any{"type": "object", "additionalProperties": false}},
+			},
+			Budget:  budget(8, 12, 1, 3*time.Minute),
+			Context: contextPolicy("recall", 64*1024, 8*1024, 8),
+			Memory:  appharness.MemoryPolicy{Recall: true, Remember: true},
 			Output: appharness.OutputContract{Kind: appharness.OutputKindArtifact, Artifacts: []appharness.ArtifactSchema{
 				{Kind: CollaborationPlanArtifact, SchemaVersion: "1", Schema: collaborationPlanSchema()},
 			}},
@@ -72,6 +92,21 @@ func Definitions() []appharness.AgentDefinition {
 		nodeUpdateDefinition(), sectionOutlineDefinition(), chapterSectionDefinition(), chapterArchiveDefinition(),
 	)
 	return definitions
+}
+
+func plannerDelegateInputSchema() map[string]any {
+	return map[string]any{"type": "object", "additionalProperties": false}
+}
+
+func creatorDelegateInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"skillId":    map[string]any{"type": "string", "enum": []string{"chapter-creator", "entity-creator", "prose-creator", "story-brainstorm"}},
+			"outputKind": map[string]any{"type": "string", "enum": []string{"proposal", "advice", "prose"}},
+		},
+		"required": []string{"skillId", "outputKind"}, "additionalProperties": false,
+	}
 }
 
 func nodeUpdateDefinition() appharness.AgentDefinition {
@@ -201,11 +236,12 @@ func collaborationPlanSchema() map[string]any {
 }
 
 func proposalSchema() map[string]any {
+	creatableKinds := canvas.ManuallyCreatableNodeKinds()
 	node := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"clientId": map[string]any{"type": "string", "minLength": 1},
-			"kind":     map[string]any{"type": "string", "minLength": 1},
+			"kind":     map[string]any{"type": "string", "enum": creatableKinds},
 			"title":    map[string]any{"type": "string", "minLength": 1},
 			"content":  map[string]any{"type": "string", "minLength": 1},
 		},
@@ -226,7 +262,7 @@ func proposalSchema() map[string]any {
 		"properties": map[string]any{
 			"sourceId": map[string]any{"type": "string", "minLength": 1},
 			"targetId": map[string]any{"type": "string", "minLength": 1},
-			"kind":     map[string]any{"type": "string", "minLength": 1},
+			"kind":     map[string]any{"type": "string", "const": "generated_from"},
 		},
 		"required": []string{"sourceId", "targetId", "kind"}, "additionalProperties": false,
 	}
@@ -234,7 +270,7 @@ func proposalSchema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"baseRevisions": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "integer", "minimum": 1}},
-			"nodes":         map[string]any{"type": "array", "items": node, "maxItems": 1},
+			"nodes":         map[string]any{"type": "array", "items": node, "maxItems": appagent.MaxProposalNodes},
 			"updates":       map[string]any{"type": "array", "items": update},
 			"edges":         map[string]any{"type": "array", "items": edge},
 			"reasons":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},

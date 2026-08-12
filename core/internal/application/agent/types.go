@@ -49,9 +49,10 @@ const (
 	CandidateStatusAccepted = canvas.CandidateStatusAccepted
 	CandidateStatusRejected = canvas.CandidateStatusRejected
 
-	RolePlanner AgentRole = "planner"
-	RoleCreator AgentRole = "creator"
-	RoleWriter  AgentRole = "writer"
+	RolePlanner      AgentRole = "planner"
+	RoleCreator      AgentRole = "creator"
+	RoleWriter       AgentRole = "writer"
+	RoleOrchestrator AgentRole = "orchestrator"
 
 	EventRunQueued            EventType = "run.queued"
 	EventRunStarted           EventType = "run.started"
@@ -75,6 +76,9 @@ const (
 	EventRunResumed           EventType = "run.resumed"
 	EventGenerationStarted    EventType = "generation.started"
 	EventMessageDelta         EventType = "message.delta"
+	EventReasoningStarted     EventType = "reasoning.started"
+	EventReasoningDelta       EventType = "reasoning.delta"
+	EventReasoningCompleted   EventType = "reasoning.completed"
 	EventValidationCompleted  EventType = "validation.completed"
 	EventCandidateCreated     EventType = "candidate.created"
 	EventCandidateDecision    EventType = "candidate.decision"
@@ -121,6 +125,8 @@ type ProposalSet struct {
 	Questions     []string         `json:"questions"`
 }
 
+const MaxProposalNodes = 20
+
 type ProposalNode struct {
 	ClientID string `json:"clientId"`
 	Kind     string `json:"kind"`
@@ -140,19 +146,20 @@ type ProposalEdge struct {
 }
 
 type Run struct {
-	ID                 string    `json:"id"`
-	WorkID             string    `json:"workId"`
-	Status             RunStatus `json:"status"`
-	Prompt             string    `json:"prompt"`
-	Target             string    `json:"target"`
-	TargetNodeID       string    `json:"targetNodeId,omitempty"`
-	TargetNodeRevision int64     `json:"targetNodeRevision,omitempty"`
-	ProviderID         string    `json:"providerId"`
-	ModelID            string    `json:"modelId"`
-	ContextNodeIDs     []string  `json:"contextNodeIds"`
-	ErrorMessage       string    `json:"errorMessage,omitempty"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	ID                    string    `json:"id"`
+	WorkID                string    `json:"workId"`
+	Status                RunStatus `json:"status"`
+	Prompt                string    `json:"prompt"`
+	Target                string    `json:"target"`
+	TargetNodeID          string    `json:"targetNodeId,omitempty"`
+	TargetNodeRevision    int64     `json:"targetNodeRevision,omitempty"`
+	ProviderID            string    `json:"providerId"`
+	ModelID               string    `json:"modelId"`
+	ConversationSessionID string    `json:"conversationSessionId,omitempty"`
+	ContextNodeIDs        []string  `json:"contextNodeIds"`
+	ErrorMessage          string    `json:"errorMessage,omitempty"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
 }
 
 type Event struct {
@@ -175,6 +182,7 @@ type RunInput struct {
 	TargetNodeRevision      int64
 	ProviderID              string
 	ModelID                 string
+	ConversationSessionID   string
 	ContextNodeIDs          []string
 	ContextNodes            []NodeReference
 	UserResponses           []UserResponse

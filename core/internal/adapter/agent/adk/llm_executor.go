@@ -31,44 +31,53 @@ const (
 type LLMTurnEventType string
 
 const (
-	LLMEventMessageDelta  LLMTurnEventType = "message.delta"
-	LLMEventToolRequested LLMTurnEventType = "tool.requested"
-	LLMEventToolStarted   LLMTurnEventType = "tool.started"
-	LLMEventToolCompleted LLMTurnEventType = "tool.completed"
-	LLMEventToolFailed    LLMTurnEventType = "tool.failed"
-	LLMEventMemoryFailed  LLMTurnEventType = "memory.failed"
-	LLMEventTurnCompleted LLMTurnEventType = "turn.completed"
-	LLMEventTurnPaused    LLMTurnEventType = "turn.paused"
-	LLMEventTurnStopped   LLMTurnEventType = "turn.stopped"
-	LLMEventTurnCancelled LLMTurnEventType = "turn.cancelled"
+	LLMEventMessageDelta       LLMTurnEventType = "message.delta"
+	LLMEventReasoningStarted   LLMTurnEventType = "reasoning.started"
+	LLMEventReasoningDelta     LLMTurnEventType = "reasoning.delta"
+	LLMEventReasoningCompleted LLMTurnEventType = "reasoning.completed"
+	LLMEventArtifactDelta      LLMTurnEventType = "artifact.delta"
+	LLMEventToolRequested      LLMTurnEventType = "tool.requested"
+	LLMEventToolStarted        LLMTurnEventType = "tool.started"
+	LLMEventToolCompleted      LLMTurnEventType = "tool.completed"
+	LLMEventToolFailed         LLMTurnEventType = "tool.failed"
+	LLMEventMemoryFailed       LLMTurnEventType = "memory.failed"
+	LLMEventConversationFailed LLMTurnEventType = "conversation.failed"
+	LLMEventTurnCompleted      LLMTurnEventType = "turn.completed"
+	LLMEventTurnPaused         LLMTurnEventType = "turn.paused"
+	LLMEventTurnStopped        LLMTurnEventType = "turn.stopped"
+	LLMEventTurnCancelled      LLMTurnEventType = "turn.cancelled"
 )
 
 type LLMTurnRequest struct {
-	RunID             string
-	TurnID            string
-	ParentTurnID      string
-	ParentAgentID     string
-	AgentID           string
-	AgentName         string
-	Description       string
-	Instruction       string
-	DefinitionVersion string
-	DefinitionHash    string
-	PromptHash        string
-	ToolsetHash       string
-	ProviderID        string
-	ModelID           string
-	UserID            string
-	SessionID         string
-	Prompt            string
-	AllowedTools      []string
-	ControlTools      []string
-	ToolInvocation    agentcore.ToolInvocation
-	Budget            appharness.BudgetPolicy
-	Context           appharness.ContextPolicy
-	Memory            appharness.MemoryPolicy
-	Output            appharness.OutputContract
-	Resume            *appharness.ResumeInput
+	RunID                   string
+	TurnID                  string
+	ParentTurnID            string
+	ParentAgentID           string
+	AgentID                 string
+	AgentName               string
+	Description             string
+	Instruction             string
+	DefinitionVersion       string
+	DefinitionHash          string
+	PromptHash              string
+	ToolsetHash             string
+	ProviderID              string
+	ModelID                 string
+	ConversationSessionID   string
+	UserID                  string
+	SessionID               string
+	Prompt                  string
+	ConversationUserContent string
+	PublishConversation     bool
+	AllowedTools            []string
+	ControlTools            []string
+	AllowedChildren         []appharness.ChildContract
+	ToolInvocation          agentcore.ToolInvocation
+	Budget                  appharness.BudgetPolicy
+	Context                 appharness.ContextPolicy
+	Memory                  appharness.MemoryPolicy
+	Output                  appharness.OutputContract
+	Resume                  *appharness.ResumeInput
 }
 
 type LLMTurnEvent struct {
@@ -93,14 +102,16 @@ type LLMTurnOutcome = appharness.TurnOutcome
 type LLMTurnEmitter func(LLMTurnEvent) error
 
 type LLMTurnExecutor struct {
-	tools       *agentcore.ToolRegistry
-	resolve     ModelResolver
-	sessions    session.Service
-	checkpoints appharness.CheckpointStore
-	artifacts   appharness.ArtifactStore
-	toolCalls   appharness.ToolCallStore
-	memories    appharness.MemoryStore
-	httpClient  *http.Client
+	tools        *agentcore.ToolRegistry
+	resolve      ModelResolver
+	sessions     session.Service
+	checkpoints  appharness.CheckpointStore
+	artifacts    appharness.ArtifactStore
+	toolCalls    appharness.ToolCallStore
+	memories     appharness.MemoryStore
+	conversation appharness.ConversationStore
+	canvas       appharness.CanvasContextStore
+	httpClient   *http.Client
 }
 
 func NewLLMTurnExecutor(
@@ -112,9 +123,24 @@ func NewLLMTurnExecutor(
 	toolCalls appharness.ToolCallStore,
 	memories appharness.MemoryStore,
 ) *LLMTurnExecutor {
+	return NewLLMTurnExecutorWithConversation(tools, resolve, sessions, checkpoints, artifacts, toolCalls, memories, nil, nil)
+}
+
+func NewLLMTurnExecutorWithConversation(
+	tools *agentcore.ToolRegistry,
+	resolve ModelResolver,
+	sessions session.Service,
+	checkpoints appharness.CheckpointStore,
+	artifacts appharness.ArtifactStore,
+	toolCalls appharness.ToolCallStore,
+	memories appharness.MemoryStore,
+	conversation appharness.ConversationStore,
+	canvas appharness.CanvasContextStore,
+) *LLMTurnExecutor {
 	return &LLMTurnExecutor{
 		tools: tools, resolve: resolve, sessions: sessions, checkpoints: checkpoints,
 		artifacts: artifacts, toolCalls: toolCalls, memories: memories,
+		conversation: conversation, canvas: canvas,
 		httpClient: &http.Client{Timeout: 4 * time.Minute},
 	}
 }
@@ -140,6 +166,7 @@ func (e *LLMTurnExecutor) Run(ctx context.Context, request LLMTurnRequest, emit 
 			return LLMTurnOutcome{}, err
 		} else if found {
 			e.consumeMemoryBestEffort(ctx, request, outcome, emit)
+			e.consumeConversationBestEffort(ctx, request, outcome, emit)
 			return outcome, nil
 		}
 	}
@@ -232,9 +259,11 @@ func (e *LLMTurnExecutor) Run(ctx context.Context, request LLMTurnRequest, emit 
 	}
 	budgeter := contextBudgeter{
 		policy: request.Context, memory: request.Memory, memories: e.memories, artifacts: e.artifacts,
+		conversation: e.conversation, canvas: e.canvas,
 		runID: request.RunID, turnID: request.TurnID, agentID: request.AgentID,
 		workID: request.ToolInvocation.WorkID, query: memoryRecallQuery(request),
-		memoryFrozen: memoryFrozen, frozenMemoryIDs: frozenMemoryIDs,
+		conversationSessionID: request.ConversationSessionID,
+		memoryFrozen:          memoryFrozen, frozenMemoryIDs: frozenMemoryIDs,
 		persist: func(persistCtx context.Context, manifest json.RawMessage) error {
 			return saveRunningCheckpoint(persistCtx, policy.Usage(), manifest)
 		},
@@ -254,16 +283,23 @@ func (e *LLMTurnExecutor) Run(ctx context.Context, request LLMTurnRequest, emit 
 		return LLMTurnOutcome{}, fmt.Errorf("create ADK runner: %w", err)
 	}
 
-	message := turnMessage(request)
+	message, err := e.turnMessage(runCtx, request)
+	if err != nil {
+		return LLMTurnOutcome{}, err
+	}
 	outcome := LLMTurnOutcome{SessionID: request.SessionID, Usage: initialUsage}
-	finalSeen := false
 	lastEventID := ""
+	projector := newLLMEventProjector(policy.project)
+	finalSeen := false
 	var terminalErr error
 runLoop:
 	for event, runErr := range adkRunner.Run(runCtx, request.UserID, request.SessionID, message, agent.RunConfig{
 		StreamingMode: agent.StreamingModeSSE,
 	}) {
 		if runErr != nil {
+			if err := projector.completeReasoning(lastEventID, request.AgentName); err != nil {
+				return e.finish(ctx, request, outcome, lastEventID, fmt.Errorf("complete reasoning phase: %w", err))
+			}
 			outcome.Budget = policy.Usage()
 			if errors.Is(runErr, appharness.ErrBudgetExceeded) || isBudgetDeadline(ctx, runCtx, runErr) {
 				outcome.Status = appharness.TurnStoppedBudget
@@ -282,7 +318,7 @@ runLoop:
 		if event == nil {
 			continue
 		}
-		if err := projectLLMEvent(event, policy.project, &outcome); err != nil {
+		if err := projector.project(event, &outcome); err != nil {
 			outcome.Budget = policy.Usage()
 			outcome.Status = appharness.TurnFailed
 			outcome.StopReason = appharness.StopExecutionFailed
@@ -306,7 +342,7 @@ runLoop:
 				outcome.StopReason = appharness.StopExecutionFailed
 				outcome.Pending = nil
 				terminalErr = policy.ExecutionError()
-			} else if eventNeedsUser(event) {
+			} else if eventNeedsControl(event) {
 				if err := policy.reserveControlTool(runCtx); err != nil {
 					if errors.Is(err, appharness.ErrBudgetExceeded) {
 						outcome.Status = appharness.TurnStoppedBudget
@@ -317,9 +353,14 @@ runLoop:
 					outcome.StopReason = appharness.StopExecutionFailed
 					return e.finish(ctx, request, outcome, lastEventID, err)
 				}
-				outcome.Status = appharness.TurnAwaitingUser
-				outcome.StopReason = appharness.StopUserInputRequired
 				outcome.Pending = pendingAction(event)
+				if outcome.Pending != nil && outcome.Pending.Kind == "child" {
+					outcome.Status = appharness.TurnAwaitingChild
+					outcome.StopReason = appharness.StopChildPending
+				} else {
+					outcome.Status = appharness.TurnAwaitingUser
+					outcome.StopReason = appharness.StopUserInputRequired
+				}
 			} else {
 				outcome.Status = appharness.TurnCompleted
 				outcome.StopReason = appharness.StopFinalResponse
@@ -337,6 +378,9 @@ runLoop:
 		}
 	}
 	if !finalSeen {
+		if err := projector.completeReasoning(lastEventID, request.AgentName); err != nil {
+			return e.finish(ctx, request, outcome, lastEventID, fmt.Errorf("complete reasoning phase: %w", err))
+		}
 		outcome.Budget = policy.Usage()
 		if runCtx.Err() != nil && ctx.Err() == nil {
 			outcome.Status = appharness.TurnStoppedBudget
@@ -352,12 +396,16 @@ runLoop:
 		outcome.StopReason = appharness.StopExecutionFailed
 		return e.finish(ctx, request, outcome, lastEventID, errors.New("LLM agent completed without a final event"))
 	}
+	if outcome.Status == appharness.TurnCompleted && request.Resume != nil && request.Resume.ToolName == DelegateAgentToolName {
+		outcome.Artifact = delegatedArtifactRef(request.Resume.Response)
+	}
 	outcome.Budget = policy.Usage()
 	outcome, err = e.finish(ctx, request, outcome, lastEventID, terminalErr)
 	if err != nil {
 		return outcome, err
 	}
 	e.consumeMemoryBestEffort(ctx, request, outcome, emit)
+	e.consumeConversationBestEffort(ctx, request, outcome, emit)
 	if err := emitTerminalOutcome(emit, lastEventID, request.AgentName, outcome); err != nil {
 		return outcome, fmt.Errorf("%w: %v", appharness.ErrProjectionFailed, err)
 	}
@@ -365,6 +413,19 @@ runLoop:
 		return outcome, fmt.Errorf("%w: %v", appharness.ErrProjectionFailed, err)
 	}
 	return outcome, nil
+}
+
+func delegatedArtifactRef(response map[string]any) *appharness.ArtifactRef {
+	if response == nil {
+		return nil
+	}
+	id, _ := response["artifactId"].(string)
+	kind, _ := response["artifactKind"].(string)
+	schemaVersion, _ := response["artifactSchemaVersion"].(string)
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(kind) == "" || strings.TrimSpace(schemaVersion) == "" {
+		return nil
+	}
+	return &appharness.ArtifactRef{ID: id, Kind: kind, SchemaVersion: schemaVersion}
 }
 
 func (e *LLMTurnExecutor) validate(request LLMTurnRequest, emit LLMTurnEmitter) error {
@@ -448,6 +509,12 @@ func (e *LLMTurnExecutor) additionalTools(request LLMTurnRequest) ([]agentcore.T
 		switch name {
 		case AskUserToolName:
 			tools = append(tools, askUserTool{})
+		case DelegateAgentToolName:
+			tool, err := newDelegateAgentTool(request.AllowedChildren)
+			if err != nil {
+				return nil, nil, err
+			}
+			tools = append(tools, tool)
 		default:
 			return nil, nil, fmt.Errorf("unsupported control tool %q", name)
 		}
@@ -464,23 +531,106 @@ func (e *LLMTurnExecutor) additionalTools(request LLMTurnRequest) ([]agentcore.T
 	return tools, submit, nil
 }
 
-func turnMessage(request LLMTurnRequest) *genai.Content {
+func (e *LLMTurnExecutor) turnMessage(ctx context.Context, request LLMTurnRequest) (*genai.Content, error) {
 	if request.Resume == nil {
-		return genai.NewContentFromText(request.Prompt, genai.RoleUser)
+		return genai.NewContentFromText(request.Prompt, genai.RoleUser), nil
 	}
-	content := genai.NewContentFromFunctionResponse(request.Resume.ToolName, request.Resume.Response, genai.RoleUser)
-	if len(content.Parts) > 0 && content.Parts[0].FunctionResponse != nil {
-		content.Parts[0].FunctionResponse.ID = request.Resume.ToolCallID
+	loaded, err := e.sessions.Get(ctx, &session.GetRequest{
+		AppName: appName, UserID: request.UserID, SessionID: request.SessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load agent session for control response: %w", err)
 	}
-	return content
+	responses, err := controlResponses(loaded.Session, *request.Resume)
+	if err != nil {
+		return nil, err
+	}
+	return &genai.Content{Role: genai.RoleUser, Parts: responses}, nil
+}
+
+func controlResponses(current session.Session, resume appharness.ResumeInput) ([]*genai.Part, error) {
+	if current == nil {
+		return nil, errors.New("agent session is empty while resuming a control call")
+	}
+	callEventIndex := -1
+	for index := current.Events().Len() - 1; index >= 0; index-- {
+		event := current.Events().At(index)
+		if eventHasFunctionCall(event, resume.ToolCallID) {
+			callEventIndex = index
+			break
+		}
+	}
+	if callEventIndex < 0 {
+		return nil, fmt.Errorf("control call %s is missing from agent session", resume.ToolCallID)
+	}
+	answered := make(map[string]struct{})
+	for index := callEventIndex + 1; index < current.Events().Len(); index++ {
+		event := current.Events().At(index)
+		if event == nil || event.Content == nil {
+			continue
+		}
+		for _, part := range event.Content.Parts {
+			if part != nil && part.FunctionResponse != nil {
+				answered[part.FunctionResponse.ID] = struct{}{}
+			}
+		}
+	}
+	callEvent := current.Events().At(callEventIndex)
+	parts := make([]*genai.Part, 0, len(callEvent.Content.Parts))
+	foundSelected := false
+	for _, part := range callEvent.Content.Parts {
+		if part == nil || part.FunctionCall == nil || part.FunctionCall.ID == "" {
+			continue
+		}
+		call := part.FunctionCall
+		if _, exists := answered[call.ID]; exists {
+			continue
+		}
+		response := cancelledControlResponse(call.ID)
+		if call.ID == resume.ToolCallID {
+			foundSelected = true
+			response = resume.Response
+		}
+		parts = append(parts, &genai.Part{FunctionResponse: &genai.FunctionResponse{
+			ID: call.ID, Name: call.Name, Response: response,
+		}})
+	}
+	if !foundSelected {
+		return nil, fmt.Errorf("control call %s has already been answered", resume.ToolCallID)
+	}
+	return parts, nil
+}
+
+func eventHasFunctionCall(event *session.Event, callID string) bool {
+	if event == nil || event.Content == nil {
+		return false
+	}
+	for _, part := range event.Content.Parts {
+		if part != nil && part.FunctionCall != nil && part.FunctionCall.ID == callID {
+			return true
+		}
+	}
+	return false
+}
+
+func cancelledControlResponse(selectedCallID string) map[string]any {
+	return map[string]any{
+		"status": "cancelled",
+		"error": map[string]any{
+			"code":    "superseded_control_call",
+			"message": fmt.Sprintf("Control call %s was cancelled because another action from the same model turn was selected.", selectedCallID),
+		},
+	}
 }
 
 func snapshotFromRequest(request LLMTurnRequest) *appharness.TurnSnapshot {
 	return &appharness.TurnSnapshot{
 		AgentName: request.AgentName, Description: request.Description, Instruction: request.Instruction,
-		ProviderID: request.ProviderID, ModelID: request.ModelID, UserID: request.UserID, Prompt: request.Prompt,
+		ProviderID: request.ProviderID, ModelID: request.ModelID, ConversationSessionID: request.ConversationSessionID, UserID: request.UserID, Prompt: request.Prompt,
+		ConversationUserContent: request.ConversationUserContent, PublishConversation: request.PublishConversation,
 		AllowedTools: append([]string(nil), request.AllowedTools...), ControlTools: append([]string(nil), request.ControlTools...),
-		WorkID: request.ToolInvocation.WorkID, SkillID: request.ToolInvocation.SkillID,
+		AllowedChildren: append([]appharness.ChildContract(nil), request.AllowedChildren...),
+		WorkID:          request.ToolInvocation.WorkID, SkillID: request.ToolInvocation.SkillID,
 		SkillVersion: request.ToolInvocation.SkillVersion, Budget: request.Budget, Output: request.Output,
 		Context: request.Context, Memory: request.Memory,
 	}
@@ -498,7 +648,19 @@ func eventContainsToolResponse(event *session.Event, name string) bool {
 	return false
 }
 
-func projectLLMEvent(event *session.Event, emit LLMTurnEmitter, outcome *LLMTurnOutcome) error {
+const reasoningDeltaChunkBytes = 512
+
+type llmEventProjector struct {
+	emit            LLMTurnEmitter
+	reasoningActive bool
+	reasoningBuffer strings.Builder
+}
+
+func newLLMEventProjector(emit LLMTurnEmitter) *llmEventProjector {
+	return &llmEventProjector{emit: emit}
+}
+
+func (p *llmEventProjector) project(event *session.Event, outcome *LLMTurnOutcome) error {
 	usage := appharness.Usage{}
 	if event.UsageMetadata != nil && !event.Partial {
 		usage.InputTokens = int64(event.UsageMetadata.PromptTokenCount)
@@ -514,13 +676,20 @@ func projectLLMEvent(event *session.Event, emit LLMTurnEmitter, outcome *LLMTurn
 				continue
 			}
 			if part.Text != "" {
-				if event.Partial {
-					if err := emit(LLMTurnEvent{
+				if event.Partial && part.Thought {
+					if err := p.appendReasoning(event.ID, event.Author, part.Text); err != nil {
+						return err
+					}
+				} else if event.Partial {
+					if err := p.completeReasoning(event.ID, event.Author); err != nil {
+						return err
+					}
+					if err := p.emit(LLMTurnEvent{
 						Type: LLMEventMessageDelta, EventID: event.ID, AgentName: event.Author, Text: part.Text,
 					}); err != nil {
 						return err
 					}
-				} else if event.IsFinalResponse() {
+				} else if event.IsFinalResponse() && !part.Thought {
 					if outcome.Final == nil {
 						outcome.Final = &appharness.Message{Role: string(genai.RoleModel)}
 					}
@@ -528,7 +697,24 @@ func projectLLMEvent(event *session.Event, emit LLMTurnEmitter, outcome *LLMTurn
 				}
 			}
 			if part.FunctionCall != nil {
-				if err := emit(LLMTurnEvent{
+				if err := p.completeReasoning(event.ID, event.Author); err != nil {
+					return err
+				}
+				if event.Partial {
+					for _, argument := range part.FunctionCall.PartialArgs {
+						if part.FunctionCall.Name == SubmitArtifactToolName && argument != nil &&
+							argument.JsonPath == "$.artifact" && argument.StringValue != "" {
+							if err := p.emit(LLMTurnEvent{
+								Type: LLMEventArtifactDelta, EventID: event.ID,
+								AgentName: event.Author, Text: argument.StringValue,
+							}); err != nil {
+								return err
+							}
+						}
+					}
+					continue
+				}
+				if err := p.emit(LLMTurnEvent{
 					Type: LLMEventToolRequested, EventID: event.ID, AgentName: event.Author,
 					ToolName: part.FunctionCall.Name, ToolCallID: part.FunctionCall.ID,
 				}); err != nil {
@@ -536,14 +722,54 @@ func projectLLMEvent(event *session.Event, emit LLMTurnEmitter, outcome *LLMTurn
 				}
 			}
 			if part.FunctionResponse != nil {
+				if err := p.completeReasoning(event.ID, event.Author); err != nil {
+					return err
+				}
 				projected := projectToolResponse(event, part.FunctionResponse)
-				if err := emit(projected); err != nil {
+				if err := p.emit(projected); err != nil {
 					return err
 				}
 			}
 		}
 	}
+	if event.IsFinalResponse() {
+		return p.completeReasoning(event.ID, event.Author)
+	}
 	return nil
+}
+
+func (p *llmEventProjector) appendReasoning(eventID, agentName, delta string) error {
+	if !p.reasoningActive {
+		if err := p.emit(LLMTurnEvent{Type: LLMEventReasoningStarted, EventID: eventID, AgentName: agentName}); err != nil {
+			return err
+		}
+		p.reasoningActive = true
+	}
+	p.reasoningBuffer.WriteString(delta)
+	if p.reasoningBuffer.Len() < reasoningDeltaChunkBytes {
+		return nil
+	}
+	return p.flushReasoning(eventID, agentName)
+}
+
+func (p *llmEventProjector) flushReasoning(eventID, agentName string) error {
+	if p.reasoningBuffer.Len() == 0 {
+		return nil
+	}
+	delta := p.reasoningBuffer.String()
+	p.reasoningBuffer.Reset()
+	return p.emit(LLMTurnEvent{Type: LLMEventReasoningDelta, EventID: eventID, AgentName: agentName, Text: delta})
+}
+
+func (p *llmEventProjector) completeReasoning(eventID, agentName string) error {
+	if !p.reasoningActive {
+		return nil
+	}
+	if err := p.flushReasoning(eventID, agentName); err != nil {
+		return err
+	}
+	p.reasoningActive = false
+	return p.emit(LLMTurnEvent{Type: LLMEventReasoningCompleted, EventID: eventID, AgentName: agentName})
 }
 
 func (e *LLMTurnExecutor) ensureSession(ctx context.Context, request LLMTurnRequest) error {
@@ -648,8 +874,8 @@ func (e *LLMTurnExecutor) resumeCheckpoint(ctx context.Context, request LLMTurnR
 	if err := validateCheckpointIdentity(checkpoint, request); err != nil {
 		return appharness.Checkpoint{}, err
 	}
-	if checkpoint.Status != appharness.TurnAwaitingUser || checkpoint.Pending == nil {
-		return appharness.Checkpoint{}, fmt.Errorf("turn %s is not awaiting user input", request.TurnID)
+	if (checkpoint.Status != appharness.TurnAwaitingUser && checkpoint.Status != appharness.TurnAwaitingChild) || checkpoint.Pending == nil {
+		return appharness.Checkpoint{}, fmt.Errorf("turn %s is not awaiting a control response", request.TurnID)
 	}
 	if request.Resume == nil || request.Resume.ToolCallID == "" || request.Resume.ToolName == "" || request.Resume.Response == nil {
 		return appharness.Checkpoint{}, errors.New("resume function response is incomplete")
@@ -677,25 +903,54 @@ func (e *LLMTurnExecutor) Resume(ctx context.Context, runID, answer string, emit
 	if checkpoint.Status != appharness.TurnAwaitingUser || checkpoint.Pending == nil || checkpoint.Snapshot == nil {
 		return LLMTurnOutcome{}, fmt.Errorf("run %s has no resumable user-input checkpoint", runID)
 	}
+	return e.resumeControl(ctx, checkpoint, appharness.ResumeInput{
+		ToolCallID: checkpoint.Pending.ToolCallID, ToolName: checkpoint.Pending.ToolName,
+		Response: askUserResponse(answer),
+	}, emit)
+}
+
+func (e *LLMTurnExecutor) Continue(
+	ctx context.Context,
+	turnID string,
+	response map[string]any,
+	emit LLMTurnEmitter,
+) (LLMTurnOutcome, error) {
+	checkpoint, err := e.checkpoints.GetCheckpoint(ctx, turnID)
+	if err != nil {
+		return LLMTurnOutcome{}, err
+	}
+	if checkpoint.Status != appharness.TurnAwaitingChild || checkpoint.Pending == nil || checkpoint.Snapshot == nil {
+		return LLMTurnOutcome{}, fmt.Errorf("turn %s has no resumable child checkpoint", turnID)
+	}
+	return e.resumeControl(ctx, checkpoint, appharness.ResumeInput{
+		ToolCallID: checkpoint.Pending.ToolCallID, ToolName: checkpoint.Pending.ToolName, Response: response,
+	}, emit)
+}
+
+func (e *LLMTurnExecutor) resumeControl(
+	ctx context.Context,
+	checkpoint appharness.Checkpoint,
+	resume appharness.ResumeInput,
+	emit LLMTurnEmitter,
+) (LLMTurnOutcome, error) {
 	snapshot := checkpoint.Snapshot
 	request := LLMTurnRequest{
 		RunID: checkpoint.RunID, TurnID: checkpoint.TurnID, AgentID: checkpoint.AgentID,
 		AgentName: snapshot.AgentName, Description: snapshot.Description, Instruction: snapshot.Instruction,
 		DefinitionVersion: checkpoint.DefinitionVersion, DefinitionHash: checkpoint.DefinitionHash,
 		PromptHash: checkpoint.PromptHash, ToolsetHash: checkpoint.ToolsetHash,
-		ProviderID: snapshot.ProviderID, ModelID: snapshot.ModelID, UserID: snapshot.UserID,
+		ProviderID: snapshot.ProviderID, ModelID: snapshot.ModelID, ConversationSessionID: snapshot.ConversationSessionID, UserID: snapshot.UserID,
 		SessionID: checkpoint.SessionID, Prompt: snapshot.Prompt,
-		AllowedTools: append([]string(nil), snapshot.AllowedTools...),
-		ControlTools: append([]string(nil), snapshot.ControlTools...),
+		ConversationUserContent: snapshot.ConversationUserContent, PublishConversation: snapshot.PublishConversation,
+		AllowedTools:    append([]string(nil), snapshot.AllowedTools...),
+		ControlTools:    append([]string(nil), snapshot.ControlTools...),
+		AllowedChildren: append([]appharness.ChildContract(nil), snapshot.AllowedChildren...),
 		ToolInvocation: agentcore.ToolInvocation{
 			RunID: checkpoint.RunID, TurnID: checkpoint.TurnID, WorkID: snapshot.WorkID,
 			SkillID: snapshot.SkillID, SkillVersion: snapshot.SkillVersion,
 		},
 		Budget: snapshot.Budget, Context: snapshot.Context, Memory: snapshot.Memory, Output: snapshot.Output,
-		Resume: &appharness.ResumeInput{
-			ToolCallID: checkpoint.Pending.ToolCallID, ToolName: checkpoint.Pending.ToolName,
-			Response: askUserResponse(answer),
-		},
+		Resume: &resume,
 	}
 	return e.Run(ctx, request, emit)
 }
@@ -732,7 +987,7 @@ func isBudgetDeadline(parent, run context.Context, err error) bool {
 	return parent.Err() == nil && run.Err() != nil && errors.Is(err, context.DeadlineExceeded)
 }
 
-func eventNeedsUser(event *session.Event) bool {
+func eventNeedsControl(event *session.Event) bool {
 	return len(event.LongRunningToolIDs) > 0 || len(event.Actions.RequestedToolConfirmations) > 0 || event.Actions.SkipSummarization
 }
 
@@ -775,6 +1030,9 @@ func pendingAction(event *session.Event) *appharness.PendingAction {
 			}
 			if part.FunctionCall != nil && (action.ToolCallID == "" || part.FunctionCall.ID == action.ToolCallID) {
 				action.ToolName = part.FunctionCall.Name
+				if action.ToolName == DelegateAgentToolName {
+					action.Kind = "child"
+				}
 				if payload, err := json.Marshal(part.FunctionCall.Args); err == nil {
 					action.Payload = payload
 				}
@@ -785,6 +1043,9 @@ func pendingAction(event *session.Event) *appharness.PendingAction {
 				break
 			}
 		}
+	}
+	if action.ToolName == DelegateAgentToolName {
+		action.Kind = "child"
 	}
 	return action
 }

@@ -410,9 +410,17 @@ func (r *CanvasRepository) AcceptCandidate(ctx context.Context, input canvas.Acc
 		if candidate.Status == agent.CandidateStatusRejected {
 			return canvas.ErrCandidateResolved
 		}
+		kind, validKind := canvas.ParseNodeKind(candidate.Kind)
+		if !validKind {
+			return canvas.ErrInvalidNode
+		}
+		candidate.Kind = string(kind)
 		if candidate.CandidateType == "version" {
 			accepted, err = acceptVersionCandidate(tx, input, candidate)
 			return err
+		}
+		if !canvas.IsManuallyCreatableNodeKind(kind) {
+			return canvas.ErrInvalidNode
 		}
 		title, now := strings.TrimSpace(input.Title), time.Now().UTC()
 		if title == "" {
@@ -443,6 +451,9 @@ func (r *CanvasRepository) AcceptCandidate(ctx context.Context, input canvas.Acc
 		if update.RowsAffected == 0 {
 			return canvas.ErrCandidateResolved
 		}
+		if err := resolveProposalEdges(tx, input.WorkID, input.CandidateID, accepted.ID, now); err != nil {
+			return err
+		}
 		return nil
 	})
 	return canvasNodeFromModel(accepted), err
@@ -459,6 +470,12 @@ func acceptVersionCandidate(tx *gorm.DB, input canvas.AcceptCandidateInput, cand
 	node, err := getCanvasNode(tx, candidate.WorkID, candidate.NodeID)
 	if err != nil {
 		return canvasNodeModel{}, err
+	}
+	if candidate.BaseVersionID != "" && node.CurrentVersionID != candidate.BaseVersionID {
+		return canvasNodeModel{}, canvas.ErrRevisionConflict
+	}
+	if normalizeLegacyCanvasKind(node.Kind) != normalizeLegacyCanvasKind(candidate.Kind) {
+		return canvasNodeModel{}, canvas.ErrInvalidNode
 	}
 	now, title := time.Now().UTC(), strings.TrimSpace(input.Title)
 	if title == "" {
@@ -478,6 +495,9 @@ func acceptVersionCandidate(tx *gorm.DB, input canvas.AcceptCandidateInput, cand
 	if update.RowsAffected == 0 {
 		return canvasNodeModel{}, canvas.ErrCandidateResolved
 	}
+	if err := resolveProposalEdges(tx, input.WorkID, input.CandidateID, candidate.NodeID, now); err != nil {
+		return canvasNodeModel{}, err
+	}
 	return node, nil
 }
 
@@ -490,9 +510,19 @@ func valueOrDefault(value, fallback string) string {
 
 func (r *CanvasRepository) RejectCandidate(ctx context.Context, workID, candidateID string) error {
 	now := time.Now().UTC()
-	result := r.database.WithContext(ctx).Model(&agentCandidateModel{}).Where("work_id = ? AND id = ? AND status = ?", workID, candidateID, agent.CandidateStatusPending).Updates(map[string]any{"status": agent.CandidateStatusRejected, "decided_at": now})
-	if result.Error != nil {
-		return fmt.Errorf("reject canvas candidate: %w", result.Error)
+	var result *gorm.DB
+	err := r.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result = tx.Model(&agentCandidateModel{}).Where("work_id = ? AND id = ? AND status = ?", workID, candidateID, agent.CandidateStatusPending).Updates(map[string]any{"status": agent.CandidateStatusRejected, "decided_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("reject canvas candidate: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		return cancelProposalEdges(tx, workID, candidateID, now)
+	})
+	if err != nil {
+		return err
 	}
 	if result.RowsAffected > 0 {
 		return nil
@@ -552,7 +582,7 @@ func (r *CanvasRepository) SwitchNodeVersion(ctx context.Context, workID, nodeID
 }
 
 func canvasNodeFromModel(model canvasNodeModel) canvas.Node {
-	return canvas.Node{ID: model.ID, WorkID: model.WorkID, Revision: model.Revision, Kind: canvas.NodeKind(model.Kind), Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt, CurrentVersionID: model.CurrentVersionID}
+	return canvas.Node{ID: model.ID, WorkID: model.WorkID, Revision: model.Revision, Kind: canvas.NodeKind(normalizeLegacyCanvasKind(model.Kind)), Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt, CurrentVersionID: model.CurrentVersionID}
 }
 
 func canvasNodesFromModels(models []canvasNodeModel) []canvas.Node {
@@ -587,5 +617,14 @@ func candidateFromStoredModel(model agentCandidateModel, contextIDs []string) ag
 	if model.CandidateType == "version" && model.NodeID != "" {
 		contextIDs = []string{model.NodeID}
 	}
-	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: model.Kind, CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: append([]string{}, contextIDs...), AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}
+	return agent.Candidate{ID: model.ID, RunID: model.RunID, WorkID: model.WorkID, SkillID: model.SkillID, SkillVersion: model.SkillVersion, Status: agent.CandidateStatus(model.Status), Kind: normalizeLegacyCanvasKind(model.Kind), CandidateType: model.CandidateType, NodeID: model.NodeID, BaseVersionID: model.BaseVersionID, Reason: model.Reason, ChangeScore: model.ChangeScore, Title: model.Title, Content: model.Content, X: model.X, Y: model.Y, ContextNodeIDs: append([]string{}, contextIDs...), AcceptedNodeID: model.AcceptedNodeID, CreatedAt: model.CreatedAt, DecidedAt: model.DecidedAt}
+}
+
+func normalizeLegacyCanvasKind(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "worldview":
+		return string(canvas.NodeKindWorld)
+	default:
+		return strings.TrimSpace(kind)
+	}
 }

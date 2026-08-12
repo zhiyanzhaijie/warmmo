@@ -139,6 +139,7 @@ function CanvasWorkspace({ workId }: { workId: string }) {
         onModelChange={setModel}
       />
       <CollaborativeAgentDrawer
+        key={workId}
         canvasNodes={nodesQuery.data ?? []}
         model={model}
         workId={workId}

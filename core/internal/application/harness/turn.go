@@ -89,22 +89,26 @@ type TurnCommand struct {
 }
 
 type TurnSnapshot struct {
-	AgentName    string         `json:"agentName"`
-	Description  string         `json:"description"`
-	Instruction  string         `json:"instruction"`
-	ProviderID   string         `json:"providerId"`
-	ModelID      string         `json:"modelId"`
-	UserID       string         `json:"userId"`
-	Prompt       string         `json:"prompt"`
-	AllowedTools []string       `json:"allowedTools"`
-	ControlTools []string       `json:"controlTools,omitempty"`
-	WorkID       string         `json:"workId"`
-	SkillID      string         `json:"skillId,omitempty"`
-	SkillVersion string         `json:"skillVersion,omitempty"`
-	Budget       BudgetPolicy   `json:"budget"`
-	Context      ContextPolicy  `json:"context"`
-	Memory       MemoryPolicy   `json:"memory"`
-	Output       OutputContract `json:"output"`
+	AgentName               string          `json:"agentName"`
+	Description             string          `json:"description"`
+	Instruction             string          `json:"instruction"`
+	ProviderID              string          `json:"providerId"`
+	ModelID                 string          `json:"modelId"`
+	ConversationSessionID   string          `json:"conversationSessionId,omitempty"`
+	UserID                  string          `json:"userId"`
+	Prompt                  string          `json:"prompt"`
+	ConversationUserContent string          `json:"conversationUserContent,omitempty"`
+	PublishConversation     bool            `json:"publishConversation,omitempty"`
+	AllowedTools            []string        `json:"allowedTools"`
+	ControlTools            []string        `json:"controlTools,omitempty"`
+	AllowedChildren         []ChildContract `json:"allowedChildren,omitempty"`
+	WorkID                  string          `json:"workId"`
+	SkillID                 string          `json:"skillId,omitempty"`
+	SkillVersion            string          `json:"skillVersion,omitempty"`
+	Budget                  BudgetPolicy    `json:"budget"`
+	Context                 ContextPolicy   `json:"context"`
+	Memory                  MemoryPolicy    `json:"memory"`
+	Output                  OutputContract  `json:"output"`
 }
 
 type ResumeInput struct {
@@ -150,6 +154,7 @@ type Checkpoint struct {
 
 type CheckpointStore interface {
 	GetCheckpoint(context.Context, string) (Checkpoint, error)
+	FindLatestCheckpoint(context.Context, string, string) (Checkpoint, error)
 	FindPendingCheckpoint(context.Context, string) (Checkpoint, error)
 	AttachChildRun(context.Context, string, string) (Checkpoint, error)
 	SaveCheckpoint(context.Context, Checkpoint) (Checkpoint, error)

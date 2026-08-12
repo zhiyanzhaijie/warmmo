@@ -38,6 +38,23 @@ func (s *AgentCheckpointStore) GetCheckpoint(ctx context.Context, turnID string)
 	return checkpointFromModel(model)
 }
 
+func (s *AgentCheckpointStore) FindLatestCheckpoint(ctx context.Context, runID, agentID string) (appharness.Checkpoint, error) {
+	if s == nil || s.database == nil {
+		return appharness.Checkpoint{}, errors.New("agent checkpoint store is not configured")
+	}
+	var model agentTurnCheckpointModel
+	err := s.database.WithContext(ctx).
+		Where("run_id = ? AND agent_id = ?", runID, agentID).
+		Order("updated_at DESC").First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return appharness.Checkpoint{}, fmt.Errorf("%w: latest run %s agent %s", appharness.ErrCheckpointNotFound, runID, agentID)
+	}
+	if err != nil {
+		return appharness.Checkpoint{}, fmt.Errorf("find latest agent turn checkpoint: %w", err)
+	}
+	return checkpointFromModel(model)
+}
+
 func (s *AgentCheckpointStore) FindPendingCheckpoint(ctx context.Context, runID string) (appharness.Checkpoint, error) {
 	if s == nil || s.database == nil {
 		return appharness.Checkpoint{}, errors.New("agent checkpoint store is not configured")

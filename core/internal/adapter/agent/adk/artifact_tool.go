@@ -1,13 +1,10 @@
 package adk
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"sort"
 	"sync"
 
 	agentcore "warmmo/core/internal/adapter/agent/core"
@@ -17,7 +14,7 @@ import (
 const SubmitArtifactToolName = "submit_artifact"
 
 type submitArtifactTool struct {
-	contract appharness.OutputContract
+	artifact appharness.ArtifactSchema
 	store    appharness.ArtifactStore
 	runID    string
 	turnID   string
@@ -34,35 +31,20 @@ func newSubmitArtifactTool(
 	turnID string,
 	agentID string,
 ) (*submitArtifactTool, error) {
-	if contract.Kind != appharness.OutputKindArtifact || len(contract.Artifacts) == 0 {
-		return nil, errors.New("artifact output contract is required")
+	if contract.Kind != appharness.OutputKindArtifact || len(contract.Artifacts) != 1 {
+		return nil, errors.New("artifact turn requires exactly one output schema")
 	}
 	if store == nil {
 		return nil, errors.New("artifact store is required")
 	}
-	return &submitArtifactTool{contract: contract, store: store, runID: runID, turnID: turnID, agentID: agentID}, nil
+	return &submitArtifactTool{artifact: contract.Artifacts[0], store: store, runID: runID, turnID: turnID, agentID: agentID}, nil
 }
 
 func (t *submitArtifactTool) Spec() agentcore.ToolSpec {
-	kinds := make([]string, 0, len(t.contract.Artifacts))
-	artifactSchemas := make([]any, 0, len(t.contract.Artifacts))
-	for _, artifact := range t.contract.Artifacts {
-		kinds = append(kinds, artifact.Kind)
-		artifactSchemas = append(artifactSchemas, artifact.Schema)
-	}
-	sort.Strings(kinds)
 	return agentcore.ToolSpec{
 		Name:        SubmitArtifactToolName,
-		Description: "Submit the final typed artifact for this agent turn. Call exactly once when the artifact is complete.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"kind":     map[string]any{"type": "string", "enum": kinds},
-				"artifact": map[string]any{"oneOf": artifactSchemas},
-			},
-			"required":             []string{"kind", "artifact"},
-			"additionalProperties": false,
-		},
+		Description: "Submit the complete final artifact for this turn. The artifact kind is fixed by the agent contract; pass the artifact fields directly and call exactly once.",
+		InputSchema: submitArtifactInputSchema(t.artifact.Schema),
 		OutputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -79,40 +61,24 @@ func (t *submitArtifactTool) Spec() agentcore.ToolSpec {
 }
 
 func (t *submitArtifactTool) Call(ctx context.Context, invocation agentcore.ToolInvocation) (any, error) {
-	var submission struct {
-		Kind     string          `json:"kind"`
-		Artifact json.RawMessage `json:"artifact"`
+	payload, encoded, err := decodeSubmittedArtifact(invocation.Args, t.artifact.Schema)
+	if err != nil {
+		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, err)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(invocation.Args))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&submission); err != nil {
-		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("decode artifact submission: %w", err))
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, errors.New("artifact submission must contain exactly one JSON object"))
-	}
-	contract, ok := t.contract.Artifact(submission.Kind)
-	if !ok {
-		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("artifact kind %q is not allowed", submission.Kind))
-	}
-	resolved, err := resolvedSchemaFromMap(contract.Schema)
+	resolved, err := resolvedSchemaFromMap(t.artifact.Schema)
 	if err != nil {
 		return nil, agentcore.NewToolError(agentcore.ToolErrorInternal, false, fmt.Errorf("resolve artifact schema: %w", err))
-	}
-	var payload any
-	if err := json.Unmarshal(submission.Artifact, &payload); err != nil {
-		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("decode artifact payload: %w", err))
 	}
 	if resolved == nil {
 		return nil, agentcore.NewToolError(agentcore.ToolErrorInternal, false, errors.New("artifact schema is empty"))
 	}
 	if err := resolved.Validate(payload); err != nil {
-		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("artifact does not match %s: %w", contract.Kind, err))
+		return nil, agentcore.NewToolError(agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("artifact does not match %s: %w", t.artifact.Kind, err))
 	}
 	artifact := appharness.Artifact{
-		Ref:   appharness.ArtifactRef{ID: t.turnID, Kind: contract.Kind, SchemaVersion: contract.SchemaVersion},
+		Ref:   appharness.ArtifactRef{ID: t.turnID, Kind: t.artifact.Kind, SchemaVersion: t.artifact.SchemaVersion},
 		RunID: t.runID, TurnID: t.turnID, AgentID: t.agentID,
-		Payload: append(json.RawMessage(nil), submission.Artifact...),
+		Payload: append(json.RawMessage(nil), encoded...),
 	}
 	stored, err := t.store.SaveArtifact(ctx, artifact)
 	if err != nil {
@@ -127,6 +93,51 @@ func (t *submitArtifactTool) Call(ctx context.Context, invocation agentcore.Tool
 		"kind":          stored.Ref.Kind,
 		"schemaVersion": stored.Ref.SchemaVersion,
 	}, nil
+}
+
+func submitArtifactInputSchema(schema map[string]any) map[string]any {
+	if schema["type"] == "object" {
+		return schema
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"value": schema,
+		},
+		"required":             []string{"value"},
+		"additionalProperties": false,
+	}
+}
+
+func decodeSubmittedArtifact(arguments json.RawMessage, schema map[string]any) (any, json.RawMessage, error) {
+	var submitted any
+	if err := json.Unmarshal(arguments, &submitted); err != nil {
+		return nil, nil, fmt.Errorf("decode artifact submission: %w", err)
+	}
+	if schema["type"] == "object" {
+		object, ok := submitted.(map[string]any)
+		if !ok {
+			return nil, nil, errors.New("artifact submission must be an object")
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			return nil, nil, fmt.Errorf("encode artifact submission: %w", err)
+		}
+		return object, encoded, nil
+	}
+	wrapper, ok := submitted.(map[string]any)
+	if !ok || len(wrapper) != 1 {
+		return nil, nil, errors.New("artifact submission requires only the value field")
+	}
+	value, exists := wrapper["value"]
+	if !exists {
+		return nil, nil, errors.New("artifact submission requires the value field")
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode artifact submission: %w", err)
+	}
+	return value, encoded, nil
 }
 
 func (t *submitArtifactTool) Submitted() *appharness.ArtifactRef {

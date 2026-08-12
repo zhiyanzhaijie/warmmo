@@ -4,6 +4,10 @@ import {
   flowNodeEdgeTargetHandleId,
 } from '@/features/canvas/flownode/handles'
 import type { StoryFlowNode } from '@/features/canvas/flownode/types'
+import {
+  isCanvasNodeKind,
+  isChapterArchiveProtectedNodeKind,
+} from '@/features/canvas/nodes/definitions'
 import type { AgentCandidate, CanvasEdge, CanvasNode } from '@/types/canvas'
 
 const emptyHiddenNodeIds: ReadonlySet<string> = new Set()
@@ -38,8 +42,10 @@ export function toFlowNodes(
   const result: StoryFlowNode[] = []
 
   for (const node of nodes) {
+    if (!isCanvasNodeKind(node.kind)) continue
     if (hiddenNodeIds.has(node.id)) continue
-    const archiveLocked = archiveOptions.lockedNodeIds.has(node.id)
+    const archiveProtected = isChapterArchiveProtectedNodeKind(node.kind)
+    const archiveLocked = archiveProtected && archiveOptions.lockedNodeIds.has(node.id)
     const isArchivedChapter = archiveLocked && node.kind === 'chapter-outline'
     result.push({
       id: node.id,
@@ -55,7 +61,7 @@ export function toFlowNodes(
         revision: node.revision,
         layerId: 'main',
         contextTags: [],
-        archiveStateResolved: archiveOptions.stateResolved,
+        archiveStateResolved: !archiveProtected || archiveOptions.stateResolved,
         archiveLocked,
         archiveExpanded: isArchivedChapter
           ? archiveOptions.expandedChapterNodeIds.has(node.id)
@@ -71,6 +77,7 @@ export function toFlowNodes(
   }
 
   for (const candidate of candidates) {
+    if (!isCanvasNodeKind(candidate.kind)) continue
     if (candidate.nodeId !== undefined && hiddenNodeIds.has(candidate.nodeId)) continue
     result.push({
       id: `candidate:${candidate.id}`,
@@ -86,7 +93,7 @@ export function toFlowNodes(
         revision: 0,
         layerId: 'candidate',
         contextTags: [],
-        archiveStateResolved: archiveOptions.stateResolved,
+        archiveStateResolved: true,
         archiveLocked: false,
         candidateType: candidate.candidateType,
         candidateReason: candidate.reason,

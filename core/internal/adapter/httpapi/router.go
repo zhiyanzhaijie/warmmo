@@ -19,6 +19,7 @@ func NewRouter(runtimeController *RuntimeController, providerController *Provide
 	router.HandleFunc("GET /api/v1/work-folders", workController.ListFolders)
 	router.HandleFunc("POST /api/v1/work-folders", workController.CreateFolder)
 	router.HandleFunc("POST /api/v1/works/{workID}/agent-runs", agentController.CreateRun)
+	router.HandleFunc("GET /api/v1/works/{workID}/agent-conversation", agentController.GetConversation)
 	router.HandleFunc("GET /api/v1/agent-runs/{runID}", agentController.GetRun)
 	router.HandleFunc("GET /api/v1/agent-runs/{runID}/events", agentController.StreamEvents)
 	router.HandleFunc("POST /api/v1/agent-runs/{runID}/responses", agentController.RespondToRun)

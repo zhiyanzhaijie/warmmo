@@ -106,10 +106,52 @@ export interface AgentRun {
   targetNodeId?: string
   providerId: string
   modelId: string
+  conversationSessionId?: string
   contextNodeIds: string[]
   errorMessage?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface AgentConversationUsage {
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+}
+
+export interface AgentConversationTurn {
+  id: string
+  workId: string
+  sessionId: string
+  runId: string
+  agentId: string
+  agentName: string
+  providerId: string
+  modelId: string
+  userContent: string
+  assistantContent: string
+  status: string
+  usage: AgentConversationUsage
+  createdAt: string
+}
+
+export interface AgentConversationSession {
+  id: string
+  workId: string
+  title: string
+  providerId: string
+  modelId: string
+  contextWindowTokens: number | null
+  latestUsage: AgentConversationUsage
+  turnCount: number
+  createdAt: string
+  updatedAt: string
+  turns: AgentConversationTurn[]
+}
+
+export interface AgentConversationSnapshot {
+  workId: string
+  sessions: AgentConversationSession[]
 }
 
 export interface AgentEvent {

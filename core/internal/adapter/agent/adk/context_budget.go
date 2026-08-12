@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -23,19 +24,23 @@ const (
 	compactionArtifactKind = "context_compaction_v1"
 	maxRecallBytes         = 6 * 1024
 	maxSummaryBytes        = 4 * 1024
+	maxAmbientContextBytes = 12 * 1024
 )
 
 type contextBudgeter struct {
-	policy    appharness.ContextPolicy
-	memory    appharness.MemoryPolicy
-	memories  appharness.MemoryStore
-	artifacts appharness.ArtifactStore
-	runID     string
-	turnID    string
-	agentID   string
-	workID    string
-	query     string
-	persist   func(context.Context, json.RawMessage) error
+	policy                appharness.ContextPolicy
+	memory                appharness.MemoryPolicy
+	memories              appharness.MemoryStore
+	artifacts             appharness.ArtifactStore
+	conversation          appharness.ConversationStore
+	canvas                appharness.CanvasContextStore
+	runID                 string
+	turnID                string
+	agentID               string
+	workID                string
+	conversationSessionID string
+	query                 string
+	persist               func(context.Context, json.RawMessage) error
 
 	recallMu        sync.Mutex
 	memoryFrozen    bool
@@ -43,6 +48,10 @@ type contextBudgeter struct {
 	recallLoaded    bool
 	recalled        []appharness.MemoryRecord
 	recallErr       error
+	ambientMu       sync.Mutex
+	ambientLoaded   bool
+	ambientContent  *genai.Content
+	ambientErr      error
 }
 
 func (b *contextBudgeter) beforeModel(ctx agent.CallbackContext, request *model.LLMRequest) (*model.LLMResponse, error) {
@@ -52,12 +61,26 @@ func (b *contextBudgeter) beforeModel(ctx agent.CallbackContext, request *model.
 	if err := validateContextPolicy(b.policy); err != nil {
 		return nil, err
 	}
+	if b.policy.ReservedOutputTokens > math.MaxInt32 {
+		return nil, errors.New("reserved output token budget exceeds the model request limit")
+	}
+	if request.Config == nil {
+		request.Config = &genai.GenerateContentConfig{}
+	}
+	request.Config.MaxOutputTokens = int32(b.policy.ReservedOutputTokens)
 	recalled, recallContent, err := b.recall(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ambientContent, err := b.ambient(ctx)
 	if err != nil {
 		return nil, err
 	}
 	overhead := estimateRequestOverhead(request)
 	available := b.policy.ModelWindowTokens - b.policy.ReservedOutputTokens - b.policy.SafetyMarginTokens - overhead
+	if ambientContent != nil {
+		available -= estimateContentTokens(ambientContent)
+	}
 	if recallContent != nil {
 		available -= estimateContentTokens(recallContent)
 	}
@@ -65,6 +88,9 @@ func (b *contextBudgeter) beforeModel(ctx agent.CallbackContext, request *model.
 		return nil, fmt.Errorf("%w: system and tool declarations leave %d tokens", appharness.ErrContextBudgetExceeded, available)
 	}
 	before := overhead + estimateContentsTokens(request.Contents)
+	if ambientContent != nil {
+		before += estimateContentTokens(ambientContent)
+	}
 	if recallContent != nil {
 		before += estimateContentTokens(recallContent)
 	}
@@ -81,8 +107,15 @@ func (b *contextBudgeter) beforeModel(ctx agent.CallbackContext, request *model.
 		summaryRef = &artifact.Ref
 		compacted[0] = compactionContent(summary, artifact.Ref)
 	}
+	prefix := make([]*genai.Content, 0, 3)
+	if ambientContent != nil {
+		prefix = append(prefix, ambientContent)
+	}
 	if recallContent != nil {
-		compacted = append([]*genai.Content{recallContent}, compacted...)
+		prefix = append(prefix, recallContent)
+	}
+	if len(prefix) > 0 {
+		compacted = append(prefix, compacted...)
 	}
 	after := overhead + estimateContentsTokens(compacted)
 	if after > b.policy.ModelWindowTokens-b.policy.ReservedOutputTokens-b.policy.SafetyMarginTokens {
@@ -154,6 +187,48 @@ func (b *contextBudgeter) recall(ctx context.Context) ([]appharness.MemoryRecord
 		return nil, nil, nil
 	}
 	return kept, genai.NewContentFromText(strings.TrimSpace(builder.String()), genai.RoleUser), nil
+}
+
+func (b *contextBudgeter) ambient(ctx context.Context) (*genai.Content, error) {
+	b.ambientMu.Lock()
+	defer b.ambientMu.Unlock()
+	if b.ambientLoaded {
+		return b.ambientContent, b.ambientErr
+	}
+	b.ambientLoaded = true
+	blocks := make([]string, 0, 2)
+	if b.canvas != nil {
+		value, err := b.canvas.BuildContext(ctx, b.workID, maxAmbientContextBytes/2)
+		if err != nil {
+			b.ambientErr = fmt.Errorf("build canvas conversation context: %w", err)
+			return nil, b.ambientErr
+		}
+		if strings.TrimSpace(value) != "" {
+			blocks = append(blocks, value)
+		}
+	}
+	if b.conversation != nil {
+		var value string
+		var err error
+		if sessionStore, ok := b.conversation.(appharness.SessionConversationStore); ok && strings.TrimSpace(b.conversationSessionID) != "" {
+			value, err = sessionStore.BuildSessionContext(ctx, b.workID, b.conversationSessionID, maxAmbientContextBytes/2)
+		} else {
+			value, err = b.conversation.BuildContext(ctx, b.workID, maxAmbientContextBytes/2)
+		}
+		if err != nil {
+			b.ambientErr = fmt.Errorf("build agent conversation context: %w", err)
+			return nil, b.ambientErr
+		}
+		if strings.TrimSpace(value) != "" {
+			blocks = append(blocks, value)
+		}
+	}
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	content := genai.NewContentFromText(strings.Join(blocks, "\n\n"), genai.RoleUser)
+	b.ambientContent = content
+	return content, nil
 }
 
 func (b *contextBudgeter) recallEnabled() bool {

@@ -55,6 +55,27 @@ type OutputContract struct {
 	Artifacts []ArtifactSchema `json:"artifacts,omitempty"`
 }
 
+type ChildContract struct {
+	AgentID     string         `json:"agentId"`
+	InputSchema map[string]any `json:"inputSchema"`
+}
+
+func (c *ChildContract) UnmarshalJSON(data []byte) error {
+	var legacy string
+	if json.Unmarshal(data, &legacy) == nil {
+		c.AgentID = legacy
+		c.InputSchema = map[string]any{"type": "object", "additionalProperties": true}
+		return nil
+	}
+	type contract ChildContract
+	var decoded contract
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = ChildContract(decoded)
+	return nil
+}
+
 const OutputKindArtifact = "artifact"
 const OutputKindText = "text"
 
@@ -68,20 +89,20 @@ func (c OutputContract) Artifact(kind string) (ArtifactSchema, bool) {
 }
 
 type AgentDefinition struct {
-	ID              string         `json:"id"`
-	Version         string         `json:"version"`
-	Description     string         `json:"description"`
-	Name            string         `json:"name"`
-	Tier            AgentTier      `json:"tier"`
-	Model           ModelPolicy    `json:"model"`
-	Prompt          PromptSpec     `json:"prompt"`
-	Tools           []string       `json:"tools"`
-	ControlTools    []string       `json:"controlTools,omitempty"`
-	AllowedChildren []string       `json:"allowedChildren,omitempty"`
-	Budget          BudgetPolicy   `json:"budget"`
-	Context         ContextPolicy  `json:"context"`
-	Memory          MemoryPolicy   `json:"memory"`
-	Output          OutputContract `json:"output"`
+	ID              string          `json:"id"`
+	Version         string          `json:"version"`
+	Description     string          `json:"description"`
+	Name            string          `json:"name"`
+	Tier            AgentTier       `json:"tier"`
+	Model           ModelPolicy     `json:"model"`
+	Prompt          PromptSpec      `json:"prompt"`
+	Tools           []string        `json:"tools"`
+	ControlTools    []string        `json:"controlTools,omitempty"`
+	AllowedChildren []ChildContract `json:"allowedChildren,omitempty"`
+	Budget          BudgetPolicy    `json:"budget"`
+	Context         ContextPolicy   `json:"context"`
+	Memory          MemoryPolicy    `json:"memory"`
+	Output          OutputContract  `json:"output"`
 }
 
 type RegisteredDefinition struct {
@@ -139,6 +160,27 @@ func (r *DefinitionRegistry) Resolve(id string) (RegisteredDefinition, error) {
 	return registered, nil
 }
 
+func (r *DefinitionRegistry) ValidateChildInput(parentID, childID string, input map[string]any) error {
+	parent, err := r.Resolve(parentID)
+	if err != nil {
+		return err
+	}
+	for _, contract := range parent.Definition.AllowedChildren {
+		if contract.AgentID != childID {
+			continue
+		}
+		resolved, err := resolveSchema(contract.InputSchema)
+		if err != nil {
+			return fmt.Errorf("resolve child contract %q -> %q: %w", parentID, childID, err)
+		}
+		if err := resolved.Validate(input); err != nil {
+			return fmt.Errorf("child input violates contract %q -> %q: %w", parentID, childID, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("agent %q cannot delegate to %q", parentID, childID)
+}
+
 func (r *DefinitionRegistry) ValidateGraph() error {
 	if r == nil {
 		return errors.New("definition registry is required")
@@ -150,10 +192,10 @@ func (r *DefinitionRegistry) ValidateGraph() error {
 	}
 	r.mu.RUnlock()
 	for id, registered := range definitions {
-		for _, childID := range registered.Definition.AllowedChildren {
-			_, ok := definitions[childID]
+		for _, child := range registered.Definition.AllowedChildren {
+			_, ok := definitions[child.AgentID]
 			if !ok {
-				return fmt.Errorf("agent definition %q references unknown child %q", id, childID)
+				return fmt.Errorf("agent definition %q references unknown child %q", id, child.AgentID)
 			}
 			if registered.Definition.Tier == AgentTierWorker {
 				return fmt.Errorf("worker agent definition %q cannot delegate", id)
@@ -171,8 +213,8 @@ func (r *DefinitionRegistry) ValidateGraph() error {
 			return nil
 		}
 		visiting[id] = true
-		for _, childID := range definitions[id].Definition.AllowedChildren {
-			if err := visit(childID); err != nil {
+		for _, child := range definitions[id].Definition.AllowedChildren {
+			if err := visit(child.AgentID); err != nil {
 				return err
 			}
 		}
@@ -229,7 +271,7 @@ func validateDefinition(definition AgentDefinition) error {
 		definition.Memory.Recall != (definition.Context.Memory == "recall") {
 		return fmt.Errorf("agent definition %q has an invalid context or memory mode", definition.ID)
 	}
-	if hasDuplicateOrEmpty(definition.Tools) || hasDuplicateOrEmpty(definition.ControlTools) || hasDuplicateOrEmpty(definition.AllowedChildren) {
+	if hasDuplicateOrEmpty(definition.Tools) || hasDuplicateOrEmpty(definition.ControlTools) || invalidChildContracts(definition.AllowedChildren) {
 		return fmt.Errorf("agent definition %q has empty or duplicate tool/child IDs", definition.ID)
 	}
 	if strings.TrimSpace(definition.Model.Hint) == "" {
@@ -271,7 +313,10 @@ func validateDefinition(definition AgentDefinition) error {
 func cloneDefinition(definition AgentDefinition) AgentDefinition {
 	definition.Tools = append([]string(nil), definition.Tools...)
 	definition.ControlTools = append([]string(nil), definition.ControlTools...)
-	definition.AllowedChildren = append([]string(nil), definition.AllowedChildren...)
+	definition.AllowedChildren = append([]ChildContract(nil), definition.AllowedChildren...)
+	for index := range definition.AllowedChildren {
+		definition.AllowedChildren[index].InputSchema = cloneSchema(definition.AllowedChildren[index].InputSchema)
+	}
 	definition.Output.Artifacts = append([]ArtifactSchema(nil), definition.Output.Artifacts...)
 	for index := range definition.Output.Artifacts {
 		encoded, err := json.Marshal(definition.Output.Artifacts[index].Schema)
@@ -283,6 +328,48 @@ func cloneDefinition(definition AgentDefinition) AgentDefinition {
 		}
 	}
 	return definition
+}
+
+func invalidChildContracts(contracts []ChildContract) bool {
+	seen := make(map[string]struct{}, len(contracts))
+	for _, contract := range contracts {
+		id := strings.TrimSpace(contract.AgentID)
+		if id == "" || len(contract.InputSchema) == 0 {
+			return true
+		}
+		if _, exists := seen[id]; exists {
+			return true
+		}
+		seen[id] = struct{}{}
+		if _, err := resolveSchema(contract.InputSchema); err != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveSchema(value map[string]any) (*jsonschema.Resolved, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(encoded, &schema); err != nil {
+		return nil, err
+	}
+	return schema.Resolve(nil)
+}
+
+func cloneSchema(schema map[string]any) map[string]any {
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return schema
+	}
+	var cloned map[string]any
+	if json.Unmarshal(encoded, &cloned) != nil {
+		return schema
+	}
+	return cloned
 }
 
 func hasDuplicateOrEmpty(values []string) bool {

@@ -5,17 +5,19 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   canvasKeys,
   type CollaborativeAgentTarget,
+  useAgentConversation,
   useCreateCollaborativeAgentRun,
   useRespondToAgentRun,
 } from '@/apis/canvas-apis'
 import {
-  appendAgentStreamDelta,
-  clearAgentStreams,
-  flushAgentStream,
-  getAgentStreamText,
+	appendAgentStreamDelta,
+	clearAgentStreams,
+	flushAgentStream,
+	replaceAgentStreamText,
 } from '@/features/canvas/agent-workspace/agent-stream-store'
 import { isTerminalAgentEvent, streamedAgentEventTypes } from '@/features/canvas/agent-workspace/events'
 import type { AgentEvent } from '@/types/canvas'
+import type { AgentConversationSession, AgentConversationTurn } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
 
 export type CollaborativeTurnStatus = 'submitting' | 'running' | 'waiting_input' | 'completed' | 'failed'
@@ -27,6 +29,8 @@ export interface CollaborativeTurn {
   runId: string | null
   status: CollaborativeTurnStatus
   target: CollaborativeAgentTarget
+  historyResponse?: string
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number }
   error?: string
 }
 
@@ -41,14 +45,23 @@ export interface CollaborativePendingInput {
 
 export function useCollaborativeAgentSession(workId: string) {
   const queryClient = useQueryClient()
+  const conversation = useAgentConversation(workId)
   const createRun = useCreateCollaborativeAgentRun(workId)
   const respondToRun = useRespondToAgentRun()
   const [turns, setTurns] = useState<CollaborativeTurn[]>([])
+  const [conversationSessionId, setConversationSessionId] = useState('')
   const eventSourcesRef = useRef(new Map<string, EventSource>())
   const streamMessageIdsRef = useRef(new Set<string>())
   const activeTurn = turns.findLast((turn) =>
     turn.status === 'submitting' || turn.status === 'running' || turn.status === 'waiting_input')
   const pendingInput = useMemo(() => getPendingInput(activeTurn), [activeTurn])
+
+  useEffect(() => {
+    if (conversationSessionId !== '' || conversation.isLoading) return
+    const session = conversation.data?.sessions[0]
+    setConversationSessionId(session?.id ?? crypto.randomUUID())
+    setTurns(session === undefined ? [] : sessionToTurns(session))
+  }, [conversation.data, conversation.isLoading, conversationSessionId])
 
   useEffect(() => () => {
     for (const source of eventSourcesRef.current.values()) source.close()
@@ -83,7 +96,10 @@ export function useCollaborativeAgentSession(workId: string) {
 
       if (event.type === 'message.delta') {
         const delta = eventString(event, 'delta')
-        if (delta !== undefined) appendAgentStreamDelta(clientId, delta)
+        if (delta !== undefined) {
+          if (eventBoolean(event, 'replace')) replaceAgentStreamText(clientId, delta)
+          else appendAgentStreamDelta(clientId, delta)
+        }
         return
       }
       if (event.type === 'approval.required' || isTerminalAgentEvent(event.type)) flushAgentStream(clientId)
@@ -101,6 +117,7 @@ export function useCollaborativeAgentSession(workId: string) {
       closeSource()
       if (event.type === 'run.completed') {
         void queryClient.invalidateQueries({ queryKey: canvasKeys.candidates(workId) })
+        void queryClient.invalidateQueries({ queryKey: canvasKeys.conversation(workId) })
       }
     }
 
@@ -142,7 +159,6 @@ export function useCollaborativeAgentSession(workId: string) {
     const clientId = crypto.randomUUID()
     streamMessageIdsRef.current.add(clientId)
     const prompt = input.prompt.trim()
-    const apiPrompt = buildConversationPrompt(turns, prompt)
     setTurns((current) => [...current, {
       clientId,
       events: [],
@@ -151,7 +167,7 @@ export function useCollaborativeAgentSession(workId: string) {
       status: 'submitting',
       target: input.target,
     }])
-    createRun.mutate({ ...input, prompt: apiPrompt }, {
+    createRun.mutate({ ...input, conversationSessionId, prompt }, {
       onSuccess: (createdRun) => {
         updateTurn(setTurns, clientId, (turn) => ({ ...turn, runId: createdRun.id, status: 'running' }))
         streamRun(clientId, createdRun.id)
@@ -161,7 +177,7 @@ export function useCollaborativeAgentSession(workId: string) {
         updateTurn(setTurns, clientId, (turn) => ({ ...turn, error: message, status: 'failed' }))
       },
     })
-  }, [activeTurn, createRun, streamRun, turns])
+  }, [activeTurn, conversationSessionId, createRun, streamRun])
 
   const respond = useCallback((answer: string) => {
     if (pendingInput === null || answer.trim() === '' || respondToRun.isPending) return
@@ -177,24 +193,40 @@ export function useCollaborativeAgentSession(workId: string) {
     })
   }, [pendingInput, respondToRun, streamRun])
 
-  const clear = useCallback(() => {
+  const createConversationSession = useCallback(() => {
     if (activeTurn !== undefined) return
     for (const source of eventSourcesRef.current.values()) source.close()
     eventSourcesRef.current.clear()
     clearAgentStreams(turns.map((turn) => turn.clientId))
     streamMessageIdsRef.current.clear()
+    setConversationSessionId(crypto.randomUUID())
     setTurns([])
   }, [activeTurn, turns])
+
+  const selectSession = useCallback((sessionId: string) => {
+    if (activeTurn !== undefined || sessionId === conversationSessionId) return
+    for (const source of eventSourcesRef.current.values()) source.close()
+    eventSourcesRef.current.clear()
+    clearAgentStreams(turns.map((turn) => turn.clientId))
+    streamMessageIdsRef.current.clear()
+    const session = conversation.data?.sessions.find((candidate) => candidate.id === sessionId)
+    if (session === undefined) return
+    setConversationSessionId(sessionId)
+    setTurns(sessionToTurns(session))
+  }, [activeTurn, conversation.data?.sessions, conversationSessionId, turns])
 
   return {
     activeTurn,
     canUseContextAgent: createRun.contextAgentAvailable,
-    clear,
+    conversation: conversation.data,
+    conversationSessionId,
+    createConversationSession,
     contextAgentPending: createRun.contextAgentPending,
     pendingInput,
     responding: respondToRun.isPending,
     respond,
     run,
+    selectSession,
     turns,
   }
 }
@@ -243,16 +275,28 @@ function updateTurn(
   setTurns((current) => current.map((turn) => turn.clientId === clientId ? update(turn) : turn))
 }
 
-function buildConversationPrompt(turns: CollaborativeTurn[], request: string) {
-  const history = turns.slice(-4).flatMap((turn) => {
-    const response = getAgentStreamText(turn.clientId)
-    return response === '' ? [] : [`用户：${turn.prompt}\nAgent：${response}`]
-  }).join('\n\n').slice(-12_000)
-  if (history === '') return request
-  return `以下是当前协作会话的最近上下文：\n\n${history}\n\n用户当前请求：${request}`
+function sessionToTurns(session: AgentConversationSession): CollaborativeTurn[] {
+  return session.turns.map((turn) => conversationTurnToCollaborativeTurn(turn))
+}
+
+function conversationTurnToCollaborativeTurn(turn: AgentConversationTurn): CollaborativeTurn {
+  return {
+    clientId: `history:${turn.id}`,
+    events: [],
+    prompt: turn.userContent,
+    runId: turn.runId || null,
+    status: turn.status === 'failed' ? 'failed' : 'completed',
+    target: 'collaborative-targeted',
+    historyResponse: turn.assistantContent,
+    usage: turn.usage,
+  }
 }
 
 function eventString(event: AgentEvent | undefined, key: string) {
   const value = event?.data?.[key]
   return typeof value === 'string' ? value : undefined
+}
+
+function eventBoolean(event: AgentEvent | undefined, key: string) {
+  return event?.data?.[key] === true
 }
