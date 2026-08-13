@@ -48,6 +48,7 @@ import {
   useFlowNodeStore,
 } from '@/features/canvas/flownode/store'
 import { useFocusNode } from '@/features/canvas/flownode/use-focus-node'
+import { isTextEntryTarget } from '@/features/canvas/keyboard'
 import type { CanvasNode } from '@/types/canvas'
 import type { AgentEvent } from '@/types/canvas'
 import type { EnabledModel } from '@/types/provider'
@@ -111,6 +112,18 @@ export const CollaborativeAgentDrawer = memo(function CollaborativeAgentDrawer({
   const canSubmit = model !== null && prompt.requestText.trim() !== '' && activeTurn === undefined && canUseContextAgent
   const activeSession = conversation?.sessions.find((session) => session.id === conversationSessionId)
   const contextUsage = activeSession?.latestUsage ?? [...turns].reverse().find((turn) => turn.usage !== undefined)?.usage
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.repeat || event.altKey || isTextEntryTarget(event.target)) return
+      if ((!event.ctrlKey && !event.metaKey) || event.code !== 'KeyA') return
+      event.preventDefault()
+      setOpen((current) => !current)
+    }
+
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
 
   const updatePrompt = useCallback((value: CanvasPromptValue) => {
     setPrompt(value)

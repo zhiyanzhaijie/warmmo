@@ -1,5 +1,5 @@
 import { Archive, CircleDashed, History } from 'lucide-react'
-import { memo, useCallback, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -13,6 +13,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useFlowNodeStore } from '@/features/canvas/flownode/store'
 import { useFocusNode } from '@/features/canvas/flownode/use-focus-node'
+import { isTextEntryTarget } from '@/features/canvas/keyboard'
 import { ArchiveHistorySheet } from '@/features/canvas/story-spine/ArchiveHistorySheet'
 import { toStorySpineChapters } from '@/features/canvas/story-spine/adapters'
 import type { StorySpineChapter, StorySpineSection, StorySpineTone } from '@/features/canvas/story-spine/types'
@@ -61,6 +62,18 @@ export const StorySpineTimeline = memo(function StorySpineTimeline({
   const [historyChapterNodeId, setHistoryChapterNodeId] = useState<string | null>(null)
   const [isStorySpineOpen, setIsStorySpineOpen] = useState(false)
   const historyChapter = chapters.find((chapter) => chapter.nodeId === historyChapterNodeId)
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.repeat || event.altKey || isTextEntryTarget(event.target)) return
+      if ((!event.ctrlKey && !event.metaKey) || event.code !== 'KeyH') return
+      event.preventDefault()
+      setIsStorySpineOpen((current) => !current)
+    }
+
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
 
   return (
     <>

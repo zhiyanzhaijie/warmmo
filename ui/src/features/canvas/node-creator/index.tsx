@@ -1,6 +1,6 @@
 import { useReactFlow } from '@xyflow/react'
 import { LoaderCircle, Redo2, Undo2 } from 'lucide-react'
-import { memo, useCallback, useEffect, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { useCreateCanvasNode } from '@/apis/canvas-apis'
 import { Button } from '@/components/ui/button'
@@ -10,33 +10,56 @@ import { useCanvasHistoryActions } from '@/features/canvas/node-creator/hook'
 import { creatableNodeKinds, nodeDefinitions } from '@/features/canvas/nodes/definitions'
 import type { CanvasNodeKind } from '@/types/canvas'
 
+interface ScreenPoint {
+  x: number
+  y: number
+}
+
+const defaultNodeCenterOffset = { x: -128, y: -90 }
+const noPositionOffset = { x: 0, y: 0 }
+
 export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { workId: string }) {
   const flow = useReactFlow<StoryFlowNode>()
   const createNode = useCreateCanvasNode(workId)
   const history = useCanvasHistoryActions(workId)
   const [pendingKind, setPendingKind] = useState<CanvasNodeKind | null>(null)
+  const canvasPointerRef = useRef<ScreenPoint | null>(null)
 
-  const createAtViewportCenter = useCallback((kind: CanvasNodeKind) => {
+  const createAtScreenPoint = useCallback((
+    kind: CanvasNodeKind,
+    screenPoint: ScreenPoint,
+    positionOffset: ScreenPoint = noPositionOffset,
+  ) => {
     if (createNode.isPending) return
     const definition = nodeDefinitions[kind]
-    const cascadeOffset = (flow.getNodes().length % 6) * 24
-    const viewportCenter = flow.screenToFlowPosition({
-      x: window.innerWidth / 2,
-      y: window.innerHeight / 2,
-    })
+    const position = flow.screenToFlowPosition(screenPoint)
     setPendingKind(kind)
     createNode.mutate({
       kind,
       title: `未命名${definition.label}`,
       content: '',
-      x: viewportCenter.x + cascadeOffset,
-      y: viewportCenter.y + cascadeOffset,
+      x: position.x + positionOffset.x,
+      y: position.y + positionOffset.y,
     }, {
       onSettled: () => setPendingKind(null),
     })
   }, [createNode, flow])
 
+  const createAtViewportCenter = useCallback((kind: CanvasNodeKind) => {
+    const cascadeOffset = (flow.getNodes().length % 6) * 24
+    createAtScreenPoint(kind, {
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+    }, { x: cascadeOffset, y: cascadeOffset })
+  }, [createAtScreenPoint, flow])
+
   useEffect(() => {
+    const trackCanvasPointer = (event: PointerEvent) => {
+      const target = event.target
+      canvasPointerRef.current = target instanceof Element && target.closest('.warmmo-flow') !== null
+        ? { x: event.clientX, y: event.clientY }
+        : null
+    }
     const handleShortcut = (event: KeyboardEvent) => {
       if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || isTextEntryTarget(event.target)) return
       const shortcut = Number(event.key)
@@ -45,12 +68,20 @@ export const CanvasNodeCreator = memo(function CanvasNodeCreator({ workId }: { w
       )
       if (kind === undefined) return
       event.preventDefault()
-      createAtViewportCenter(kind)
+      const screenPoint = canvasPointerRef.current ?? {
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      }
+      createAtScreenPoint(kind, screenPoint, defaultNodeCenterOffset)
     }
 
+    window.addEventListener('pointermove', trackCanvasPointer)
     window.addEventListener('keydown', handleShortcut)
-    return () => window.removeEventListener('keydown', handleShortcut)
-  }, [createAtViewportCenter])
+    return () => {
+      window.removeEventListener('pointermove', trackCanvasPointer)
+      window.removeEventListener('keydown', handleShortcut)
+    }
+  }, [createAtScreenPoint])
 
   return (
     <div className="fixed top-[4.5rem] left-1/2 z-30 flex h-11 max-w-[calc(100vw_-_2rem)] -translate-x-1/2 items-center gap-space-xs lg:top-space-md">
