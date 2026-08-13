@@ -3,4 +3,4 @@
 !/.agents/skills/**/*.md
 !/core/skills/**/SKILL.md
 !/ui/**/ascii-default.md
-README.md
+!README.md
