@@ -1,35 +1,40 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#fafafa" />
-    <script>
-      (() => {
-        try {
-          const storedTheme = localStorage.getItem('warmmo-theme')
-          const theme = storedTheme === 'light' || storedTheme === 'dark' ? storedTheme : 'system'
-          const resolvedTheme = theme === 'system'
-            ? matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-            : theme
-          const root = document.documentElement
-          root.classList.add(resolvedTheme)
-          root.dataset.theme = theme
-          root.style.colorScheme = resolvedTheme
-          document.querySelector('meta[name="theme-color"]')?.setAttribute(
-            'content',
-            resolvedTheme === 'dark' ? '#0a0a0a' : '#fafafa',
-          )
-        } catch {
-          document.documentElement.classList.add('light')
-        }
-      })()
-    </script>
-    <title>Warmmo Runtime</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#fafafa" />
+  <meta name="description" content="WarmMo 是面向长篇创作的灵感组织与写作工作台。" />
+  <meta name="keywords" content="WarmMo,写作,小说创作,灵感管理" />
+  <script>
+    (() => {
+      try {
+        const storedTheme = localStorage.getItem('warmmo-theme')
+        const theme = storedTheme === 'light' || storedTheme === 'dark' ? storedTheme : 'system'
+        const resolvedTheme = theme === 'system'
+          ? matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          : theme
+        const root = document.documentElement
+        root.classList.add(resolvedTheme)
+        root.dataset.theme = theme
+        root.style.colorScheme = resolvedTheme
+        document.querySelector('meta[name="theme-color"]')?.setAttribute(
+          'content',
+          resolvedTheme === 'dark' ? '#0a0a0a' : '#fafafa',
+        )
+      } catch {
+        document.documentElement.classList.add('light')
+      }
+    })()
+  </script>
+  <title>WarmMo · 首页</title>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>
