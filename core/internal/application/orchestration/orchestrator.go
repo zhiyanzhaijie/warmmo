@@ -40,7 +40,7 @@ func (o *CanvasOrchestrator) Run(ctx context.Context, input writing.RunInput, em
 	if err != nil {
 		return writing.RunResult{}, err
 	}
-	projector := newOrchestratorProjector(emit, false, true)
+	projector := newOrchestratorProjector(emit)
 	outcome, err := o.runner.Run(ctx, request, projector.Project)
 	if err != nil {
 		return writing.RunResult{}, err
@@ -56,7 +56,7 @@ func (o *CanvasOrchestrator) Resume(ctx context.Context, input writing.RunInput,
 	if root.Status != appharness.TurnAwaitingUser {
 		return writing.RunResult{}, fmt.Errorf("canvas orchestrator is not awaiting user input: %s", root.Status)
 	}
-	projector := newOrchestratorProjector(emit, false, true)
+	projector := newOrchestratorProjector(emit)
 	outcome, err := o.runner.Resume(ctx, input.RunID, answer, projector.Project)
 	if err != nil {
 		return writing.RunResult{}, err
@@ -272,13 +272,12 @@ func orchestratorConversationUserContent(input writing.RunInput) string {
 }
 
 type orchestratorProjector struct {
-	emit         writing.Emitter
-	streamText   bool
-	publishFinal bool
+	emit        writing.Emitter
+	textEmitted bool
 }
 
-func newOrchestratorProjector(emit writing.Emitter, streamText, publishFinal bool) *orchestratorProjector {
-	return &orchestratorProjector{emit: emit, streamText: streamText, publishFinal: publishFinal}
+func newOrchestratorProjector(emit writing.Emitter) *orchestratorProjector {
+	return &orchestratorProjector{emit: emit}
 }
 
 func (p *orchestratorProjector) Project(event appharness.RuntimeEvent) error {
@@ -290,9 +289,10 @@ func (p *orchestratorProjector) Project(event appharness.RuntimeEvent) error {
 	case appharness.RuntimeEventReasoningCompleted:
 		return p.emit(writing.EventReasoningCompleted, map[string]any{"role": writing.RoleOrchestrator})
 	case appharness.RuntimeEventMessageDelta:
-		if p.streamText {
-			return p.emit(writing.EventMessageDelta, map[string]any{"delta": event.Text})
+		if err := p.emit(writing.EventMessageDelta, map[string]any{"delta": event.Text}); err != nil {
+			return err
 		}
+		p.textEmitted = true
 	case appharness.RuntimeEventPaused:
 		if event.ToolName == appharness.ControlToolAskUser {
 			var question struct {
@@ -311,7 +311,7 @@ func (p *orchestratorProjector) Project(event appharness.RuntimeEvent) error {
 }
 
 func (p *orchestratorProjector) ReplaceFinal(content string) error {
-	if !p.publishFinal || p.streamText || strings.TrimSpace(content) == "" {
+	if p.textEmitted || strings.TrimSpace(content) == "" {
 		return nil
 	}
 	return p.emit(writing.EventMessageDelta, map[string]any{"delta": content, "replace": true})
