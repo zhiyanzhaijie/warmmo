@@ -61,7 +61,7 @@ func (s *AgentCheckpointStore) FindPendingCheckpoint(ctx context.Context, runID 
 	}
 	var model agentTurnCheckpointModel
 	err := s.database.WithContext(ctx).
-		Where("run_id = ? AND status IN ?", runID, []string{string(appharness.TurnAwaitingUser), string(appharness.TurnAwaitingChild)}).
+		Where("run_id = ? AND status = ?", runID, string(appharness.TurnAwaitingUser)).
 		Order("updated_at DESC").First(&model).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return appharness.Checkpoint{}, fmt.Errorf("%w: pending run %s", appharness.ErrCheckpointNotFound, runID)
@@ -70,34 +70,6 @@ func (s *AgentCheckpointStore) FindPendingCheckpoint(ctx context.Context, runID 
 		return appharness.Checkpoint{}, fmt.Errorf("find pending agent turn checkpoint: %w", err)
 	}
 	return checkpointFromModel(model)
-}
-
-func (s *AgentCheckpointStore) AttachChildRun(ctx context.Context, parentTurnID, childRunID string) (appharness.Checkpoint, error) {
-	if s == nil || s.database == nil {
-		return appharness.Checkpoint{}, errors.New("agent checkpoint store is not configured")
-	}
-	var stored agentTurnCheckpointModel
-	err := s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&stored, "turn_id = ?", parentTurnID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w: %s", appharness.ErrCheckpointNotFound, parentTurnID)
-		} else if err != nil {
-			return err
-		}
-		for _, existing := range stored.ChildRunIDs {
-			if existing == childRunID {
-				return nil
-			}
-		}
-		stored.ChildRunIDs = append(stored.ChildRunIDs, childRunID)
-		stored.Version++
-		stored.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
-		return tx.Model(&agentTurnCheckpointModel{}).Where("turn_id = ?", parentTurnID).
-			Select("ChildRunIDs", "Version", "UpdatedAt").Updates(&stored).Error
-	})
-	if err != nil {
-		return appharness.Checkpoint{}, fmt.Errorf("attach child run: %w", err)
-	}
-	return checkpointFromModel(stored)
 }
 
 func (s *AgentCheckpointStore) SaveCheckpoint(ctx context.Context, checkpoint appharness.Checkpoint) (appharness.Checkpoint, error) {
@@ -134,10 +106,9 @@ func (s *AgentCheckpointStore) SaveCheckpoint(ctx context.Context, checkpoint ap
 		Where("turn_id = ? AND version = ?", checkpoint.TurnID, checkpoint.Version).
 		Select(
 			"RunID", "SessionID", "AgentID", "DefinitionVersion", "DefinitionHash", "PromptHash", "ToolsetHash",
-			"Status", "StopReason", "FinalJSON", "PendingJSON", "ArtifactJSON", "SnapshotJSON", "InputTokens", "CachedInputTokens", "OutputTokens",
+			"Status", "StopReason", "FinalJSON", "PendingJSON", "OutputJSON", "SnapshotJSON", "InputTokens", "CachedInputTokens", "OutputTokens",
 			"ModelCalls", "ToolCalls", "SideEffectCalls",
-			"ChildRunIDs", "CompactionManifestJSON",
-			"LastCanonicalEventID", "Version", "UpdatedAt",
+			"Version", "UpdatedAt",
 		).Updates(&model)
 	if result.Error != nil {
 		return appharness.Checkpoint{}, fmt.Errorf("update agent turn checkpoint: %w", result.Error)
@@ -157,32 +128,27 @@ func checkpointToModel(checkpoint appharness.Checkpoint, now time.Time) (agentTu
 	if err != nil {
 		return agentTurnCheckpointModel{}, fmt.Errorf("encode checkpoint pending action: %w", err)
 	}
-	artifact, err := json.Marshal(checkpoint.Artifact)
-	if err != nil {
-		return agentTurnCheckpointModel{}, fmt.Errorf("encode checkpoint artifact: %w", err)
+	output := checkpoint.Output
+	if len(output) == 0 {
+		output = json.RawMessage("null")
+	} else if !json.Valid(output) {
+		return agentTurnCheckpointModel{}, errors.New("checkpoint structured output is not valid JSON")
 	}
 	snapshot, err := json.Marshal(checkpoint.Snapshot)
 	if err != nil {
 		return agentTurnCheckpointModel{}, fmt.Errorf("encode checkpoint turn snapshot: %w", err)
-	}
-	manifest := checkpoint.CompactionManifest
-	if len(manifest) == 0 {
-		manifest = json.RawMessage("null")
-	} else if !json.Valid(manifest) {
-		return agentTurnCheckpointModel{}, errors.New("checkpoint compaction manifest is not valid JSON")
 	}
 	return agentTurnCheckpointModel{
 		TurnID: checkpoint.TurnID, RunID: checkpoint.RunID, SessionID: checkpoint.SessionID, AgentID: checkpoint.AgentID,
 		DefinitionVersion: checkpoint.DefinitionVersion, DefinitionHash: checkpoint.DefinitionHash,
 		PromptHash: checkpoint.PromptHash, ToolsetHash: checkpoint.ToolsetHash,
 		Status: string(checkpoint.Status), StopReason: string(checkpoint.StopReason),
-		FinalJSON: string(final), PendingJSON: string(pending), ArtifactJSON: string(artifact), SnapshotJSON: string(snapshot),
+		FinalJSON: string(final), PendingJSON: string(pending), OutputJSON: string(output), SnapshotJSON: string(snapshot),
 		InputTokens: checkpoint.Usage.InputTokens, CachedInputTokens: checkpoint.Usage.CachedInputTokens,
 		OutputTokens: checkpoint.Usage.OutputTokens,
 		ModelCalls:   checkpoint.Budget.ModelCalls, ToolCalls: checkpoint.Budget.ToolCalls,
 		SideEffectCalls: checkpoint.Budget.SideEffectCalls,
-		ChildRunIDs:     append([]string(nil), checkpoint.ChildRunIDs...), CompactionManifestJSON: string(manifest),
-		LastCanonicalEventID: checkpoint.LastCanonicalEventID, Version: checkpoint.Version, UpdatedAt: now,
+		Version:         checkpoint.Version, UpdatedAt: now,
 	}, nil
 }
 
@@ -201,13 +167,6 @@ func checkpointFromModel(model agentTurnCheckpointModel) (appharness.Checkpoint,
 			return appharness.Checkpoint{}, fmt.Errorf("decode checkpoint pending action: %w", err)
 		}
 	}
-	var artifact *appharness.ArtifactRef
-	if model.ArtifactJSON != "" && model.ArtifactJSON != "null" {
-		artifact = &appharness.ArtifactRef{}
-		if err := json.Unmarshal([]byte(model.ArtifactJSON), artifact); err != nil {
-			return appharness.Checkpoint{}, fmt.Errorf("decode checkpoint artifact: %w", err)
-		}
-	}
 	var snapshot *appharness.TurnSnapshot
 	if model.SnapshotJSON != "" && model.SnapshotJSON != "null" {
 		snapshot = &appharness.TurnSnapshot{}
@@ -215,24 +174,25 @@ func checkpointFromModel(model agentTurnCheckpointModel) (appharness.Checkpoint,
 			return appharness.Checkpoint{}, fmt.Errorf("decode checkpoint turn snapshot: %w", err)
 		}
 	}
-	manifest := json.RawMessage(model.CompactionManifestJSON)
-	if string(manifest) == "null" {
-		manifest = nil
+	output := json.RawMessage(model.OutputJSON)
+	if len(output) == 0 || string(output) == "null" {
+		output = nil
+	} else if !json.Valid(output) {
+		return appharness.Checkpoint{}, errors.New("checkpoint structured output is not valid JSON")
 	}
 	return appharness.Checkpoint{
 		TurnID: model.TurnID, RunID: model.RunID, SessionID: model.SessionID, AgentID: model.AgentID,
 		DefinitionVersion: model.DefinitionVersion, DefinitionHash: model.DefinitionHash,
 		PromptHash: model.PromptHash, ToolsetHash: model.ToolsetHash,
 		Status: appharness.TurnStatus(model.Status), StopReason: appharness.StopReason(model.StopReason),
-		Final: final, Pending: pending, Artifact: artifact,
+		Final: final, Pending: pending, Output: output,
 		Usage: appharness.Usage{
 			InputTokens: model.InputTokens, CachedInputTokens: model.CachedInputTokens, OutputTokens: model.OutputTokens,
 		},
 		Budget: appharness.BudgetUsage{
 			ModelCalls: model.ModelCalls, ToolCalls: model.ToolCalls, SideEffectCalls: model.SideEffectCalls,
 		},
-		ChildRunIDs: append([]string(nil), model.ChildRunIDs...), CompactionManifest: manifest,
-		LastCanonicalEventID: model.LastCanonicalEventID, Version: model.Version, UpdatedAt: model.UpdatedAt,
+		Version: model.Version, UpdatedAt: model.UpdatedAt,
 		Snapshot: snapshot,
 	}, nil
 }

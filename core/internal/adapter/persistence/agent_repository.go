@@ -54,39 +54,11 @@ func (r *AgentRepository) ListCollaborativeCandidates(runID string) ([]appagent.
 	return candidates, nil
 }
 
-func (r *AgentRepository) RequeueAfterCandidateDecision(runID, candidateID string, accepted bool, acceptedNodeID string) (bool, error) {
-	requeued := false
-	err := r.database.Transaction(func(tx *gorm.DB) error {
-		now := time.Now().UTC()
-		var lastResume agentRunEventModel
-		batchStartedAt := time.Time{}
-		if err := tx.Where("run_id = ? AND type = ?", runID, appagent.EventRunResumed).Order("created_at DESC").First(&lastResume).Error; err == nil {
-			batchStartedAt = lastResume.CreatedAt
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("read candidate batch start: %w", err)
-		}
-		var pending, rejected int64
-		base := tx.Model(&agentCandidateModel{}).Where("run_id = ? AND created_at > ?", runID, batchStartedAt)
-		if err := base.Where("status = ?", appagent.CandidateStatusPending).Count(&pending).Error; err != nil {
-			return err
-		}
-		if err := base.Where("status = ?", appagent.CandidateStatusRejected).Count(&rejected).Error; err != nil {
-			return err
-		}
-		requeued = pending == 0
-		if requeued {
-			result := tx.Model(&agentRunModel{}).Where("id = ? AND status = ?", runID, appagent.RunStatusCompleted).Updates(map[string]any{"status": appagent.RunStatusQueued, "error_message": "", "updated_at": now})
-			if result.Error != nil {
-				return fmt.Errorf("requeue agent run: %w", result.Error)
-			}
-			if result.RowsAffected == 0 {
-				return appagent.ErrRunNotCancellable
-			}
-		}
-		_, err := appendEvent(tx, runID, appagent.EventCandidateDecision, map[string]any{"candidateId": candidateID, "accepted": accepted, "acceptedNodeId": acceptedNodeID, "pending": pending, "rejected": rejected}, now)
-		return err
-	})
-	return requeued, err
+func (r *AgentRepository) RecordCandidateDecision(runID, candidateID string, accepted bool, acceptedNodeID string) error {
+	_, err := appendEvent(r.database, runID, appagent.EventCandidateDecision, map[string]any{
+		"candidateId": candidateID, "accepted": accepted, "acceptedNodeId": acceptedNodeID,
+	}, time.Now().UTC())
+	return err
 }
 
 func (r *AgentRepository) RequestCandidateDecisionReason(runID, candidateID, title string) error {

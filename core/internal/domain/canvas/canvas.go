@@ -37,7 +37,7 @@ const (
 	NodeKindManuscript     NodeKind = "manuscript"
 )
 
-var manuallyCreatableNodeKinds = []NodeKind{
+var entityNodeKinds = []NodeKind{
 	NodeKindCharacter,
 	NodeKindItem,
 	NodeKindLocation,
@@ -45,8 +45,13 @@ var manuallyCreatableNodeKinds = []NodeKind{
 	NodeKindWorld,
 	NodeKindMechanism,
 	NodeKindEvent,
-	NodeKindChapterOutline,
 }
+
+var manuallyCreatableNodeKinds = append([]NodeKind{
+	// Chapter outlines are the only manually creatable writing asset. Their
+	// derived section outlines and prose are created by dedicated workflows.
+	NodeKindChapterOutline,
+}, entityNodeKinds...)
 
 func ParseNodeKind(value string) (NodeKind, bool) {
 	kind := NodeKind(strings.TrimSpace(value))
@@ -75,6 +80,10 @@ func IsManuallyCreatableNodeKind(kind NodeKind) bool {
 
 func ManuallyCreatableNodeKinds() []NodeKind {
 	return append([]NodeKind(nil), manuallyCreatableNodeKinds...)
+}
+
+func EntityNodeKinds() []NodeKind {
+	return append([]NodeKind(nil), entityNodeKinds...)
 }
 
 func IsDerivedNodeKind(kind NodeKind) bool {

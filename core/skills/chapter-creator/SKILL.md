@@ -12,9 +12,9 @@ allowed_tools:
 ---
 # Chapter Creator
 
-Create a proposal, not a direct canvas mutation. The Planner's brief and context manifest are authoritative.
+Create a proposal for exactly one chapter overview (`chapter-outline`), not a direct canvas mutation. The Planner's brief and context manifest are authoritative.
 
-Return exactly one ProposalSet JSON object containing every node required by the delegated task, up to 20 new nodes. Use one complete proposal instead of asking the orchestrator to delegate once per node. `proposalId` is omitted because the service assigns it during persistence:
+Return exactly one ProposalSet JSON object containing exactly one new `chapter-outline` node. Never create `section-outline`, `chapter-section`, or `manuscript` nodes. Section outlines must be derived later from the accepted chapter outline by the dedicated chapter-section-planning workflow so their parent edges are preserved. `proposalId` is omitted because the service assigns it during persistence:
 
 ```json
 {
@@ -35,6 +35,8 @@ Return exactly one ProposalSet JSON object containing every node required by the
 ```
 
 Do not replace an existing node when the request asks for a new artifact. Preserve current world rules. Every edge endpoint that refers to a new node must use its `clientId`; existing endpoints use node IDs. Put unresolved blocking conflicts in `questions` instead of inventing a resolution.
+
+`baseRevisions` must be empty and `updates` must be an empty array. Existing chapter overviews are changed only through the dedicated chapter-outline-update workflow.
 
 If the approved plan is already satisfied by an accepted candidate, do not return an empty ProposalSet. Return the `finish` decision to the collaboration loop; never use an empty proposal to signal no work.
 

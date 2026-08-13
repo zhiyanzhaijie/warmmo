@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// ConversationTurn is the durable, canvas-scoped projection of one agent
+// ConversationTurn is the durable, work-scoped projection of one agent
 // turn. It intentionally stores summaries rather than the full ADK event log;
 // the latter remains owned by the turn session and checkpoint stores.
 type ConversationTurn struct {
@@ -43,7 +43,7 @@ type ConversationSnapshot struct {
 	Sessions []ConversationSession `json:"sessions"`
 }
 
-// ConversationStore provides bounded canvas conversation context to the
+// ConversationStore provides bounded conversation context to the
 // model adapter and accepts idempotent completed-turn projections.
 type ConversationStore interface {
 	BuildContext(context.Context, string, int) (string, error)
@@ -55,8 +55,7 @@ type SessionConversationStore interface {
 	BuildSessionContext(context.Context, string, string, int) (string, error)
 }
 
-// CanvasContextStore supplies a compact, authoritative snapshot of the
-// current canvas's global story context (for example, the story spine).
-type CanvasContextStore interface {
+// ContextProvider supplies compact, authoritative context for the current work.
+type ContextProvider interface {
 	BuildContext(context.Context, string, int) (string, error)
 }

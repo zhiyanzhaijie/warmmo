@@ -146,31 +146,28 @@ func (agentConversationTurnModel) TableName() string { return "agent_conversatio
 func (agentSessionScopedStateModel) TableName() string { return "agent_session_scoped_states" }
 
 type agentTurnCheckpointModel struct {
-	TurnID                 string    `gorm:"primaryKey"`
-	RunID                  string    `gorm:"index;not null"`
-	SessionID              string    `gorm:"index;not null"`
-	AgentID                string    `gorm:"index;not null"`
-	DefinitionVersion      string    `gorm:"not null;default:''"`
-	DefinitionHash         string    `gorm:"not null;default:''"`
-	PromptHash             string    `gorm:"not null;default:''"`
-	ToolsetHash            string    `gorm:"not null;default:''"`
-	Status                 string    `gorm:"index;not null"`
-	StopReason             string    `gorm:"not null"`
-	FinalJSON              string    `gorm:"not null;default:'null'"`
-	PendingJSON            string    `gorm:"not null;default:'null'"`
-	ArtifactJSON           string    `gorm:"not null;default:'null'"`
-	SnapshotJSON           string    `gorm:"not null;default:'null'"`
-	InputTokens            int64     `gorm:"not null;default:0"`
-	CachedInputTokens      int64     `gorm:"not null;default:0"`
-	OutputTokens           int64     `gorm:"not null;default:0"`
-	ModelCalls             int       `gorm:"not null;default:0"`
-	ToolCalls              int       `gorm:"not null;default:0"`
-	SideEffectCalls        int       `gorm:"not null;default:0"`
-	ChildRunIDs            []string  `gorm:"column:child_run_ids_json;serializer:json;not null"`
-	CompactionManifestJSON string    `gorm:"not null;default:'null'"`
-	LastCanonicalEventID   string    `gorm:"index;not null;default:''"`
-	Version                int64     `gorm:"not null"`
-	UpdatedAt              time.Time `gorm:"not null"`
+	TurnID            string    `gorm:"primaryKey"`
+	RunID             string    `gorm:"index;not null"`
+	SessionID         string    `gorm:"index;not null"`
+	AgentID           string    `gorm:"index;not null"`
+	DefinitionVersion string    `gorm:"not null;default:''"`
+	DefinitionHash    string    `gorm:"not null;default:''"`
+	PromptHash        string    `gorm:"not null;default:''"`
+	ToolsetHash       string    `gorm:"not null;default:''"`
+	Status            string    `gorm:"index;not null"`
+	StopReason        string    `gorm:"not null"`
+	FinalJSON         string    `gorm:"not null;default:'null'"`
+	PendingJSON       string    `gorm:"not null;default:'null'"`
+	OutputJSON        string    `gorm:"not null;default:'null'"`
+	SnapshotJSON      string    `gorm:"not null;default:'null'"`
+	InputTokens       int64     `gorm:"not null;default:0"`
+	CachedInputTokens int64     `gorm:"not null;default:0"`
+	OutputTokens      int64     `gorm:"not null;default:0"`
+	ModelCalls        int       `gorm:"not null;default:0"`
+	ToolCalls         int       `gorm:"not null;default:0"`
+	SideEffectCalls   int       `gorm:"not null;default:0"`
+	Version           int64     `gorm:"not null"`
+	UpdatedAt         time.Time `gorm:"not null"`
 }
 
 func (agentTurnCheckpointModel) TableName() string { return "agent_turn_checkpoints" }
@@ -220,24 +217,6 @@ type agentToolCallModel struct {
 }
 
 func (agentToolCallModel) TableName() string { return "agent_tool_calls" }
-
-type agentChildRunModel struct {
-	ID            string    `gorm:"primaryKey"`
-	RunID         string    `gorm:"index;not null"`
-	ParentTurnID  string    `gorm:"index;not null"`
-	ParentAgentID string    `gorm:"index;not null"`
-	ChildTurnID   string    `gorm:"uniqueIndex;not null"`
-	ChildAgentID  string    `gorm:"index;not null"`
-	SessionID     string    `gorm:"index;not null"`
-	Status        string    `gorm:"index;not null"`
-	StopReason    string    `gorm:"not null;default:''"`
-	ArtifactJSON  string    `gorm:"not null;default:'null'"`
-	PendingJSON   string    `gorm:"not null;default:'null'"`
-	CreatedAt     time.Time `gorm:"not null"`
-	UpdatedAt     time.Time `gorm:"not null"`
-}
-
-func (agentChildRunModel) TableName() string { return "agent_child_runs" }
 
 type agentMemoryModel struct {
 	ID               string    `gorm:"primaryKey"`

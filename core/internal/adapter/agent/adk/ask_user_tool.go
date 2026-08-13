@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 
-	agentcore "warmmo/core/internal/adapter/agent/core"
+	appharness "warmmo/core/internal/application/harness"
 )
 
 const AskUserToolName = "ask_user"
 
 type askUserTool struct{}
 
-func (askUserTool) Spec() agentcore.ToolSpec {
-	return agentcore.ToolSpec{
+func (askUserTool) Spec() appharness.ToolSpec {
+	return appharness.ToolSpec{
 		Name:        AskUserToolName,
 		Description: "Pause this turn and ask the user one blocking question. Use only when proceeding would violate an explicit constraint or unresolved contradiction.",
 		InputSchema: map[string]any{
@@ -30,12 +30,12 @@ func (askUserTool) Spec() agentcore.ToolSpec {
 			"properties": map[string]any{"status": map[string]any{"type": "string"}},
 			"required":   []string{"status"}, "additionalProperties": false,
 		},
-		SideEffect: agentcore.SideEffectNone, Approval: agentcore.ApprovalNever,
+		SideEffect: appharness.SideEffectNone, Approval: appharness.ApprovalNever,
 		MaxResultBytes: 1024, LongRunning: true, ModelCallable: true,
 	}
 }
 
-func (askUserTool) Call(context.Context, agentcore.ToolInvocation) (any, error) {
+func (askUserTool) Call(context.Context, appharness.ToolInvocation) (any, error) {
 	return map[string]any{"status": "awaiting_user"}, nil
 }
 
@@ -51,4 +51,4 @@ func pendingQuestion(payload json.RawMessage) string {
 	return args.Question
 }
 
-var _ agentcore.Tool = askUserTool{}
+var _ appharness.Tool = askUserTool{}

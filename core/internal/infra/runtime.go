@@ -13,17 +13,20 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/adk/model"
+
 	adk "warmmo/core/internal/adapter/agent/adk"
-	"warmmo/core/internal/adapter/agent/collaboration"
-	agentcore "warmmo/core/internal/adapter/agent/core"
 	"warmmo/core/internal/adapter/agent/embedding"
+	"warmmo/core/internal/adapter/agent/projection"
 	aiprovider "warmmo/core/internal/adapter/agent/provider"
-	agenttools "warmmo/core/internal/adapter/agent/tools"
-	agentworkspace "warmmo/core/internal/adapter/agent/workspace"
-	agent "warmmo/core/internal/adapter/agent/writing"
+	agenttool "warmmo/core/internal/adapter/agenttool"
 	"warmmo/core/internal/adapter/httpapi"
 	"warmmo/core/internal/adapter/persistence"
+	"warmmo/core/internal/adapter/skillcatalog"
+	adapterworkspace "warmmo/core/internal/adapter/workspace"
 	"warmmo/core/internal/application"
+	appharness "warmmo/core/internal/application/harness"
+	"warmmo/core/internal/application/orchestration"
 	"warmmo/core/internal/domain/ai"
 )
 
@@ -54,29 +57,36 @@ func Run(logger *slog.Logger, version, allowedOrigin string) error {
 	if err != nil {
 		return err
 	}
-	skillCatalog, err := agent.LoadCatalog(skillsDirectory)
+	skillCatalog, err := skillcatalog.LoadCatalog(skillsDirectory)
 	if err != nil {
 		return err
 	}
 	logger.Info("Warmmo skills loaded", "directory", skillsDirectory, "count", skillCatalog.Len())
 	canvasRepository := persistence.NewCanvasRepositoryWithDatabase(database)
-	workspaceSearcher := agentworkspace.NewSearcher(dataDirectory)
+	workspaceSearcher := adapterworkspace.NewSearcher(dataDirectory)
 	contextSearchGateway := persistence.NewContextSearchGateway(ctx, func() (*persistence.ContextIndex, error) {
 		return configureContextIndex(database, providerRepository, providerService)
 	})
-	toolRegistry := agentcore.NewToolRegistry(
-		agenttools.NewGetNodesTool(canvasRepository),
-		agenttools.NewSearchTextTool(workspaceSearcher),
-		agenttools.NewSearchStorySpineTool(workspaceSearcher, agentRepository),
-		agenttools.NewCreateCandidateTool(canvasRepository),
-		agenttools.NewSearchContextTool(contextSearchGateway),
+	toolRegistry := agenttool.NewRegistry(
+		agenttool.NewGetNodesTool(canvasRepository),
+		agenttool.NewSearchTextTool(workspaceSearcher),
+		agenttool.NewSearchStorySpineTool(workspaceSearcher, agentRepository),
+		agenttool.NewCreateCandidateTool(canvasRepository),
+		agenttool.NewSearchContextTool(contextSearchGateway),
 	)
-	modelResolver := func(_ context.Context, providerID, modelID string) (adk.ModelConfig, error) {
+	structuredOutput := aiprovider.StructuredOutputRegistry{
+		"deepseek": aiprovider.StructuredOutputToolCall,
+		"openai":   aiprovider.StructuredOutputJSONSchema,
+	}
+	modelResolver := func(_ context.Context, providerID, modelID string) (model.LLM, error) {
 		baseURL, apiKey, err := providerRepository.ResolveModel(providerID, modelID)
 		if err != nil {
-			return adk.ModelConfig{}, err
+			return nil, err
 		}
-		return adk.ModelConfig{BaseURL: baseURL, APIKey: apiKey, ModelID: modelID}, nil
+		return aiprovider.NewOpenAICompatible(aiprovider.OpenAICompatibleConfig{
+			BaseURL: baseURL, APIKey: apiKey, ModelID: modelID,
+			StructuredOutput: structuredOutput.Resolve(providerID),
+		}, nil), nil
 	}
 	agentSessionService := persistence.NewAgentSessionService(database)
 	agentCheckpointStore := persistence.NewAgentCheckpointStore(database)
@@ -84,45 +94,56 @@ func Run(logger *slog.Logger, version, allowedOrigin string) error {
 	agentToolCallStore := persistence.NewAgentToolCallStore(database)
 	agentMemoryStore := persistence.NewAgentMemoryStore(database)
 	agentConversationStore := persistence.NewAgentConversationStore(database)
-	turnExecutor := adk.NewLLMTurnExecutorWithConversation(
-		toolRegistry, modelResolver, agentSessionService, agentCheckpointStore, agentArtifactStore, agentToolCallStore,
-		agentMemoryStore, agentConversationStore, agentRepository,
-	)
-	definitionRegistry, err := collaboration.NewDefinitionRegistry()
+	outcomeConsumer := projection.NewOutcomeConsumer(agentConversationStore, agentMemoryStore)
+	definitionRegistry, err := orchestration.NewDefinitionRegistry()
 	if err != nil {
 		return err
 	}
-	for _, definition := range collaboration.Definitions() {
+	for _, definition := range orchestration.Definitions() {
 		if _, err := toolRegistry.StrictSnapshot(definition.Tools); err != nil {
 			return fmt.Errorf("validate tools for agent definition %q: %w", definition.ID, err)
 		}
 	}
-	agentChildRunStore := persistence.NewAgentChildRunStore(database)
-	durableTurnRunner, err := collaboration.NewDurableChildRunner(
-		turnExecutor, definitionRegistry, agentCheckpointStore, agentChildRunStore,
+	var delegationTools *agenttool.DelegationTools
+	turnExecutor := adk.NewLLMTurnExecutor(adk.LLMTurnDependencies{
+		Tools: toolRegistry, Resolve: modelResolver, Sessions: agentSessionService,
+		Checkpoints: agentCheckpointStore, ToolCalls: agentToolCallStore,
+		Memories: agentMemoryStore, Conversation: agentConversationStore, AmbientContext: agentRepository,
+		Consume: outcomeConsumer.Consume,
+		DynamicTools: func(request appharness.RuntimeRequest, emit appharness.RuntimeEmitter) ([]appharness.Tool, error) {
+			if delegationTools == nil {
+				return nil, errors.New("delegation tools are not configured")
+			}
+			return delegationTools.Provider(request, emit)
+		},
+	})
+	writingChain, err := orchestration.NewWritingCollaborationChain(
+		definitionRegistry, turnExecutor, agentArtifactStore, agentCheckpointStore, skillCatalog,
 	)
 	if err != nil {
 		return err
 	}
-	writingChain, err := collaboration.NewWritingCollaborationChain(
-		definitionRegistry, durableTurnRunner, agentArtifactStore, agentCheckpointStore, skillCatalog,
+	delegator, err := orchestration.NewSpecialistDelegator(writingChain)
+	if err != nil {
+		return err
+	}
+	delegationTools, err = agenttool.NewDelegationTools(delegator)
+	if err != nil {
+		return err
+	}
+	canvasOrchestrator, err := orchestration.NewCanvasOrchestrator(
+		definitionRegistry, turnExecutor, writingChain, agentCheckpointStore,
 	)
 	if err != nil {
 		return err
 	}
-	canvasOrchestrator, err := collaboration.NewCanvasOrchestrator(
-		definitionRegistry, durableTurnRunner, writingChain, agentCheckpointStore,
+	nonCollaborativeChain, err := orchestration.NewNonCollaborativeChain(
+		definitionRegistry, turnExecutor, agentArtifactStore, agentCheckpointStore, skillCatalog,
 	)
 	if err != nil {
 		return err
 	}
-	nonCollaborativeChain, err := collaboration.NewNonCollaborativeChain(
-		definitionRegistry, durableTurnRunner, agentArtifactStore, agentCheckpointStore, skillCatalog,
-	)
-	if err != nil {
-		return err
-	}
-	agentEngine, err := collaboration.NewEngine(canvasOrchestrator, nonCollaborativeChain)
+	agentEngine, err := orchestration.NewEngine(canvasOrchestrator, nonCollaborativeChain)
 	if err != nil {
 		return err
 	}

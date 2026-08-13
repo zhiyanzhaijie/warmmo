@@ -12,7 +12,9 @@ allowed_tools:
 ---
 # Entity Creator
 
-Create complete reviewable entity proposals. For an explicit request to rewrite an existing entity node, return one complete update for that node instead of creating a duplicate. Never write directly to the canvas.
+Create complete reviewable proposals for new entity nodes. Never write directly to the canvas and never update an existing node; existing-node changes use the dedicated node-update workflow.
+
+You may create only these entity kinds: `character`, `item`, `location`, `time`, `world`, `mechanism`, and `event`. Never produce `chapter-outline`, `section-outline`, `chapter-section`, or `manuscript`. Chapter assets belong to dedicated chapter workflows.
 
 Return exactly one ProposalSet JSON object using this exact shape. Include every entity required by the delegated task in the same proposal, up to 20 new nodes; do not require one delegation per entity.
 
@@ -36,7 +38,7 @@ Return exactly one ProposalSet JSON object using this exact shape. Include every
 
 Use exactly the six top-level fields shown above. Do not wrap the object in `proposalSet`, `data`, or `result`; do not add `metadata` or other fields. Edge objects may contain only `sourceId`, `targetId`, and `kind`, never `fromNodeId` or `toNodeId`.
 
-A new node must contain `clientId`, a valid node kind, canonical title, and complete content. An update must contain the existing `nodeId`, its `baseRevision`, and the complete proposed `title` and `content`.
+A new node must contain `clientId`, a valid node kind, canonical title, and complete content. `baseRevisions` must be empty and `updates` must be an empty array.
 
 If the approved plan is already satisfied by an accepted candidate, do not return an empty ProposalSet. Return the `finish` decision to the collaboration loop; never use an empty proposal to signal no work.
 

@@ -34,8 +34,8 @@ type AgentStore interface {
 	RequeueProductProjection(string, string, int, time.Duration) error
 
 	GetRunByCandidate(string, string) (agent.Run, agent.Candidate, error)
+	RecordCandidateDecision(string, string, bool, string) error
 	RequestCandidateDecisionReason(string, string, string) error
-	RequeueAfterCandidateDecision(string, string, bool, string) (bool, error)
 	ListCollaborativeCandidates(string) ([]agent.CollaborativeCandidate, error)
 	ListUserResponses(string) ([]agent.UserResponse, error)
 	QueueResponse(string, string, string) (agent.UserResponse, error)
@@ -240,43 +240,11 @@ func (s *AgentService) ResumeAfterCandidateDecision(ctx context.Context, workID,
 	if !accepted {
 		return s.store.RequestCandidateDecisionReason(run.ID, candidate.ID, candidate.Title)
 	}
-	requeued, err := s.store.RequeueAfterCandidateDecision(run.ID, candidate.ID, accepted, acceptedNodeID)
-	if err != nil {
-		if errors.Is(err, agent.ErrRunNotCancellable) {
-			return nil
-		}
+	if err := s.store.RecordCandidateDecision(run.ID, candidate.ID, true, strings.TrimSpace(acceptedNodeID)); err != nil {
 		return err
 	}
-	if !requeued {
-		return nil
-	}
-	candidates, err := s.store.ListCollaborativeCandidates(run.ID)
-	if err != nil {
-		return err
-	}
-	responses, err := s.store.ListUserResponses(run.ID)
-	if err != nil {
-		return err
-	}
-	input := agent.RunInput{
-		RunID: run.ID, WorkID: run.WorkID, Prompt: run.Prompt, Target: run.Target,
-		TargetNodeID: run.TargetNodeID, ProviderID: run.ProviderID, ModelID: run.ModelID, ConversationSessionID: run.ConversationSessionID,
-		ContextNodeIDs: uniqueNodeIDs(run.ContextNodeIDs), UserResponses: responses,
-		CollaborativeCandidates: candidates,
-	}
-	globalContext, err := s.store.GetGlobalContextNodeReferences(run.WorkID)
-	if err != nil {
-		return err
-	}
-	input.ContextNodes = append(input.ContextNodes, globalContext...)
-	input.ContextNodeIDs = uniqueNodeIDs(append(input.ContextNodeIDs, nodeReferenceIDs(globalContext)...))
-	if len(input.ContextNodeIDs) > 0 {
-		input.ContextNodes, err = s.store.GetNodeReferences(run.WorkID, input.ContextNodeIDs)
-		if err != nil {
-			return err
-		}
-	}
-	go s.execute(run, input, executionResume, "")
+	// Acceptance completes the product projection. A new user request, rather
+	// than an implicit replay of the original prompt, starts further work.
 	return nil
 }
 

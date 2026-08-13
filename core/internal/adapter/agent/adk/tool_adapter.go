@@ -11,17 +11,18 @@ import (
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
-	agentcore "warmmo/core/internal/adapter/agent/core"
 	appharness "warmmo/core/internal/application/harness"
 )
 
 func adaptTools(
-	registry *agentcore.ToolRegistry,
+	registry appharness.ToolCatalog,
 	allowed []string,
-	base agentcore.ToolInvocation,
-	policy *turnPolicy,
+	base appharness.ToolInvocation,
+	budget *turnBudget,
+	codec toolResultCodec,
+	events *eventSink,
 	toolCalls appharness.ToolCallStore,
-	additional ...agentcore.Tool,
+	additional ...appharness.Tool,
 ) ([]adktool.Tool, error) {
 	if registry == nil {
 		if len(allowed) == 0 {
@@ -29,8 +30,8 @@ func adaptTools(
 		}
 		return nil, fmt.Errorf("tool registry is required")
 	}
-	if policy == nil {
-		return nil, fmt.Errorf("turn tool policy is required")
+	if budget == nil {
+		return nil, fmt.Errorf("turn budget is required")
 	}
 	allAllowed := append([]string(nil), allowed...)
 	for _, tool := range additional {
@@ -62,21 +63,21 @@ func adaptTools(
 			functiontool.Config{
 				Name: spec.Name, Description: spec.Description, InputSchema: inputSchema,
 				IsLongRunning:       spec.LongRunning,
-				RequireConfirmation: spec.Approval == agentcore.ApprovalAlways,
+				RequireConfirmation: spec.Approval == appharness.ApprovalAlways,
 			},
 			func(ctx agent.ToolContext, args map[string]any) (map[string]any, error) {
 				encoded, err := json.Marshal(args)
 				if err != nil {
-					return policy.errorResult(agentcore.NewToolError(
-						agentcore.ToolErrorInvalidArgument, false, fmt.Errorf("encode tool arguments: %w", err),
+					return toolErrorResult(appharness.NewToolError(
+						appharness.ToolErrorInvalidArgument, false, fmt.Errorf("encode tool arguments: %w", err),
 					)), nil
 				}
 				argsHash, err := appharness.StableHash(args)
 				if err != nil {
-					return policy.errorResult(agentcore.NewToolError(agentcore.ToolErrorInternal, false, fmt.Errorf("hash tool arguments: %w", err))), nil
+					return toolErrorResult(appharness.NewToolError(appharness.ToolErrorInternal, false, fmt.Errorf("hash tool arguments: %w", err))), nil
 				}
 				claimed := false
-				if spec.SideEffect.Mutates() {
+				if spec.SideEffect.RequiresIdempotency() {
 					if toolCalls == nil {
 						return nil, errors.New("side-effect tool call store is required")
 					}
@@ -86,27 +87,27 @@ func adaptTools(
 					})
 					if claimErr != nil {
 						if errors.Is(claimErr, appharness.ErrToolCallInDoubt) || errors.Is(claimErr, appharness.ErrToolCallConflict) {
-							policy.haltExecution(ctx, claimErr)
+							budget.haltExecution(ctx, claimErr)
 						}
-						return policy.errorResult(claimErr), nil
+						return toolErrorResult(claimErr), nil
 					}
 					if !acquired {
 						var replay map[string]any
 						if err := json.Unmarshal(record.Result, &replay); err != nil {
-							return policy.errorResult(agentcore.NewToolError(agentcore.ToolErrorInternal, false, fmt.Errorf("decode replayed tool result: %w", err))), nil
+							return toolErrorResult(appharness.NewToolError(appharness.ToolErrorInternal, false, fmt.Errorf("decode replayed tool result: %w", err))), nil
 						}
-						if observer, ok := currentTool.(interface{ Replayed(map[string]any) }); ok {
-							observer.Replayed(replay)
+						if spec.Terminal && replay["error"] == nil {
+							ctx.Actions().SkipSummarization = true
 						}
 						return replay, nil
 					}
 					claimed = true
 				}
-				if err := policy.beforeTool(ctx, spec); err != nil {
-					result := policy.errorResult(err)
+				if err := budget.beforeTool(ctx, spec); err != nil {
+					result := toolErrorResult(err)
 					if claimed {
 						if completeErr := completeToolCall(ctx, toolCalls, ctx.FunctionCallID(), argsHash, result); completeErr != nil {
-							policy.haltExecution(ctx, completeErr)
+							budget.haltExecution(ctx, completeErr)
 							return nil, completeErr
 						}
 					}
@@ -115,29 +116,36 @@ func adaptTools(
 					}
 					return result, nil
 				}
+				_ = events.project(LLMTurnEvent{
+					Type: LLMEventToolStarted, AgentName: ctx.AgentName(),
+					ToolName: spec.Name, ToolCallID: ctx.FunctionCallID(),
+				})
 				invocation := base
 				invocation.CallID = ctx.FunctionCallID()
 				invocation.Args = encoded
 				result, err := currentTool.Call(ctx, invocation)
 				if err != nil {
-					failed := policy.errorResult(err)
+					failed := toolErrorResult(err)
 					if claimed {
 						if completeErr := completeToolCall(ctx, toolCalls, ctx.FunctionCallID(), argsHash, failed); completeErr != nil {
-							policy.haltExecution(ctx, completeErr)
+							budget.haltExecution(ctx, completeErr)
 							return nil, completeErr
 						}
 					}
 					return failed, nil
 				}
-				shaped, err := policy.shapeResult(ctx, spec, outputSchema, result)
-				if err != nil {
-					shaped = policy.errorResult(err)
+				shaped, shapeErr := codec.encode(spec, outputSchema, result)
+				if shapeErr != nil {
+					shaped = toolErrorResult(shapeErr)
 				}
 				if claimed {
 					if completeErr := completeToolCall(ctx, toolCalls, ctx.FunctionCallID(), argsHash, shaped); completeErr != nil {
-						policy.haltExecution(ctx, completeErr)
+						budget.haltExecution(ctx, completeErr)
 						return nil, completeErr
 					}
+				}
+				if spec.Terminal && shapeErr == nil {
+					ctx.Actions().SkipSummarization = true
 				}
 				return shaped, nil
 			},
@@ -167,7 +175,7 @@ func completeToolCall(
 	return nil
 }
 
-func validateToolSpec(spec agentcore.ToolSpec) error {
+func validateToolSpec(spec appharness.ToolSpec) error {
 	if spec.Name == "" || spec.Description == "" {
 		return fmt.Errorf("tool name and description are required")
 	}
@@ -175,7 +183,7 @@ func validateToolSpec(spec agentcore.ToolSpec) error {
 		return fmt.Errorf("tool %q side-effect class is required", spec.Name)
 	}
 	switch spec.SideEffect {
-	case agentcore.SideEffectNone, agentcore.SideEffectRead, agentcore.SideEffectWrite, agentcore.SideEffectExternal:
+	case appharness.SideEffectNone, appharness.SideEffectRead, appharness.SideEffectDelegate, appharness.SideEffectWrite, appharness.SideEffectExternal:
 	default:
 		return fmt.Errorf("tool %q has invalid side-effect class %q", spec.Name, spec.SideEffect)
 	}
@@ -183,11 +191,11 @@ func validateToolSpec(spec agentcore.ToolSpec) error {
 		return fmt.Errorf("tool %q approval policy is required", spec.Name)
 	}
 	switch spec.Approval {
-	case agentcore.ApprovalNever, agentcore.ApprovalAlways:
+	case appharness.ApprovalNever, appharness.ApprovalAlways:
 	default:
 		return fmt.Errorf("tool %q has invalid approval policy %q", spec.Name, spec.Approval)
 	}
-	if spec.Approval == agentcore.ApprovalAlways && !spec.SideEffect.Mutates() {
+	if spec.Approval == appharness.ApprovalAlways && !spec.SideEffect.Mutates() {
 		return fmt.Errorf("read-only tool %q cannot require mutation approval", spec.Name)
 	}
 	return nil

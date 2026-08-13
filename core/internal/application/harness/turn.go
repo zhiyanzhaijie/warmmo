@@ -13,6 +13,7 @@ var (
 	ErrCheckpointConflict   = errors.New("agent turn checkpoint version conflict")
 	ErrProjectionFailed     = errors.New("agent product event projection failed")
 	ErrBudgetExceeded       = errors.New("agent turn budget exceeded")
+	ErrInvalidOutput        = errors.New("agent output violates its contract")
 	ErrTurnRecoveryRequired = errors.New("agent turn requires checkpoint recovery")
 )
 
@@ -22,7 +23,6 @@ const (
 	TurnRunning           TurnStatus = "running"
 	TurnCompleted         TurnStatus = "completed"
 	TurnAwaitingUser      TurnStatus = "awaiting_user"
-	TurnAwaitingChild     TurnStatus = "awaiting_child"
 	TurnStoppedBudget     TurnStatus = "stopped_budget"
 	TurnStoppedNoProgress TurnStatus = "stopped_no_progress"
 	TurnCancelled         TurnStatus = "cancelled"
@@ -33,9 +33,7 @@ type StopReason string
 
 const (
 	StopFinalResponse     StopReason = "final_response"
-	StopArtifactSubmitted StopReason = "artifact_submitted"
 	StopUserInputRequired StopReason = "user_input_required"
-	StopChildPending      StopReason = "child_pending"
 	StopBudgetExceeded    StopReason = "budget_exceeded"
 	StopNoProgress        StopReason = "no_progress"
 	StopContextCancelled  StopReason = "context_cancelled"
@@ -101,14 +99,14 @@ type TurnSnapshot struct {
 	PublishConversation     bool            `json:"publishConversation,omitempty"`
 	AllowedTools            []string        `json:"allowedTools"`
 	ControlTools            []string        `json:"controlTools,omitempty"`
-	AllowedChildren         []ChildContract `json:"allowedChildren,omitempty"`
+	Extension               json.RawMessage `json:"extension,omitempty"`
 	WorkID                  string          `json:"workId"`
 	SkillID                 string          `json:"skillId,omitempty"`
 	SkillVersion            string          `json:"skillVersion,omitempty"`
 	Budget                  BudgetPolicy    `json:"budget"`
 	Context                 ContextPolicy   `json:"context"`
 	Memory                  MemoryPolicy    `json:"memory"`
-	Output                  OutputContract  `json:"output"`
+	ResponseSchema          map[string]any  `json:"responseSchema,omitempty"`
 }
 
 type ResumeInput struct {
@@ -118,45 +116,50 @@ type ResumeInput struct {
 }
 
 type TurnOutcome struct {
-	Status     TurnStatus     `json:"status"`
-	StopReason StopReason     `json:"stopReason"`
-	SessionID  string         `json:"sessionId"`
-	Final      *Message       `json:"final,omitempty"`
-	Pending    *PendingAction `json:"pending,omitempty"`
-	Artifact   *ArtifactRef   `json:"artifact,omitempty"`
-	Usage      Usage          `json:"usage"`
-	Budget     BudgetUsage    `json:"budget"`
+	TurnID          string          `json:"turnId"`
+	Status          TurnStatus      `json:"status"`
+	StopReason      StopReason      `json:"stopReason"`
+	SessionID       string          `json:"sessionId"`
+	Final           *Message        `json:"final,omitempty"`
+	Pending         *PendingAction  `json:"pending,omitempty"`
+	Output          json.RawMessage `json:"output,omitempty"`
+	ToolResults     []ToolResult    `json:"toolResults,omitempty"`
+	Usage           Usage           `json:"usage"`
+	Budget          BudgetUsage     `json:"budget"`
+	BudgetDimension string          `json:"budgetDimension,omitempty"`
+}
+
+type ToolResult struct {
+	CallID string          `json:"callId"`
+	Name   string          `json:"name"`
+	Output json.RawMessage `json:"output"`
 }
 
 type Checkpoint struct {
-	RunID                string
-	TurnID               string
-	SessionID            string
-	AgentID              string
-	DefinitionVersion    string
-	DefinitionHash       string
-	PromptHash           string
-	ToolsetHash          string
-	Status               TurnStatus
-	StopReason           StopReason
-	Final                *Message
-	Pending              *PendingAction
-	Artifact             *ArtifactRef
-	Usage                Usage
-	Budget               BudgetUsage
-	ChildRunIDs          []string
-	CompactionManifest   json.RawMessage
-	LastCanonicalEventID string
-	Snapshot             *TurnSnapshot
-	Version              int64
-	UpdatedAt            time.Time
+	RunID             string
+	TurnID            string
+	SessionID         string
+	AgentID           string
+	DefinitionVersion string
+	DefinitionHash    string
+	PromptHash        string
+	ToolsetHash       string
+	Status            TurnStatus
+	StopReason        StopReason
+	Final             *Message
+	Pending           *PendingAction
+	Output            json.RawMessage
+	Usage             Usage
+	Budget            BudgetUsage
+	Snapshot          *TurnSnapshot
+	Version           int64
+	UpdatedAt         time.Time
 }
 
 type CheckpointStore interface {
 	GetCheckpoint(context.Context, string) (Checkpoint, error)
 	FindLatestCheckpoint(context.Context, string, string) (Checkpoint, error)
 	FindPendingCheckpoint(context.Context, string) (Checkpoint, error)
-	AttachChildRun(context.Context, string, string) (Checkpoint, error)
 	SaveCheckpoint(context.Context, Checkpoint) (Checkpoint, error)
 }
 

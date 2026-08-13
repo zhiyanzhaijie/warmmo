@@ -117,7 +117,7 @@ func (d *Database) initialize() error {
 		&schemaMetadataModel{}, &providerConfigurationModel{},
 		&workFolderModel{}, &workModel{},
 		&agentRunModel{}, &agentRunEventModel{}, &agentResponseModel{}, &agentCandidateModel{}, &agentProposalEdgeModel{},
-		&agentSessionModel{}, &agentSessionEventModel{}, &agentSessionScopedStateModel{}, &agentConversationModel{}, &agentConversationTurnModel{}, &agentTurnCheckpointModel{}, &agentArtifactModel{}, &agentProductProjectionModel{}, &agentToolCallModel{}, &agentChildRunModel{}, &agentMemoryModel{},
+		&agentSessionModel{}, &agentSessionEventModel{}, &agentSessionScopedStateModel{}, &agentConversationModel{}, &agentConversationTurnModel{}, &agentTurnCheckpointModel{}, &agentArtifactModel{}, &agentProductProjectionModel{}, &agentToolCallModel{}, &agentMemoryModel{},
 		&canvasNodeModel{}, &canvasNodeVersionModel{}, &canvasEdgeModel{},
 		&canvasActionModel{}, &canvasHistoryStateModel{},
 		&chapterArchiveModel{}, &chapterArchiveSectionModel{},
